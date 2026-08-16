@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"path/filepath"
 
 	"gopkg.in/yaml.v3"
 )
@@ -66,4 +67,33 @@ func LoadMouse(path string) (*MouseConfig, error) {
 		return nil, err
 	}
 	return &cfg, nil
+}
+
+// GlobalMousePath returns the path to the global default mouse.yaml.
+func GlobalMousePath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ".hmf/mouse.yaml"
+	}
+	return filepath.Join(home, ".hmf", "mouse.yaml")
+}
+
+// LoadGlobalMouse reads the global default mouse.yaml (~/.hmf/mouse.yaml).
+// Missing file → (nil, nil). This is the fallback for unregistered dirs.
+func LoadGlobalMouse() (*MouseConfig, error) {
+	return LoadMouse(GlobalMousePath())
+}
+
+// ResolveMouse loads project-specific mouse.yaml from repoPath, falling back
+// to the global default (~/.hmf/mouse.yaml) if not found.
+// Returns (nil, nil) if neither exists (truly open mode).
+func ResolveMouse(repoPath string) (*MouseConfig, error) {
+	cfg, err := LoadMouse(filepath.Join(repoPath, "mouse.yaml"))
+	if err != nil {
+		return nil, err
+	}
+	if cfg != nil {
+		return cfg, nil
+	}
+	return LoadGlobalMouse()
 }

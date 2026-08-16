@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"text/tabwriter"
 
+	"github.com/herdanis/his-mouse-friday/internal/config"
 	"github.com/herdanis/his-mouse-friday/internal/daemon"
 	"github.com/herdanis/his-mouse-friday/internal/protocol"
 	"github.com/spf13/cobra"
@@ -46,6 +47,7 @@ func NewRootCmd() *cobra.Command {
 	root.AddCommand(workspaceCmd())
 	root.AddCommand(projectCmd())
 	root.AddCommand(statusCmd())
+	root.AddCommand(configCmd())
 	return root
 }
 
@@ -261,4 +263,75 @@ func statusCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+func configCmd() *cobra.Command {
+	c := &cobra.Command{Use: "config", Short: "Manage global default configuration"}
+
+	init := &cobra.Command{
+		Use:   "init",
+		Short: "Create global default mouse.yaml (~/.hmf/mouse.yaml)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			path := config.GlobalMousePath()
+			if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+				return err
+			}
+			if _, err := os.Stat(path); err == nil {
+				fmt.Println("global config already exists:", path)
+				return nil
+			}
+			content := `agent:
+  primary:
+    provider: opencode
+    model: default
+  secondary:
+    provider: ""
+    model: ""
+permissions:
+  fs:
+    deny:
+      - ".env"
+      - "*.key"
+  commands:
+    deny:
+      - "kubectl delete"
+      - "kubectl apply"
+      - "gcloud * delete"
+      - "aws * delete"
+    ask:
+      - "kubectl scale"
+a2a:
+  allow_inbound: false
+  allow_outbound: true
+`
+			if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+				return err
+			}
+			fmt.Println("global config created:", path)
+			fmt.Println("\nThis applies to unregistered dirs. Edit it to customize.")
+			return nil
+		},
+	}
+
+	show := &cobra.Command{
+		Use:   "show",
+		Short: "Show global default mouse.yaml",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			path := config.GlobalMousePath()
+			b, err := os.ReadFile(path)
+			if err != nil {
+				if os.IsNotExist(err) {
+					fmt.Println("no global config. Run 'hmf config init' to create one.")
+					return nil
+				}
+				return err
+			}
+			fmt.Printf("# %s\n%s", path, string(b))
+			return nil
+		},
+	}
+
+	c.AddCommand(init)
+	c.AddCommand(show)
+	return c
 }

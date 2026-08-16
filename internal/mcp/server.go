@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"time"
 
+	"github.com/herdanis/his-mouse-friday/internal/config"
 	"github.com/herdanis/his-mouse-friday/internal/protocol"
 	mcpserver "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -249,7 +250,13 @@ func RunServer(ctx context.Context) error {
 	if callerID != "" {
 		fmt.Fprintf(os.Stderr, "hmf: ready (caller=%s)\n", callerID)
 	} else {
-		fmt.Fprintln(os.Stderr, "hmf: ready (unregistered repo — open mode)")
+		// Unregistered: check for global default mouse.yaml.
+		cfg, _ := config.ResolveMouse(os.Getenv("PWD"))
+		if cfg != nil {
+			fmt.Fprintln(os.Stderr, "hmf: ready (unregistered — global default rules apply)")
+		} else {
+			fmt.Fprintln(os.Stderr, "hmf: ready (unregistered — open mode)")
+		}
 	}
 	return newServer(callerID).Run(ctx, &mcpserver.StdioTransport{})
 }
