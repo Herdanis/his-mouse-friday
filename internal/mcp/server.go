@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
+	"time"
 
 	"github.com/herdanis/his-mouse-friday/internal/protocol"
 	mcpserver "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -186,7 +188,38 @@ func newServer(callerID string) *mcpserver.Server {
 // starts the hmf-mcp server over stdio and blocks until the context is
 // cancelled or the transport closes.
 func RunServer(ctx context.Context) error {
+	ensureDaemon(ctx)
 	repo, _ := os.Getwd()
 	callerID := resolveCaller(repo)
 	return newServer(callerID).Run(ctx, &mcpserver.StdioTransport{})
+}
+
+// ensureDaemon checks if the daemon is reachable; if not, starts it in the
+// background and waits for the socket to accept connections. This lets users
+// open opencode without manually running 'hmf up' first.
+func ensureDaemon(ctx context.Context) {
+	if conn, err := net.Dial("unix", protocol.SocketPath()); err == nil {
+		conn.Close()
+		return
+	}
+	bin, err := exec.LookPath("hmf")
+	if err != nil {
+		return
+	}
+	cmd := exec.CommandContext(ctx, bin, "up")
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	cmd.Stdin = nil
+	if err := cmd.Start(); err != nil {
+		return
+	}
+	// Wait up to 5s for the socket to accept.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if conn, err := net.Dial("unix", protocol.SocketPath()); err == nil {
+			conn.Close()
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }
