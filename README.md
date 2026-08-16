@@ -10,15 +10,37 @@ editing foreign code directly.
     go install ./cmd/hmf
     go install ./cmd/hmf-mcp
 
-## Usage
+## Setup
 
-    hmf up                                      # start daemon
-    hmf workspace add companyA
-    hmf project add payment-service ~/code/payment --workspace companyA
-    hmf status
+1. Start the daemon:
 
-Open opencode in a registered repo; the agent gets `hmf-mcp` tools to engage
-other project agents.
+       hmf up
+
+2. Register a workspace + your repos:
+
+       hmf workspace add companyA
+       hmf project add payment-service ~/code/payment --workspace companyA
+       hmf project add user-service ~/code/user-service --workspace companyA
+       hmf status
+
+3. Wire `hmf-mcp` into opencode. Either globally in `~/.config/opencode/opencode.json`:
+
+       "mcp": {
+         "hmf": {
+           "type": "local",
+           "command": ["hmf-mcp"],
+           "enabled": true
+         }
+       }
+
+   Or per-repo in `opencode.json` at the repo root (see `examples/opencode.json`).
+
+4. Add `mouse.yaml` + `MOUSE.md` to each repo (see `examples/`).
+   Set `a2a.allow_inbound: true` on repos other agents may engage.
+
+5. Open opencode in a registered repo. The agent now has 5 tools:
+   `engage_project_agent`, `post_message`, `read_channel`, `read_thread`,
+   `list_project_agents`. The `from` field is auto-detected from cwd.
 
 ## Config (per repo)
 

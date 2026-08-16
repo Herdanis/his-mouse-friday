@@ -1,0 +1,10 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "hmf": {
+      "type": "local",
+      "command": ["hmf-mcp"],
+      "enabled": true
+    }
+  }
+}
