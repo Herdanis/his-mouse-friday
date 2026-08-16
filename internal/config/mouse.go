@@ -13,19 +13,29 @@ type MouseConfig struct {
 }
 
 type AgentConfig struct {
-	Primary   string `yaml:"primary"`
-	Secondary string `yaml:"secondary"`
-	Model     string `yaml:"model"`
+	Primary   AgentTarget `yaml:"primary"`
+	Secondary AgentTarget `yaml:"secondary"`
+}
+
+// AgentTarget identifies a coding agent runtime + model.
+// Empty provider = unset (secondary optional).
+type AgentTarget struct {
+	Provider string `yaml:"provider"`
+	Model    string `yaml:"model"`
 }
 
 type PermissionsConfig struct {
 	FS FSPermissions `yaml:"fs"`
 }
 
-// FSPermissions uses gitignore-style deny patterns: everything is allowed
-// by default, paths matching a deny pattern are blocked. Empty deny = allow all.
+// FSPermissions uses gitignore-style patterns with three modes:
+//   - deny: blocked outright
+//   - ask:  requires human approval before access
+//   - (default): allowed
+// Deny wins over ask. Empty lists = allow all.
 type FSPermissions struct {
 	Deny []string `yaml:"deny"`
+	Ask  []string `yaml:"ask"`
 }
 
 type A2AConfig struct {

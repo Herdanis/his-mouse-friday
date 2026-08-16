@@ -23,7 +23,7 @@ func TestVerticalSlice(t *testing.T) {
 	os.MkdirAll(userDir, 0755)
 
 	// user-service allows inbound.
-	os.WriteFile(filepath.Join(userDir, "mouse.yaml"), []byte("agent:\n  primary: /bin/echo\na2a:\n  allow_inbound: true\n"), 0644)
+	os.WriteFile(filepath.Join(userDir, "mouse.yaml"), []byte("agent:\n  primary:\n    provider: /bin/echo\na2a:\n  allow_inbound: true\n"), 0644)
 	os.WriteFile(filepath.Join(userDir, "MOUSE.md"), []byte("# user-service runbook\nowns user model\n"), 0644)
 
 	// Daemon with in-memory-ish store (temp db).
@@ -108,7 +108,7 @@ func TestVerticalSlice_OverSocket(t *testing.T) {
 	wsDir := t.TempDir()
 	userDir := filepath.Join(wsDir, "user-service")
 	os.MkdirAll(userDir, 0755)
-	os.WriteFile(filepath.Join(userDir, "mouse.yaml"), []byte("agent:\n  primary: /bin/echo\na2a:\n  allow_inbound: true\n"), 0644)
+	os.WriteFile(filepath.Join(userDir, "mouse.yaml"), []byte("agent:\n  primary:\n    provider: /bin/echo\na2a:\n  allow_inbound: true\n"), 0644)
 	os.WriteFile(filepath.Join(userDir, "MOUSE.md"), []byte("# user-service\n"), 0644)
 
 	store, _ := daemon.OpenStore(filepath.Join(t.TempDir(), "sock-e2e.db"))

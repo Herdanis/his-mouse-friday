@@ -185,12 +185,10 @@ func (d *Daemon) handleEngage(ctx context.Context, req protocol.Request) protoco
 	}
 	binary := "opencode"
 	model := "default"
-	if mouse != nil {
-		if mouse.Agent.Primary != "" {
-			binary = mouse.Agent.Primary
-		}
-		if mouse.Agent.Model != "" {
-			model = mouse.Agent.Model
+	if mouse != nil && mouse.Agent.Primary.Provider != "" {
+		binary = mouse.Agent.Primary.Provider
+		if mouse.Agent.Primary.Model != "" {
+			model = mouse.Agent.Primary.Model
 		}
 	}
 	runbook, _ := os.ReadFile(filepath.Join(proj.Path, "MOUSE.md"))

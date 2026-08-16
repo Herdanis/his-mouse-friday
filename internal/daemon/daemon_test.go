@@ -37,7 +37,7 @@ func TestHandle_EngageProjectAgent(t *testing.T) {
 	d.Registry.AddProject("companyA", "payment-service", "/tmp/payment")
 	d.Registry.AddProject("companyA", "user-service", "/tmp/user")
 	userDir := t.TempDir()
-	os.WriteFile(filepath.Join(userDir, "mouse.yaml"), []byte("agent:\n  primary: opencode\na2a:\n  allow_inbound: true\n"), 0644)
+	os.WriteFile(filepath.Join(userDir, "mouse.yaml"), []byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n"), 0644)
 	d.Registry.AddProject("companyA", "user-service", userDir)
 
 	params, _ := json.Marshal(map[string]any{
@@ -65,7 +65,7 @@ func TestHandle_Engage_InboundDenied(t *testing.T) {
 	d := setupDaemon(t)
 	d.Registry.AddWorkspace("companyA")
 	userDir := t.TempDir()
-	os.WriteFile(filepath.Join(userDir, "mouse.yaml"), []byte("agent:\n  primary: opencode\n"), 0644)
+	os.WriteFile(filepath.Join(userDir, "mouse.yaml"), []byte("agent:\n  primary:\n    provider: opencode\n"), 0644)
 	d.Registry.AddProject("companyA", "user-service", userDir)
 
 	params, _ := json.Marshal(map[string]any{"project": "companyA/user-service", "task": "x"})

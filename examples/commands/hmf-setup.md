@@ -65,8 +65,12 @@ For each file that ALREADY exists, skip it.
 
 ```
 agent:
-  primary: opencode
-  model: default
+  primary:
+    provider: opencode
+    model: default
+  secondary:
+    provider: ""
+    model: ""
 permissions:
   fs:
     deny:

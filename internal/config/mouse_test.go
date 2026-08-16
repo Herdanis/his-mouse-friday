@@ -10,11 +10,14 @@ func TestLoadMouse_Valid(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if cfg.Agent.Primary != "opencode" {
-		t.Errorf("primary: got %q want opencode", cfg.Agent.Primary)
+	if cfg.Agent.Primary.Provider != "opencode" {
+		t.Errorf("primary.provider: got %q want opencode", cfg.Agent.Primary.Provider)
 	}
-	if cfg.Agent.Model != "default" {
-		t.Errorf("model: got %q want default", cfg.Agent.Model)
+	if cfg.Agent.Primary.Model != "default" {
+		t.Errorf("primary.model: got %q want default", cfg.Agent.Primary.Model)
+	}
+	if cfg.Agent.Secondary.Provider != "" {
+		t.Errorf("secondary.provider: got %q want empty", cfg.Agent.Secondary.Provider)
 	}
 	if !cfg.A2A.AllowInbound {
 		t.Errorf("allow_inbound: got false want true")
@@ -32,7 +35,10 @@ func TestLoadMouse_Valid(t *testing.T) {
 	if !foundEnv {
 		t.Errorf("deny list missing .env: %v", denied)
 	}
-	// Default: empty deny = allow all. Minimal config has no permissions block.
+	asked := cfg.Permissions.FS.Ask
+	if len(asked) != 2 {
+		t.Fatalf("ask list: got %d entries want 2", len(asked))
+	}
 }
 
 func TestLoadMouse_MissingFile(t *testing.T) {
@@ -50,8 +56,8 @@ func TestLoadMouse_Minimal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if cfg.Agent.Primary != "opencode" {
-		t.Errorf("primary: got %q", cfg.Agent.Primary)
+	if cfg.Agent.Primary.Provider != "opencode" {
+		t.Errorf("primary.provider: got %q", cfg.Agent.Primary.Provider)
 	}
 	if cfg.A2A.AllowInbound {
 		t.Errorf("default allow_inbound should be false, got true")

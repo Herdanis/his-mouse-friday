@@ -1,16 +1,26 @@
 agent:
-  primary: opencode
-  model: default
+  primary:
+    provider: opencode
+    model: default
+  secondary:
+    provider: ""
+    model: ""
 permissions:
   fs:
-    # Gitignore-style: everything allowed by default, deny patterns block access.
-    # Empty/missing deny = allow all.
+    # Gitignore-style: everything allowed by default.
+    #   deny = blocked outright
+    #   ask  = requires human approval before access
+    #   (not listed) = allowed
+    # Deny wins over ask. Empty lists = allow all.
     deny:
       - ".env"
       - "*.key"
       - "*.pem"
       - ".terraform/**"
       - "secrets/**"
+    ask:
+      - "migrations/**"
+      - "Makefile"
 a2a:
   allow_inbound: true
   allow_outbound: true
