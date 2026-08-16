@@ -121,23 +121,22 @@ func TestServe_Smoke(t *testing.T) {
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- d.Serve(ctx) }()
 
-	// Wait for socket to appear.
+	// Wait for socket to accept connections (retry dial until ready).
+	var conn net.Conn
+	var err error
 	deadline, cancelWait := context.WithTimeout(ctx, awaitSockTimeout)
 	for {
-		if _, err := os.Stat(sock); err == nil {
+		conn, err = net.Dial("unix", sock)
+		if err == nil {
 			break
 		}
 		if deadline.Err() != nil {
 			cancelWait()
-			t.Fatalf("socket never appeared: %v", deadline.Err())
+			t.Fatalf("socket never accepted: %v", err)
 		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	cancelWait()
-
-	conn, err := net.Dial("unix", sock)
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
 	defer conn.Close()
 
 	enc := json.NewEncoder(conn)

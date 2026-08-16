@@ -1,9 +1,9 @@
 package protocol
 
 import (
-	"bufio"
 	"encoding/json"
-	"io"
+	"os"
+	"path/filepath"
 )
 
 type Request struct {
@@ -22,30 +22,17 @@ type ResponseError struct {
 	Message string `json:"message"`
 }
 
-func Encode(w io.Writer, v any) error {
-	b, err := json.Marshal(v)
+// StateDir returns the daemon's state directory (~/.hmf).
+func StateDir() string {
+	home, err := os.UserHomeDir()
 	if err != nil {
-		return err
+		home = "."
 	}
-	b = append(b, '\n')
-	_, err = w.Write(b)
-	return err
+	return filepath.Join(home, ".hmf")
 }
 
-func Decode(r io.Reader) (Request, error) {
-	var req Request
-	dec := json.NewDecoder(bufio.NewReader(r))
-	if err := dec.Decode(&req); err != nil {
-		return req, err
-	}
-	return req, nil
-}
+// SocketPath returns the daemon's unix socket path.
+func SocketPath() string { return filepath.Join(StateDir(), "daemon.sock") }
 
-func DecodeResponse(r io.Reader) (Response, error) {
-	var resp Response
-	dec := json.NewDecoder(bufio.NewReader(r))
-	if err := dec.Decode(&resp); err != nil {
-		return resp, err
-	}
-	return resp, nil
-}
+// DBPath returns the daemon's SQLite database path.
+func DBPath() string { return filepath.Join(StateDir(), "hmf.db") }

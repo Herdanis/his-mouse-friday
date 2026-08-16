@@ -13,14 +13,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func defaultStateDir() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".hmf")
-}
-
-func socketPath() string { return filepath.Join(defaultStateDir(), "daemon.sock") }
-func dbPath() string     { return filepath.Join(defaultStateDir(), "hmf.db") }
-
 func callDaemon(method string, params any) (protocol.Response, error) {
 	var raw json.RawMessage
 	if params != nil {
@@ -28,7 +20,7 @@ func callDaemon(method string, params any) (protocol.Response, error) {
 		raw = b
 	}
 	req := protocol.Request{Method: method, Params: raw, ID: 1}
-	conn, err := net.Dial("unix", socketPath())
+	conn, err := net.Dial("unix", protocol.SocketPath())
 	if err != nil {
 		return protocol.Response{}, fmt.Errorf("daemon not running? run 'hmf up': %w", err)
 	}
@@ -61,8 +53,10 @@ func upCmd() *cobra.Command {
 		Use:   "up",
 		Short: "Start the hmf daemon",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			os.MkdirAll(defaultStateDir(), 0755)
-			d, err := daemon.NewDaemon(socketPath(), dbPath())
+			if err := os.MkdirAll(protocol.StateDir(), 0755); err != nil {
+				return fmt.Errorf("create state dir: %w", err)
+			}
+			d, err := daemon.NewDaemon(protocol.SocketPath(), protocol.DBPath())
 			if err != nil {
 				return err
 			}
@@ -76,8 +70,14 @@ func downCmd() *cobra.Command {
 		Use:   "down",
 		Short: "Stop the hmf daemon",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			_, err := callDaemon("shutdown", struct{}{})
-			return err
+			resp, err := callDaemon("shutdown", struct{}{})
+			if err != nil {
+				return err
+			}
+			if resp.Error != nil {
+				return fmt.Errorf("%s", resp.Error.Message)
+			}
+			return nil
 		},
 	}
 }
@@ -110,7 +110,10 @@ func projectCmd() *cobra.Command {
 		Use:   "add [name] [path]",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			abs, _ := filepath.Abs(args[1])
+			abs, err := filepath.Abs(args[1])
+			if err != nil {
+				return fmt.Errorf("resolve path: %w", err)
+			}
 			resp, err := callDaemon("project_add", map[string]any{"workspace": ws, "name": args[0], "path": abs})
 			if err != nil {
 				return err
@@ -141,7 +144,9 @@ func statusCmd() *cobra.Command {
 				return fmt.Errorf("%s", resp.Error.Message)
 			}
 			var s daemon.StatusResult
-			json.Unmarshal(resp.Result, &s)
+			if err := json.Unmarshal(resp.Result, &s); err != nil {
+				return fmt.Errorf("parse status: %w", err)
+			}
 			fmt.Printf("running: %v\nworkspaces: %d\nprojects: %d\nsessions: %d\nsock: %s\n",
 				s.Running, s.Workspaces, s.Projects, s.Sessions, s.Sock)
 			return nil

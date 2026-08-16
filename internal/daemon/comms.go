@@ -27,7 +27,8 @@ type Comms struct {
 }
 
 func (c *Comms) CreateDMChannel(wsID int64, projA, projB string) (Channel, error) {
-	name := projA + "::" + projB
+	// Normalize: order the pair so A→B and B→A share one channel.
+	name := dmChannelName(projA, projB)
 	res, err := c.Store.db.Exec(
 		`INSERT INTO channels(workspace_id, name, type) VALUES(?,?,?)
 		 ON CONFLICT(workspace_id, name) DO NOTHING`,
@@ -97,4 +98,13 @@ func scanMessages(rows *sql.Rows) ([]Message, error) {
 		out = append(out, m)
 	}
 	return out, rows.Err()
+}
+
+// dmChannelName returns a deterministic channel name for a project pair,
+// so A→B and B→A resolve to the same channel.
+func dmChannelName(projA, projB string) string {
+	if projA <= projB {
+		return projA + "::" + projB
+	}
+	return projB + "::" + projA
 }

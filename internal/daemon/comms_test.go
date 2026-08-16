@@ -67,3 +67,18 @@ func TestComms_Threading(t *testing.T) {
 		t.Errorf("order wrong")
 	}
 }
+
+func TestComms_DMChannelNormalized(t *testing.T) {
+	store := newTestStore(t)
+	store.db.Exec(`INSERT INTO workspaces(id, name) VALUES(1, 'companyA')`)
+	c := &Comms{Store: store}
+
+	ch1, _ := c.CreateDMChannel(1, "companyA/payment", "companyA/user")
+	ch2, _ := c.CreateDMChannel(1, "companyA/user", "companyA/payment")
+	if ch1.ID != ch2.ID {
+		t.Errorf("A→B and B→A must share one channel: got %d vs %d", ch1.ID, ch2.ID)
+	}
+	if ch1.Name != ch2.Name {
+		t.Errorf("channel name not normalized: %q vs %q", ch1.Name, ch2.Name)
+	}
+}

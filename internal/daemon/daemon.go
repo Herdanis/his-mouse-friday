@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -260,11 +261,9 @@ func (d *Daemon) handleList(req protocol.Request) protocol.Response {
 		return errResp(req.ID, err.Error())
 	}
 	type item struct{ Workspace, Name, Path string }
-	var out []item
+	out := make([]item, 0, len(projs))
 	for _, pr := range projs {
-		var wsName string
-		d.Store.db.QueryRow(`SELECT name FROM workspaces WHERE id=?`, pr.WorkspaceID).Scan(&wsName)
-		out = append(out, item{Workspace: wsName, Name: pr.Name, Path: pr.Path})
+		out = append(out, item{Workspace: p.Workspace, Name: pr.Name, Path: pr.Path})
 	}
 	result, _ := json.Marshal(out)
 	return protocol.Response{ID: req.ID, Result: result}
@@ -277,7 +276,10 @@ func (d *Daemon) handleResolve(req protocol.Request) protocol.Response {
 	}
 	_, ws, err := d.Registry.ResolveByPath(p.Path)
 	if err != nil {
-		return errResp(req.ID, "not registered")
+		if errors.Is(err, ErrNotFound) {
+			return errResp(req.ID, "not registered")
+		}
+		return errResp(req.ID, "resolve: "+err.Error())
 	}
 	result, _ := json.Marshal(ResolveResult{Workspace: ws.Name, Project: filepath.Base(p.Path)})
 	return protocol.Response{ID: req.ID, Result: result}
@@ -311,9 +313,15 @@ func (d *Daemon) handleProjectAdd(req protocol.Request) protocol.Response {
 
 func (d *Daemon) handleStatus(req protocol.Request) protocol.Response {
 	var wsCount, projCount, sessCount int
-	d.Store.db.QueryRow("SELECT count(*) FROM workspaces").Scan(&wsCount)
-	d.Store.db.QueryRow("SELECT count(*) FROM projects").Scan(&projCount)
-	d.Store.db.QueryRow("SELECT count(*) FROM sessions WHERE status='active'").Scan(&sessCount)
+	if err := d.Store.db.QueryRow("SELECT count(*) FROM workspaces").Scan(&wsCount); err != nil {
+		return errResp(req.ID, "status: "+err.Error())
+	}
+	if err := d.Store.db.QueryRow("SELECT count(*) FROM projects").Scan(&projCount); err != nil {
+		return errResp(req.ID, "status: "+err.Error())
+	}
+	if err := d.Store.db.QueryRow("SELECT count(*) FROM sessions WHERE status='active'").Scan(&sessCount); err != nil {
+		return errResp(req.ID, "status: "+err.Error())
+	}
 	result, _ := json.Marshal(StatusResult{Running: true, Workspaces: wsCount, Projects: projCount, Sessions: sessCount, Sock: d.Sock})
 	return protocol.Response{ID: req.ID, Result: result}
 }
@@ -326,6 +334,12 @@ func (d *Daemon) handleStatus(req protocol.Request) protocol.Response {
 // One json.Decoder per connection (addresses Task 1 minor: shared decoder
 // would carry buffered state across requests).
 func (d *Daemon) Serve(ctx context.Context) error {
+	// Refuse to steal a live daemon's socket: if a connection succeeds, another
+	// daemon is running. A stale socket file (no listener) is safe to remove.
+	if conn, err := net.Dial("unix", d.Sock); err == nil {
+		conn.Close()
+		return fmt.Errorf("daemon already running on %s", d.Sock)
+	}
 	_ = os.Remove(d.Sock)
 	ln, err := net.Listen("unix", d.Sock)
 	if err != nil {

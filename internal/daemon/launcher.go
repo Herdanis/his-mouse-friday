@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
-	"strconv"
 )
 
 type Launcher struct {
@@ -30,6 +29,3 @@ func (l *Launcher) Spawn(ctx context.Context, dir, binary, model, runbookCtx str
 	go func() { _ = cmd.Wait() }()
 	return cmd.Process.Pid, nil
 }
-
-// pidToString formats a PID for status display.
-func pidToString(pid int) string { return strconv.Itoa(pid) }

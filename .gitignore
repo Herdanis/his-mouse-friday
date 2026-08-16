@@ -1,0 +1,9 @@
+# Binaries
+hmf
+hmf-mcp
+
+# Serena
+.serena/
+
+# OS
+.DS_Store

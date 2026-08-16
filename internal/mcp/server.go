@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
-	"os"
 
 	"github.com/herdanis/his-mouse-friday/internal/protocol"
 	mcpserver "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -52,18 +51,12 @@ type ListInput struct {
 // Daemon client (unix socket)
 // ============================================
 
-// socketPath returns the daemon's well-known unix socket location.
-func socketPath() string {
-	home, _ := os.UserHomeDir()
-	return home + "/.hmf/daemon.sock"
-}
-
 // callDaemon dials the daemon, sends a single JSON-RPC request, and returns the
 // Result field of the response. It is one-request/one-response per connection:
 // the daemon's serveConn loops on a shared decoder, so a fresh connection per
 // call keeps framing simple and avoids carrying buffered state across calls.
 func callDaemon(ctx context.Context, method string, params any) (json.RawMessage, error) {
-	conn, err := net.Dial("unix", socketPath())
+	conn, err := net.Dial("unix", protocol.SocketPath())
 	if err != nil {
 		return nil, fmt.Errorf("daemon not running (run 'hmf up'): %w", err)
 	}
