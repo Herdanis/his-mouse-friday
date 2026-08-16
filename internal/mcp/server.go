@@ -191,6 +191,11 @@ func RunServer(ctx context.Context) error {
 	ensureDaemon(ctx)
 	repo, _ := os.Getwd()
 	callerID := resolveCaller(repo)
+	if callerID != "" {
+		fmt.Fprintf(os.Stderr, "hmf: ready (caller=%s)\n", callerID)
+	} else {
+		fmt.Fprintln(os.Stderr, "hmf: ready (unregistered repo — open mode)")
+	}
 	return newServer(callerID).Run(ctx, &mcpserver.StdioTransport{})
 }
 
@@ -204,13 +209,16 @@ func ensureDaemon(ctx context.Context) {
 	}
 	bin, err := exec.LookPath("hmf")
 	if err != nil {
+		fmt.Fprintln(os.Stderr, "hmf: 'hmf' binary not found on PATH — daemon auto-start skipped")
 		return
 	}
+	fmt.Fprintln(os.Stderr, "hmf: daemon down, starting...")
 	cmd := exec.CommandContext(ctx, bin, "up")
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	cmd.Stdin = nil
 	if err := cmd.Start(); err != nil {
+		fmt.Fprintf(os.Stderr, "hmf: failed to start daemon: %v\n", err)
 		return
 	}
 	// Wait up to 5s for the socket to accept.
@@ -218,8 +226,10 @@ func ensureDaemon(ctx context.Context) {
 	for time.Now().Before(deadline) {
 		if conn, err := net.Dial("unix", protocol.SocketPath()); err == nil {
 			conn.Close()
+			fmt.Fprintf(os.Stderr, "hmf: daemon started (pid %d)\n", cmd.Process.Pid)
 			return
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
+	fmt.Fprintln(os.Stderr, "hmf: daemon did not become ready within 5s")
 }
