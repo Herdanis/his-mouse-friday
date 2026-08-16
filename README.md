@@ -13,7 +13,7 @@ editing foreign code directly.
 
     hmf up                                      # start daemon
     hmf workspace add companyA
-    hmf project add payment-service --workspace companyA --path ~/code/payment
+    hmf project add payment-service ~/code/payment --workspace companyA
     hmf status
 
 Open opencode in a registered repo; the agent gets `hmf-mcp` tools to engage
