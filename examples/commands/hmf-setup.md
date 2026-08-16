@@ -146,23 +146,62 @@ a2a:
 
 If a list is empty (user said "none"), omit that key entirely (e.g. no `ask:` block if empty).
 
-### If MOUSE.md is missing, write this exact content (replace <project-name> with the actual project name):
+### If MOUSE.md is missing, generate it with REAL content — no placeholders.
 
-```
+Do NOT write angle-bracket placeholders like `<what this agent owns>`. Generate actual content by:
+
+1. Read these files if they exist (use glob/read, do NOT scan the whole repo):
+   - `README.md` or `README*`
+   - `AGENTS.md` or `CLAUDE.md`
+   - `Makefile` or `package.json` or `go.mod` or `Cargo.toml` or `pyproject.toml`
+   - `.github/workflows/*` (one or two files, not all)
+2. Check AI memories (use mem_search if available) for this project — past decisions, conventions, architecture.
+3. Use the project name + repo path for context.
+4. Use the permissions from Step 4 as guardrails.
+
+Write MOUSE.md with this structure, filled with REAL inferred content:
+
+```markdown
 # <project-name> Agent Runbook
 
 ## Ownership
-<what this agent owns>
+<1-3 sentences: what this service/project does, its main responsibility.
+Infer from README, package name, or directory structure. If unclear, write
+a best guess based on the project name and note it needs review.>
 
 ## Conventions
-<coding standards, commit style, test commands>
+<- Language + framework (from manifests: go.mod, package.json, etc.)
+- Test command (from Makefile/package.json scripts, or standard for the language)
+- Lint/format command if found
+- Commit style if discernible from git log, else "Conventional Commits"
+- Any conventions from AGENTS.md/CLAUDE.md if present>
 
 ## Dependencies
-<other services this one calls or is called by>
+<- Other services this project calls (infer from imports, config files, 
+docker-compose, etc.)
+- Services that call this one (if mentioned in README/docs)
+- If no dependencies found, write "No external service dependencies detected.">
 
-## Boundaries
-<what this agent must NOT do, escalation paths>
+## Guardrails
+<- Commands the agent CANNOT run (from Step 4 deny list)
+- Commands requiring approval (from Step 4 ask list)
+- Files the agent CANNOT access (from Step 4 file deny list)
+- A2A policy: inbound=<allow_inbound>, outbound=<allow_outbound>
+- Rule: do NOT modify other services directly — engage their agent via hmf
+- Rule: if unsure, ask the user before making changes outside src/>
+
+## Escalation
+<- If the task requires changes in another registered project, use
+  engage_project_agent tool to delegate to that project's agent.
+- If the task is unclear or crosses ownership boundaries, ask the user.
+- If a denied command is needed, ask the user to run it manually.>
 ```
+
+Rules:
+- Every section must have real content. No `<placeholder>` text.
+- If you cannot infer something, write a best guess and append " (review needed)".
+- Keep it concise — this is a runbook, not documentation. Under 50 lines total.
+- Do NOT print the contents to the chat. Write silently.
 
 ### If AGENTS.md is missing, write this exact content:
 
