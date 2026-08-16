@@ -47,17 +47,16 @@ Then run: `hmf project add <name> "$(pwd)" --workspace <ws>`
 - Error → show it, ask for a different name.
 - Success → continue.
 
-## Step 4: Config files
+## Step 4: Write config files
 
 Run: `ls mouse.yaml MOUSE.md AGENTS.md 2>/dev/null`
 
-For each file that does NOT exist, ask one yes/no question. Write the exact template if yes. Skip if no or if file exists.
+Write any MISSING files immediately. Do NOT ask Y/n per file. Do NOT show file contents. Just write them and report what was done.
 
-### mouse.yaml
+For each file that ALREADY EXISTS, skip silently.
 
-Ask: "Write mouse.yaml? (Y/n):"
+### If mouse.yaml is missing, write exactly:
 
-If yes, write exactly:
 ```
 agent:
   primary: opencode
@@ -71,11 +70,8 @@ a2a:
   allow_outbound: true
 ```
 
-### MOUSE.md
+### If MOUSE.md is missing, write exactly (replace <project-name> with the actual project name):
 
-Ask: "Write MOUSE.md? (Y/n):"
-
-If yes, write exactly (replace <project-name> with the actual name):
 ```
 # <project-name> Agent Runbook
 
@@ -92,14 +88,13 @@ If yes, write exactly (replace <project-name> with the actual name):
 <what this agent must NOT do, escalation paths>
 ```
 
-### AGENTS.md
+### If AGENTS.md is missing, write exactly:
 
-Ask: "Write AGENTS.md? (Y/n):"
-
-If yes, write exactly:
 ```
 See ./MOUSE.md for this project's agent guide and ownership scope.
 ```
+
+After writing, report one line: "Wrote: mouse.yaml, MOUSE.md, AGENTS.md" (only the ones you wrote; skip existing ones from the list).
 
 ## Step 5: Done
 
