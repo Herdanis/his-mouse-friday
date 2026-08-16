@@ -1,0 +1,13 @@
+agent:
+  primary:
+    provider: opencode
+    model: default
+  secondary:
+    provider: ""
+    model: ""
+permissions:
+  fs: {}
+  commands: {}
+a2a:
+  allow_inbound: true
+  allow_outbound: true

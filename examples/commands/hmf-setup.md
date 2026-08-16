@@ -124,7 +124,7 @@ Use this structure, filling in the deny/ask lists from what the user answered:
 agent:
   primary:
     provider: opencode
-    model: default
+    model: modelnyaw/glm-5.2
   secondary:
     provider: ""
     model: ""
