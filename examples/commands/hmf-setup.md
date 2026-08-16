@@ -1,63 +1,77 @@
 ---
-description: Guided setup for his-mouse-friday — register workspace, project, generate config files
+description: Guided setup for his-mouse-friday — register workspace + project, write config files
 ---
-Guide the user through his-mouse-friday (hmf) setup interactively. Follow these steps in order. Use the available tools (bash, read, write, edit, glob) to execute. Show options clearly. Wait for user input at each decision point.
+Interactive setup wizard for his-mouse-friday. Present numbered options, let the user pick. Do NOT scan the repo, read manifests, or infer anything. Use templates. One question at a time, wait for the answer, then proceed.
 
 ## Step 1: Check daemon
 
-Run `hmf status`. If it fails (daemon not running), tell the user to run `hmf up` in a separate terminal first, then stop here. If running, show current state (workspaces, projects, sessions count) and continue.
+Run `hmf status`. 
 
-## Step 2: Pick or create workspace
+- If it fails: respond "Daemon not running. Run `hmf up` in a separate terminal, then run /hmf-setup again." and STOP. Do nothing else.
+- If running: show the status line (workspaces/projects/sessions count), then continue to Step 2.
 
-List existing workspaces by querying the daemon:
+## Step 2: Workspace
+
+Show the user a numbered list of existing workspaces by running:
 
 ```bash
-python3 -c "
-import socket, json
-s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-s.connect('/Users/herdanis/.hmf/daemon.sock')
-req = {'method':'status','params':{},'id':1}
-s.sendall((json.dumps(req)+'\n').encode())
-buf=b''
-while True:
-    c=s.recv(4096)
-    if not c: break
-    buf+=c
-    if b'\n' in buf: break
-print(buf.decode().strip())
-s.close()
-"
+hmf status
 ```
 
-Show the user:
-- Existing workspaces (if any) as numbered options
-- Option to create a new workspace
+Then ask ONE question:
 
-Ask: "Which workspace? (number or new name)"
+```
+Workspace:
+1. <existing-ws-1>
+2. <existing-ws-2>
+3. Create new workspace
+Pick a number: 
+```
 
-If new: run `hmf workspace add <name>`. If existing: use the selected name.
+- If they pick an existing workspace → use that name, go to Step 3.
+- If they pick "Create new" → ask "New workspace name: " then run `hmf workspace add <name>`. Go to Step 3.
 
-## Step 3: Register the project
+Do not proceed until the user answers.
 
-The current repo path is the cwd. Suggest a project name based on the directory name.
+## Step 3: Project name + path
 
-Ask: "Project name? (suggested: <dirname>)  Path? (default: <cwd>)"
+Suggest a project name from the current directory:
+
+```bash
+basename "$(pwd)"
+```
+
+Ask ONE question:
+
+```
+Project name (enter to accept "<suggested>"): 
+```
+
+- If user presses enter → use the suggested name.
+- If user types a name → use that.
+
+Path is always the current working directory. Do not ask for path.
 
 Then run:
 
 ```bash
-hmf project add <name> <path> --workspace <ws>
+hmf project add <name> "$(pwd)" --workspace <ws>
 ```
 
-If it errors (duplicate, bad path), show the error and retry.
+- If it errors: show the error, ask for a different name, retry.
+- If success: continue to Step 4.
 
-## Step 4: Generate config files
+## Step 4: Config files
 
-Check if `mouse.yaml`, `MOUSE.md`, `AGENTS.md` already exist in the repo root. For each missing file, generate it:
+Check which files exist in the repo root (`ls mouse.yaml MOUSE.md AGENTS.md 2>/dev/null`). For each MISSING file, tell the user what you'll write and ask yes/no:
 
-### mouse.yaml
+```
+Write mouse.yaml? (Y/n): 
+```
 
-Read the repo to infer: language (check for go.mod, package.json, Cargo.toml, etc.), framework, key dirs. Generate:
+If yes (or user presses enter), write the TEMPLATE below. If no, skip. If file already exists, skip silently.
+
+### mouse.yaml template (do not customize — user edits later)
 
 ```yaml
 agent:
@@ -66,54 +80,49 @@ agent:
 permissions:
   fs:
     paths:
-      "<src-dir>/**": allow
+      "src/**": allow
 a2a:
   allow_inbound: true
   allow_outbound: true
 ```
 
-Adjust `permissions.fs.paths` based on the repo structure (e.g., deny `.env`, `.terraform/`, `*.key`).
-
-### MOUSE.md
-
-Generate a runbook tailored to the repo. Scan for: README, existing AGENTS.md, package manifests, main entrypoints, test commands. Structure:
+### MOUSE.md template (do not customize — user edits later)
 
 ```markdown
-# <project> Agent Runbook
+# <project-name> Agent Runbook
 
 ## Ownership
-<inferred from README/package name>
+<what this agent owns>
 
 ## Conventions
-<language, test cmd, lint cmd if found>
+<coding standards, commit style, test commands>
 
 ## Dependencies
-<check for imports/requires of other services>
+<other services this one calls or is called by>
 
 ## Boundaries
-Don't modify other services directly — engage their agent via hmf.
+<what this agent must NOT do, escalation paths>
 ```
 
-### AGENTS.md
+Replace `<project-name>` with the actual project name. Leave the other placeholders as-is — the user fills them in.
+
+### AGENTS.md template
 
 ```markdown
-# AGENTS.md
-
 See ./MOUSE.md for this project's agent guide and ownership scope.
 ```
 
-Show the user each generated file and ask for confirmation before writing. If files already exist, skip (don't overwrite) and note it.
+## Step 5: Done
 
-## Step 5: Verify
+Print exactly:
 
-Run `hmf status` and show the result. Confirm the new project appears.
+```
+Registered: <workspace>/<project>
 
-List the project's canonical ID: `<workspace>/<project>`.
+Next:
+- Open opencode in this repo — agent now has hmf tools
+- Edit mouse.yaml + MOUSE.md to fit your project
+- Daemon must be running (hmf up) for orchestration
+```
 
-## Step 6: Next steps
-
-Tell the user:
-- Open opencode in this repo — the agent now has hmf tools (engage_project_agent, post_message, read_channel, read_thread, list_project_agents)
-- To engage another project's agent: the agent calls `engage_project_agent` with the target's `<workspace>/<project>` ID
-- Daemon must be running (`hmf up`) for orchestration to work
-- Config files (mouse.yaml) in other repos control inbound permission + agent binary
+Stop. Do not do anything else.
