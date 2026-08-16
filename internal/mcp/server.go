@@ -45,6 +45,27 @@ type ListInput struct {
 	Workspace string `json:"workspace,omitempty" jsonschema:"workspace name filter"`
 }
 
+type MessageOutput struct {
+	ID          int64  `json:"id"`
+	ChannelID   int64  `json:"channel_id"`
+	ThreadID    int64  `json:"thread_id"`
+	FromProject string `json:"from_project"`
+	ToProject   string `json:"to_project"`
+	Content     string `json:"content"`
+	Status      string `json:"status"`
+	TS          string `json:"ts"`
+}
+
+type MessagesOutput struct {
+	Messages []MessageOutput `json:"messages"`
+}
+
+type ProjectAgentOutput struct {
+	Workspace string `json:"workspace"`
+	Name      string `json:"name"`
+	Path      string `json:"path"`
+}
+
 // ============================================
 // Daemon client (unix socket)
 // ============================================
@@ -165,38 +186,50 @@ func newServer(callerID string) *mcpserver.Server {
 	mcpserver.AddTool(srv, &mcpserver.Tool{
 		Name:        "read_channel",
 		Description: "Read messages in a channel (defaults to this session's channel)",
-	}, func(ctx context.Context, req *mcpserver.CallToolRequest, in ReadChanInput) (*mcpserver.CallToolResult, json.RawMessage, error) {
+	}, func(ctx context.Context, req *mcpserver.CallToolRequest, in ReadChanInput) (*mcpserver.CallToolResult, MessagesOutput, error) {
 		ch := in.Channel
 		if ch == 0 {
 			ch = envChannelID()
 		}
 		result, err := callDaemon(ctx, "read_channel", map[string]any{"channel": ch})
 		if err != nil {
-			return nil, nil, err
+			return nil, MessagesOutput{}, err
 		}
-		return nil, result, nil
+		var msgs []MessageOutput
+		if err := json.Unmarshal(result, &msgs); err != nil {
+			return nil, MessagesOutput{}, fmt.Errorf("decode messages: %w", err)
+		}
+		return nil, MessagesOutput{Messages: msgs}, nil
 	})
 
 	mcpserver.AddTool(srv, &mcpserver.Tool{
 		Name:        "read_thread",
 		Description: "Read a message thread",
-	}, func(ctx context.Context, req *mcpserver.CallToolRequest, in ReadThreadInput) (*mcpserver.CallToolResult, json.RawMessage, error) {
+	}, func(ctx context.Context, req *mcpserver.CallToolRequest, in ReadThreadInput) (*mcpserver.CallToolResult, MessagesOutput, error) {
 		result, err := callDaemon(ctx, "read_thread", in)
 		if err != nil {
-			return nil, nil, err
+			return nil, MessagesOutput{}, err
 		}
-		return nil, result, nil
+		var msgs []MessageOutput
+		if err := json.Unmarshal(result, &msgs); err != nil {
+			return nil, MessagesOutput{}, fmt.Errorf("decode messages: %w", err)
+		}
+		return nil, MessagesOutput{Messages: msgs}, nil
 	})
 
 	mcpserver.AddTool(srv, &mcpserver.Tool{
 		Name:        "list_project_agents",
 		Description: "List registered project agents",
-	}, func(ctx context.Context, req *mcpserver.CallToolRequest, in ListInput) (*mcpserver.CallToolResult, json.RawMessage, error) {
+	}, func(ctx context.Context, req *mcpserver.CallToolRequest, in ListInput) (*mcpserver.CallToolResult, []ProjectAgentOutput, error) {
 		result, err := callDaemon(ctx, "list_project_agents", in)
 		if err != nil {
 			return nil, nil, err
 		}
-		return nil, result, nil
+		var agents []ProjectAgentOutput
+		if err := json.Unmarshal(result, &agents); err != nil {
+			return nil, nil, fmt.Errorf("decode agents: %w", err)
+		}
+		return nil, agents, nil
 	})
 
 	return srv
