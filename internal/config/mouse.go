@@ -19,8 +19,13 @@ type AgentConfig struct {
 }
 
 type PermissionsConfig struct {
-	FS    map[string]map[string]string `yaml:"fs"`
-	Azure map[string]map[string]string `yaml:"azure"`
+	FS FSPermissions `yaml:"fs"`
+}
+
+// FSPermissions uses gitignore-style deny patterns: everything is allowed
+// by default, paths matching a deny pattern are blocked. Empty deny = allow all.
+type FSPermissions struct {
+	Deny []string `yaml:"deny"`
 }
 
 type A2AConfig struct {

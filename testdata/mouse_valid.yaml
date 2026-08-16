@@ -3,13 +3,11 @@ agent:
   model: default
 permissions:
   fs:
-    paths:
-      "src/**": allow
-      ".terraform/**": deny
-  azure:
-    instances:
-      list: allow
-      write: deny
+    deny:
+      - ".env"
+      - "*.key"
+      - ".terraform/**"
+      - "secrets/**"
 a2a:
   allow_inbound: true
   allow_outbound: true

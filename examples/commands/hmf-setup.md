@@ -69,8 +69,9 @@ agent:
   model: default
 permissions:
   fs:
-    paths:
-      "src/**": allow
+    deny:
+      - ".env"
+      - "*.key"
 a2a:
   allow_inbound: true
   allow_outbound: true

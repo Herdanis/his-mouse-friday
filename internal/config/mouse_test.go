@@ -19,12 +19,20 @@ func TestLoadMouse_Valid(t *testing.T) {
 	if !cfg.A2A.AllowInbound {
 		t.Errorf("allow_inbound: got false want true")
 	}
-	if cfg.Permissions.FS["paths"]["src/**"] != "allow" {
-		t.Errorf("fs.paths src/**: got %q want allow", cfg.Permissions.FS["paths"]["src/**"])
+	denied := cfg.Permissions.FS.Deny
+	if len(denied) != 4 {
+		t.Fatalf("deny list: got %d entries want 4", len(denied))
 	}
-	if cfg.Permissions.Azure["instances"]["write"] != "deny" {
-		t.Errorf("azure.instances.write: got %q want deny", cfg.Permissions.Azure["instances"]["write"])
+	foundEnv := false
+	for _, p := range denied {
+		if p == ".env" {
+			foundEnv = true
+		}
 	}
+	if !foundEnv {
+		t.Errorf("deny list missing .env: %v", denied)
+	}
+	// Default: empty deny = allow all. Minimal config has no permissions block.
 }
 
 func TestLoadMouse_MissingFile(t *testing.T) {

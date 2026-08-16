@@ -3,9 +3,14 @@ agent:
   model: default
 permissions:
   fs:
-    paths:
-      "src/**": allow
-      ".terraform/**": deny
+    # Gitignore-style: everything allowed by default, deny patterns block access.
+    # Empty/missing deny = allow all.
+    deny:
+      - ".env"
+      - "*.key"
+      - "*.pem"
+      - ".terraform/**"
+      - "secrets/**"
 a2a:
   allow_inbound: true
   allow_outbound: true
