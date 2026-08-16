@@ -95,10 +95,10 @@ func callDaemon(ctx context.Context, method string, params any) (json.RawMessage
 // MCP server
 // ============================================
 
-// RunServer starts the hmf-mcp server over stdio and blocks until the context
-// is cancelled or the transport closes. It registers the 5 orchestration
-// tools, each backed by a callDaemon forward to the hmf daemon.
-func RunServer(ctx context.Context) error {
+// newServer builds the MCP server and registers the 5 orchestration tools.
+// Separated from RunServer so tests can verify registration without blocking
+// on stdio. Each tool is backed by a callDaemon forward to the hmf daemon.
+func newServer() *mcpserver.Server {
 	srv := mcpserver.NewServer(&mcpserver.Implementation{Name: "hmf-mcp", Version: "v0.1.0"}, nil)
 
 	mcpserver.AddTool(srv, &mcpserver.Tool{
@@ -159,5 +159,11 @@ func RunServer(ctx context.Context) error {
 		return nil, result, nil
 	})
 
-	return srv.Run(ctx, &mcpserver.StdioTransport{})
+	return srv
+}
+
+// RunServer starts the hmf-mcp server over stdio and blocks until the context
+// is cancelled or the transport closes.
+func RunServer(ctx context.Context) error {
+	return newServer().Run(ctx, &mcpserver.StdioTransport{})
 }
