@@ -7,7 +7,8 @@ editing foreign code directly.
 
 ## Install (dev)
 
-    go build ./cmd/hmf ./cmd/hmf-mcp
+    go install ./cmd/hmf
+    go install ./cmd/hmf-mcp
 
 ## Usage
 

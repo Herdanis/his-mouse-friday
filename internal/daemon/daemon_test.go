@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/herdanis/his-mouse-friday/internal/config"
 	"github.com/herdanis/his-mouse-friday/internal/protocol"
@@ -26,6 +27,7 @@ func setupDaemon(t *testing.T) *Daemon {
 		MouseLoader: func(path string) (*config.MouseConfig, error) {
 			return config.LoadMouse(path)
 		},
+		shutdownCh: make(chan struct{}),
 	}
 }
 
@@ -160,5 +162,66 @@ func TestServe_Smoke(t *testing.T) {
 	}
 	if !sr.Running || sr.Sock != sock {
 		t.Errorf("bad status: %+v", sr)
+	}
+}
+
+// TestServe_Shutdown verifies that a "shutdown" request stops the daemon:
+// Serve returns nil and the socket stops accepting new connections.
+func TestServe_Shutdown(t *testing.T) {
+	d := setupDaemon(t)
+	sock := filepath.Join(t.TempDir(), "daemon.sock")
+	d.Sock = sock
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- d.Serve(ctx) }()
+
+	// Wait for socket to accept connections (retry dial until ready).
+	var conn net.Conn
+	var err error
+	deadline, cancelWait := context.WithTimeout(ctx, awaitSockTimeout)
+	for {
+		conn, err = net.Dial("unix", sock)
+		if err == nil {
+			break
+		}
+		if deadline.Err() != nil {
+			cancelWait()
+			t.Fatalf("socket never accepted: %v", deadline.Err())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancelWait()
+	enc := json.NewEncoder(conn)
+	dec := json.NewDecoder(conn)
+	req := protocol.Request{Method: "shutdown", ID: 1}
+	if err := enc.Encode(&req); err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	var resp protocol.Response
+	if err := dec.Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Error != nil {
+		t.Fatalf("shutdown error: %s", resp.Error.Message)
+	}
+	conn.Close()
+
+	// Serve should return nil promptly.
+	select {
+	case err := <-serveErr:
+		if err != nil {
+			t.Errorf("Serve returned %v, want nil", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Serve did not return after shutdown")
+	}
+
+	// Socket file should be gone (Serve's defer ln.Close() doesn't unlink,
+	// but a new dial must fail — listener closed).
+	_, err = net.Dial("unix", sock)
+	if err == nil {
+		t.Error("dial succeeded after shutdown; listener should be closed")
 	}
 }

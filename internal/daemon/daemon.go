@@ -33,6 +33,7 @@ type Daemon struct {
 	Launcher    *Launcher
 	MouseLoader func(string) (*config.MouseConfig, error)
 	Sock        string
+	shutdownCh  chan struct{}
 }
 
 // NewDaemon wires a Daemon with default components for the given socket + db.
@@ -49,6 +50,7 @@ func NewDaemon(sock, dbPath string) (*Daemon, error) {
 		Launcher:    &Launcher{},
 		MouseLoader: config.LoadMouse,
 		Sock:        sock,
+		shutdownCh:  make(chan struct{}),
 	}, nil
 }
 
@@ -133,6 +135,12 @@ func (d *Daemon) Handle(ctx context.Context, req protocol.Request) protocol.Resp
 	case "status":
 		return d.handleStatus(req)
 	case "shutdown":
+		select {
+		case <-d.shutdownCh:
+			// already shutting down
+		default:
+			close(d.shutdownCh)
+		}
 		return protocol.Response{ID: req.ID, Result: json.RawMessage(`{}`)}
 	default:
 		return protocol.Response{ID: req.ID, Error: &protocol.ResponseError{Message: "unknown method: " + req.Method}}
@@ -325,7 +333,10 @@ func (d *Daemon) Serve(ctx context.Context) error {
 	}
 	defer ln.Close()
 	go func() {
-		<-ctx.Done()
+		select {
+		case <-ctx.Done():
+		case <-d.shutdownCh:
+		}
 		ln.Close()
 	}()
 	if err := d.Store.RunRetention(); err != nil {
@@ -334,6 +345,11 @@ func (d *Daemon) Serve(ctx context.Context) error {
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
+			select {
+			case <-d.shutdownCh:
+				return nil
+			default:
+			}
 			return ctx.Err()
 		}
 		go d.serveConn(ctx, conn)
