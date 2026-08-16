@@ -1,0 +1,15 @@
+agent:
+  primary: opencode
+  model: default
+permissions:
+  fs:
+    paths:
+      "src/**": allow
+      ".terraform/**": deny
+  azure:
+    instances:
+      list: allow
+      write: deny
+a2a:
+  allow_inbound: true
+  allow_outbound: true
