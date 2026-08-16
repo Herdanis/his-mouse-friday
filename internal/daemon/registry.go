@@ -110,15 +110,33 @@ func (r *Registry) ListProjects(wsName string) ([]Project, error) {
 }
 
 func (r *Registry) DeleteWorkspace(name string) error {
-	res, err := r.Store.db.Exec(`DELETE FROM workspaces WHERE name=?`, name)
+	tx, err := r.Store.db.Begin()
 	if err != nil {
 		return err
 	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
+	defer tx.Rollback()
+	var wsID int64
+	err = tx.QueryRow(`SELECT id FROM workspaces WHERE name=?`, name).Scan(&wsID)
+	if err != nil {
 		return ErrNotFound
 	}
-	return nil
+	// Order respects FKs: messages→channels, sessions→projects, channels→workspaces, projects→workspaces.
+	if _, err := tx.Exec(`DELETE FROM messages WHERE channel_id IN (SELECT id FROM channels WHERE workspace_id=?)`, wsID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM sessions WHERE project_id IN (SELECT id FROM projects WHERE workspace_id=?)`, wsID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM channels WHERE workspace_id=?`, wsID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM projects WHERE workspace_id=?`, wsID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM workspaces WHERE id=?`, wsID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (r *Registry) DeleteProject(wsName, projName string) error {

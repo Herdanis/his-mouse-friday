@@ -27,7 +27,10 @@ func TestSessionStore_CreateAndGet(t *testing.T) {
 }
 
 func TestSessionStore_SetStatus(t *testing.T) {
-	ss := &SessionStore{Store: newTestStore(t)}
+	store := newTestStore(t)
+	store.db.Exec(`INSERT INTO workspaces(id, name) VALUES(1, 'ws')`)
+	store.db.Exec(`INSERT INTO projects(id, workspace_id, name, path) VALUES(1, 1, 'p', '/tmp/p')`)
+	ss := &SessionStore{Store: store}
 	s, _ := ss.Create(1, "opencode", "default", 99)
 	if err := ss.SetStatus(s.ID, "failed"); err != nil {
 		t.Fatal(err)
