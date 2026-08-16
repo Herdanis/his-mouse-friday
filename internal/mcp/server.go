@@ -29,13 +29,13 @@ type EngageOutput struct {
 	ChannelID int64 `json:"channel_id"`
 }
 type PostInput struct {
-	Channel  int64  `json:"channel" jsonschema:"channel id"`
+	Channel  int64  `json:"channel,omitempty" jsonschema:"channel id (defaults to this session's channel)"`
 	ThreadID int64  `json:"thread_id,omitempty" jsonschema:"thread id for replies"`
 	To       string `json:"to,omitempty" jsonschema:"recipient workspace/project"`
 	Content  string `json:"content" jsonschema:"message content"`
 }
 type ReadChanInput struct {
-	Channel int64 `json:"channel" jsonschema:"channel id"`
+	Channel int64 `json:"channel,omitempty" jsonschema:"channel id (defaults to this session's channel)"`
 }
 type ReadThreadInput struct {
 	ThreadID int64 `json:"thread_id" jsonschema:"thread id"`
@@ -98,6 +98,14 @@ func resolveCaller(repoPath string) string {
 	return r.Workspace + "/" + r.Project
 }
 
+// envChannelID reads HMF_CHANNEL_ID (set when spawned by hmf engage).
+// Returns 0 if not set (user-initiated session).
+func envChannelID() int64 {
+	var id int64
+	fmt.Sscanf(os.Getenv("HMF_CHANNEL_ID"), "%d", &id)
+	return id
+}
+
 // ============================================
 // MCP server
 // ============================================
@@ -131,13 +139,17 @@ func newServer(callerID string) *mcpserver.Server {
 
 	mcpserver.AddTool(srv, &mcpserver.Tool{
 		Name:        "post_message",
-		Description: "Post a message to a channel or thread",
+		Description: "Post a message to a channel or thread (channel defaults to this session)",
 	}, func(ctx context.Context, req *mcpserver.CallToolRequest, in PostInput) (*mcpserver.CallToolResult, struct{}, error) {
+		ch := in.Channel
+		if ch == 0 {
+			ch = envChannelID()
+		}
 		params := map[string]any{
-			"channel":  in.Channel,
-			"from":     callerID,
-			"to":       in.To,
-			"content":  in.Content,
+			"channel": ch,
+			"from":    callerID,
+			"to":      in.To,
+			"content": in.Content,
 		}
 		if in.ThreadID != 0 {
 			params["thread_id"] = in.ThreadID
@@ -150,9 +162,13 @@ func newServer(callerID string) *mcpserver.Server {
 
 	mcpserver.AddTool(srv, &mcpserver.Tool{
 		Name:        "read_channel",
-		Description: "Read messages in a channel",
+		Description: "Read messages in a channel (defaults to this session's channel)",
 	}, func(ctx context.Context, req *mcpserver.CallToolRequest, in ReadChanInput) (*mcpserver.CallToolResult, json.RawMessage, error) {
-		result, err := callDaemon(ctx, "read_channel", in)
+		ch := in.Channel
+		if ch == 0 {
+			ch = envChannelID()
+		}
+		result, err := callDaemon(ctx, "read_channel", map[string]any{"channel": ch})
 		if err != nil {
 			return nil, nil, err
 		}
@@ -184,13 +200,17 @@ func newServer(callerID string) *mcpserver.Server {
 	return srv
 }
 
-// RunServer resolves the caller's identity from the repo path (cwd), then
-// starts the hmf-mcp server over stdio and blocks until the context is
-// cancelled or the transport closes.
+// RunServer resolves the caller's identity, then starts the hmf-mcp server.
+// If HMF_CHANNEL_ID is set (spawned by hmf engage), the caller is an engaged
+// agent — its identity comes from HMF_PROJECT env, and post_message auto-fills
+// the channel + from fields.
 func RunServer(ctx context.Context) error {
 	ensureDaemon(ctx)
-	repo, _ := os.Getwd()
-	callerID := resolveCaller(repo)
+	callerID := os.Getenv("HMF_PROJECT")
+	if callerID == "" {
+		repo, _ := os.Getwd()
+		callerID = resolveCaller(repo)
+	}
 	if callerID != "" {
 		fmt.Fprintf(os.Stderr, "hmf: ready (caller=%s)\n", callerID)
 	} else {

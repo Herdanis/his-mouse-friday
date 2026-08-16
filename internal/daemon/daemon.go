@@ -192,11 +192,8 @@ func (d *Daemon) handleEngage(ctx context.Context, req protocol.Request) protoco
 		}
 	}
 	runbook, _ := os.ReadFile(filepath.Join(proj.Path, "MOUSE.md"))
-	pid, err := d.Launcher.Spawn(ctx, proj.Path, binary, model, string(runbook))
-	if err != nil {
-		return errResp(req.ID, "spawn: "+err.Error())
-	}
-	sess, err := d.Sessions.Create(proj.ID, binary, model, pid)
+	// Create session + channel BEFORE spawn so we can pass IDs to the agent.
+	tmpSess, err := d.Sessions.Create(proj.ID, binary, model, 0)
 	if err != nil {
 		return errResp(req.ID, "session: "+err.Error())
 	}
@@ -208,7 +205,24 @@ func (d *Daemon) handleEngage(ctx context.Context, req protocol.Request) protoco
 	if err != nil {
 		return errResp(req.ID, "post task: "+err.Error())
 	}
-	result, _ := json.Marshal(EngageResult{SessionID: sess.ID, ChannelID: ch.ID})
+	pid, err := d.Launcher.Spawn(ctx, SpawnConfig{
+		Dir:       proj.Path,
+		Binary:    binary,
+		Model:     model,
+		Runbook:   string(runbook),
+		Task:      p.Task,
+		FromID:    p.From,
+		ProjectID: p.Project,
+		ChannelID: ch.ID,
+		SessionID: tmpSess.ID,
+	})
+	if err != nil {
+		d.Sessions.SetStatus(tmpSess.ID, "failed")
+		return errResp(req.ID, "spawn: "+err.Error())
+	}
+	d.Sessions.SetPID(tmpSess.ID, pid)
+	d.Sessions.SetStatus(tmpSess.ID, "active")
+	result, _ := json.Marshal(EngageResult{SessionID: tmpSess.ID, ChannelID: ch.ID})
 	return protocol.Response{ID: req.ID, Result: result}
 }
 

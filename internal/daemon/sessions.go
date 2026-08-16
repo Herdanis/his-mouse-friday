@@ -52,3 +52,8 @@ func (s *SessionStore) SetStatus(id int64, status string) error {
 	_, err := s.Store.db.Exec(`UPDATE sessions SET status=? WHERE id=?`, status, id)
 	return err
 }
+
+func (s *SessionStore) SetPID(id int64, pid int) error {
+	_, err := s.Store.db.Exec(`UPDATE sessions SET pid=? WHERE id=?`, pid, id)
+	return err
+}
