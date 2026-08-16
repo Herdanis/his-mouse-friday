@@ -59,49 +59,52 @@ Then run: `hmf project add <name> "$(pwd)" --workspace <ws>`
 
 ## Step 4: Permissions
 
-Before writing config files, ask the user what this project's agent should NOT do. Two questions.
+Before writing config files, ask the user what this project's agent should NOT do. Three questions. Each question: user types patterns (comma-separated), enters for defaults, or types "allow" to allow all (no restrictions).
 
-### Question 1: Command restrictions
+### Question 1: Command restrictions (deny)
 
 Show the user:
 
 ```
-Commands to DENY (agent cannot run, e.g. "kubectl delete", "gcloud * delete"):
-Type patterns separated by commas, or press enter for defaults:
-  kubectl delete, kubectl apply, gcloud * delete, aws * delete
+Commands to DENY (agent cannot run these):
+Type patterns separated by commas, or:
+  - press enter for defaults: kubectl delete, kubectl apply, gcloud * delete, aws * delete
+  - type "allow" to deny nothing (allow all commands)
 ```
 
-- If user types patterns → use them as the deny list.
-- If user presses enter (empty) → use the defaults shown.
-- If user types "none" → empty deny list (allow all commands).
+- Patterns → use them as the deny list.
+- Enter (empty) → use defaults shown.
+- "allow" → empty deny list (no commands blocked).
 
 ### Question 2: Command approval (ask)
 
 Show the user:
 
 ```
-Commands to ASK before running (e.g. "kubectl scale", "gcloud * update"):
-Type patterns separated by commas, or press enter for default:
-  kubectl scale
+Commands to ASK before running (agent needs approval):
+Type patterns separated by commas, or:
+  - press enter for default: kubectl scale
+  - type "allow" to ask for nothing (no approval needed)
 ```
 
-- If user types patterns → use them as the ask list.
-- If user presses enter (empty) → use the default shown.
-- If user types "none" → empty ask list.
+- Patterns → use them as the ask list.
+- Enter (empty) → use default shown.
+- "allow" → empty ask list (no approval prompts).
 
-### Question 3: File restrictions
+### Question 3: File restrictions (deny)
 
 Show the user:
 
 ```
-Files to DENY access (e.g. ".env", "*.key", "secrets/**"):
-Type patterns separated by commas, or press enter for defaults:
-  .env, *.key, .terraform/**, secrets/**
+Files to DENY access (agent cannot read/write these):
+Type patterns separated by commas, or:
+  - press enter for defaults: .env, *.key, .terraform/**, secrets/**
+  - type "allow" to deny nothing (allow all files)
 ```
 
-- If user types patterns → use them as the deny list.
-- If user presses enter (empty) → use the defaults shown.
-- If user types "none" → empty deny list (allow all files).
+- Patterns → use them as the deny list.
+- Enter (empty) → use defaults shown.
+- "allow" → empty deny list (no files blocked).
 
 Store the three answers. Use them when writing mouse.yaml + opencode.json in Step 5.
 
