@@ -1,7 +1,13 @@
 ---
 description: Guided setup for his-mouse-friday — register workspace + project, write config files
 ---
-Interactive setup wizard for his-mouse-friday. Ask one question at a time, wait for the answer, proceed. Do NOT explore the CLI with --help, do NOT scan the repo, do NOT read manifests. Run exact commands below, parse output, show options.
+Interactive setup wizard for his-mouse-friday. Ask one question at a time, wait for the answer, proceed.
+
+HARD RULES — violation = failure:
+- Do NOT show file contents in the chat. Ever. Write files silently.
+- Do NOT interpret user input. If they type "yes", that IS the project name.
+- Do NOT run --help on any command. Do NOT scan the repo. Do NOT read manifests.
+- Run exact commands below. Parse their output. Show numbered options.
 
 ## Step 1: Check daemon
 
@@ -14,7 +20,7 @@ Run: `hmf status`
 
 Run: `hmf workspace list`
 
-Parse the output (one workspace name per line). Show the user:
+Parse output (one workspace name per line). Show the user:
 
 ```
 Workspace:
@@ -27,7 +33,7 @@ Pick a number:
 - Number → use that workspace name.
 - Create new → ask "New workspace name:", then run `hmf workspace add <name>`.
 
-Wait for the user's answer before proceeding.
+Wait for the user's answer.
 
 ## Step 3: Project name
 
@@ -36,11 +42,11 @@ Run: `basename "$(pwd)"`
 Show the user:
 
 ```
-Project name (enter to accept "<suggested>"):
+Project name (press enter for "<suggested>", or type a name):
 ```
 
-- Empty → use suggested.
-- Typed → use that.
+- If the user's reply is empty → use the suggested name.
+- If the user's reply is non-empty → use it AS THE PROJECT NAME. Do not interpret it as yes/no/confirmation.
 
 Then run: `hmf project add <name> "$(pwd)" --workspace <ws>`
 
@@ -51,11 +57,11 @@ Then run: `hmf project add <name> "$(pwd)" --workspace <ws>`
 
 Run: `ls mouse.yaml MOUSE.md AGENTS.md 2>/dev/null`
 
-Write any MISSING files immediately. Do NOT ask Y/n per file. Do NOT show file contents. Just write them and report what was done.
+For each file that does NOT exist, write it using the write tool. Do NOT print the contents to the chat. Do NOT show what was written. Just write silently.
 
-For each file that ALREADY EXISTS, skip silently.
+For each file that ALREADY exists, skip it.
 
-### If mouse.yaml is missing, write exactly:
+### If mouse.yaml is missing, write this exact content:
 
 ```
 agent:
@@ -70,7 +76,7 @@ a2a:
   allow_outbound: true
 ```
 
-### If MOUSE.md is missing, write exactly (replace <project-name> with the actual project name):
+### If MOUSE.md is missing, write this exact content (replace <project-name> with the actual project name):
 
 ```
 # <project-name> Agent Runbook
@@ -88,13 +94,17 @@ a2a:
 <what this agent must NOT do, escalation paths>
 ```
 
-### If AGENTS.md is missing, write exactly:
+### If AGENTS.md is missing, write this exact content:
 
 ```
 See ./MOUSE.md for this project's agent guide and ownership scope.
 ```
 
-After writing, report one line: "Wrote: mouse.yaml, MOUSE.md, AGENTS.md" (only the ones you wrote; skip existing ones from the list).
+After writing, report ONLY this line (listing only files you wrote):
+
+```
+Wrote: mouse.yaml, MOUSE.md, AGENTS.md
+```
 
 ## Step 5: Done
 
