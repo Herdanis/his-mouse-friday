@@ -21,6 +21,20 @@ permissions:
     ask:
       - "migrations/**"
       - "Makefile"
+  commands:
+    # Same gitignore-style for CLI commands. Patterns match command prefixes.
+    # "kubectl delete" matches "kubectl delete pods foo".
+    # "*" within a pattern matches any single word (e.g. "gcloud * delete").
+    deny:
+      - "kubectl delete"
+      - "kubectl apply"
+      - "gcloud * delete"
+      - "gcloud * create"
+      - "aws * delete"
+      - "az * delete"
+    ask:
+      - "kubectl scale"
+      - "gcloud * update"
 a2a:
   allow_inbound: true
   allow_outbound: true

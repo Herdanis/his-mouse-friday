@@ -76,6 +76,14 @@ permissions:
     deny:
       - ".env"
       - "*.key"
+  commands:
+    deny:
+      - "kubectl delete"
+      - "kubectl apply"
+      - "gcloud * delete"
+      - "aws * delete"
+    ask:
+      - "kubectl scale"
 a2a:
   allow_inbound: true
   allow_outbound: true
@@ -105,10 +113,38 @@ a2a:
 See ./MOUSE.md for this project's agent guide and ownership scope.
 ```
 
+### Generate opencode.json (command enforcement)
+
+Read `mouse.yaml`. Extract `permissions.commands.deny` and `permissions.commands.ask` lists. Generate `opencode.json` that enforces these via opencode's native `permission.bash` system.
+
+If `opencode.json` already exists in the repo root, skip this step (don't overwrite user's config). Note it was skipped.
+
+If it does NOT exist, write `opencode.json` with this structure (use the actual patterns from mouse.yaml):
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "permission": {
+    "bash": {
+      "<deny-pattern-1>": "deny",
+      "<deny-pattern-2>": "deny",
+      "<ask-pattern-1>": "ask",
+      "*": "ask"
+    }
+  }
+}
+```
+
+Rules:
+- Every pattern from `commands.deny` → value `"deny"`.
+- Every pattern from `commands.ask` → value `"ask"`.
+- Add `"*": "ask"` as the last entry (default: ask for anything not explicitly allowed).
+- If both deny and ask lists are empty, still write `"*": "ask"` so the agent asks before running unknown commands.
+
 After writing, report ONLY this line (listing only files you wrote):
 
 ```
-Wrote: mouse.yaml, MOUSE.md, AGENTS.md
+Wrote: mouse.yaml, MOUSE.md, AGENTS.md, opencode.json
 ```
 
 ## Step 5: Done

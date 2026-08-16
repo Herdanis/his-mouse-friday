@@ -39,6 +39,19 @@ func TestLoadMouse_Valid(t *testing.T) {
 	if len(asked) != 2 {
 		t.Fatalf("ask list: got %d entries want 2", len(asked))
 	}
+	cmdDeny := cfg.Permissions.Commands.Deny
+	if len(cmdDeny) != 6 {
+		t.Fatalf("commands.deny: got %d entries want 6", len(cmdDeny))
+	}
+	foundKubectlDelete := false
+	for _, c := range cmdDeny {
+		if c == "kubectl delete" {
+			foundKubectlDelete = true
+		}
+	}
+	if !foundKubectlDelete {
+		t.Errorf("commands.deny missing 'kubectl delete': %v", cmdDeny)
+	}
 }
 
 func TestLoadMouse_MissingFile(t *testing.T) {

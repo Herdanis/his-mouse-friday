@@ -6,5 +6,15 @@
       "command": ["hmf-mcp"],
       "enabled": true
     }
+  },
+  "permission": {
+    "bash": {
+      "kubectl delete": "deny",
+      "kubectl apply": "deny",
+      "gcloud * delete": "deny",
+      "aws * delete": "deny",
+      "kubectl scale": "ask",
+      "*": "ask"
+    }
   }
 }

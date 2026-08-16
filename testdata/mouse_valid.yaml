@@ -15,6 +15,17 @@ permissions:
     ask:
       - "migrations/**"
       - "Makefile"
+  commands:
+    deny:
+      - "kubectl delete"
+      - "kubectl apply"
+      - "gcloud * delete"
+      - "gcloud * create"
+      - "aws * delete"
+      - "az * delete"
+    ask:
+      - "kubectl scale"
+      - "gcloud * update"
 a2a:
   allow_inbound: true
   allow_outbound: true

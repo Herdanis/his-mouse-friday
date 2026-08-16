@@ -49,6 +49,10 @@ Then in any opencode session:
 
 4. Add `mouse.yaml` + `MOUSE.md` to each repo (see `examples/`).
    Set `a2a.allow_inbound: true` on repos other agents may engage.
+   `mouse.yaml` declares command + filesystem permissions (gitignore-style:
+   deny / ask / allow). `/hmf-setup` auto-generates `opencode.json` from it,
+   so opencode enforces the policy natively — agents physically cannot run
+   denied commands (e.g. `kubectl delete`, `gcloud * delete`).
 
 5. Open opencode in a registered repo. The agent now has 5 tools:
    `engage_project_agent`, `post_message`, `read_channel`, `read_thread`,

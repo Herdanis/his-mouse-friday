@@ -25,7 +25,8 @@ type AgentTarget struct {
 }
 
 type PermissionsConfig struct {
-	FS FSPermissions `yaml:"fs"`
+	FS       FSPermissions       `yaml:"fs"`
+	Commands CommandPermissions  `yaml:"commands"`
 }
 
 // FSPermissions uses gitignore-style patterns with three modes:
@@ -34,6 +35,14 @@ type PermissionsConfig struct {
 //   - (default): allowed
 // Deny wins over ask. Empty lists = allow all.
 type FSPermissions struct {
+	Deny []string `yaml:"deny"`
+	Ask  []string `yaml:"ask"`
+}
+
+// CommandPermissions controls CLI commands the agent may run.
+// Patterns match command prefixes (e.g. "kubectl delete" matches
+// "kubectl delete pods foo"). Same three modes as FS; deny wins over ask.
+type CommandPermissions struct {
 	Deny []string `yaml:"deny"`
 	Ask  []string `yaml:"ask"`
 }
