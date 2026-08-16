@@ -61,23 +61,7 @@ Then run: `hmf project add <name> "$(pwd)" --workspace <ws>`
 
 Run: `ls mouse.yaml MOUSE.md AGENTS.md opencode.json 2>/dev/null`
 
-Check which files are missing. Show the user a numbered list of what will be created:
-
-```
-Config files to create:
-1. mouse.yaml
-2. MOUSE.md
-3. AGENTS.md
-4. opencode.json
-5. Create all
-Pick a number:
-```
-
-- Number 1-4 → write only that file.
-- 5 → write all missing files.
-- If a file already exists, it is skipped (not shown).
-
-Wait for the user's answer. Then write the selected file(s) using the write tool. Do NOT print contents to the chat. Write silently.
+Write all missing files immediately. Do NOT ask which ones. Do NOT show file contents. Do NOT print what was written. Just write silently.
 
 For each file that ALREADY exists, skip it.
 
