@@ -1,0 +1,14 @@
+# ============================================
+# Pre-commit hooks: go vet, go test, gitleaks
+# ============================================
+pre-commit:
+  parallel: true
+  commands:
+    go-vet:
+      glob: "*.go"
+      run: go vet ./...
+    go-test:
+      glob: "*.go"
+      run: go test ./...
+    gitleaks:
+      run: gitleaks protect --staged --redact --no-banner
