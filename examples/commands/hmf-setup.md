@@ -42,11 +42,14 @@ Run: `basename "$(pwd)"`
 Show the user:
 
 ```
-Use "<suggested>" as project name? (y/n):
+Project name:
+1. <suggested>
+2. Type a different name
+Pick a number:
 ```
 
-- If reply is "y" or "yes" (case-insensitive) → use the suggested name.
-- If reply is "n" or "no" → ask "Project name:", then use what they type.
+- 1 → use the suggested name.
+- 2 → ask "Project name:", then use what they type.
 - Any other reply → ask again.
 
 Then run: `hmf project add <name> "$(pwd)" --workspace <ws>`
