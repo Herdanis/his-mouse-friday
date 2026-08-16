@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"text/tabwriter"
 
 	"github.com/herdanis/his-mouse-friday/internal/daemon"
 	"github.com/herdanis/his-mouse-friday/internal/protocol"
@@ -118,9 +119,12 @@ func workspaceCmd() *cobra.Command {
 				fmt.Println("(no workspaces)")
 				return nil
 			}
+			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+			fmt.Fprintln(w, "NAME")
 			for _, n := range names {
-				fmt.Println(n)
+				fmt.Fprintf(w, "%s\n", n)
 			}
+			w.Flush()
 			return nil
 		},
 	}
@@ -199,9 +203,12 @@ func projectCmd() *cobra.Command {
 				fmt.Println("(no projects)")
 				return nil
 			}
+			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+			fmt.Fprintln(w, "WORKSPACE\tNAME\tPATH")
 			for _, it := range items {
-				fmt.Printf("%s/%s\t%s\n", it.Workspace, it.Name, it.Path)
+				fmt.Fprintf(w, "%s\t%s\t%s\n", it.Workspace, it.Name, it.Path)
 			}
+			w.Flush()
 			return nil
 		},
 	}
