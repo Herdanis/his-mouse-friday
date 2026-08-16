@@ -47,6 +47,7 @@ func NewRootCmd() *cobra.Command {
 	root.AddCommand(workspaceCmd())
 	root.AddCommand(projectCmd())
 	root.AddCommand(statusCmd())
+	root.AddCommand(initCmd())
 	root.AddCommand(configCmd())
 	return root
 }
@@ -265,10 +266,8 @@ func statusCmd() *cobra.Command {
 	}
 }
 
-func configCmd() *cobra.Command {
-	c := &cobra.Command{Use: "config", Short: "Manage global default configuration"}
-
-	init := &cobra.Command{
+func initCmd() *cobra.Command {
+	return &cobra.Command{
 		Use:   "init",
 		Short: "Create global default mouse.yaml (~/.hmf/mouse.yaml)",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -312,7 +311,10 @@ a2a:
 			return nil
 		},
 	}
+}
 
+func configCmd() *cobra.Command {
+	c := &cobra.Command{Use: "config", Short: "Manage global default configuration"}
 	show := &cobra.Command{
 		Use:   "show",
 		Short: "Show global default mouse.yaml",
@@ -321,7 +323,7 @@ a2a:
 			b, err := os.ReadFile(path)
 			if err != nil {
 				if os.IsNotExist(err) {
-					fmt.Println("no global config. Run 'hmf config init' to create one.")
+					fmt.Println("no global config. Run 'hmf init' to create one.")
 					return nil
 				}
 				return err
@@ -330,8 +332,6 @@ a2a:
 			return nil
 		},
 	}
-
-	c.AddCommand(init)
 	c.AddCommand(show)
 	return c
 }
