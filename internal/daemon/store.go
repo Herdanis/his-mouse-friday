@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS messages (
   from_project TEXT NOT NULL,
   to_project   TEXT,
   content      TEXT NOT NULL,
+  status       TEXT NOT NULL DEFAULT 'message',
   ts           DATETIME NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_messages_channel_ts ON messages(channel_id, ts);
@@ -64,6 +65,8 @@ func OpenStore(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	// Migrate: add status column if missing (pre-existing DBs).
+	db.Exec(`ALTER TABLE messages ADD COLUMN status TEXT NOT NULL DEFAULT 'message'`)
 	return &Store{db: db}, nil
 }
 

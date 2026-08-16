@@ -18,11 +18,11 @@ func TestComms_CreateDMAndPost(t *testing.T) {
 		t.Errorf("type: got %q want dm", ch.Type)
 	}
 
-	msg, err := c.PostMessage(ch.ID, 0, "companyA/payment", "companyA/user", "add field X")
+	msg, err := c.PostMessage(ch.ID, 0, "companyA/payment", "companyA/user", "add field X", "delivered")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if msg.Content != "add field X" || msg.FromProject != "companyA/payment" {
+	if msg.Content != "add field X" || msg.FromProject != "companyA/payment" || msg.Status != "delivered" {
 		t.Errorf("got %+v", msg)
 	}
 }
@@ -32,8 +32,8 @@ func TestComms_ReadChannel(t *testing.T) {
 	store.db.Exec(`INSERT INTO workspaces(id, name) VALUES(1, 'companyA')`)
 	c := &Comms{Store: store}
 	ch, _ := c.CreateDMChannel(1, "a/b", "a/c")
-	c.PostMessage(ch.ID, 0, "a/b", "a/c", "first")
-	c.PostMessage(ch.ID, 0, "a/b", "a/c", "second")
+	c.PostMessage(ch.ID, 0, "a/b", "a/c", "first", "message")
+	c.PostMessage(ch.ID, 0, "a/b", "a/c", "second", "message")
 
 	msgs, err := c.ReadChannel(ch.ID, time.Time{})
 	if err != nil {
@@ -52,8 +52,8 @@ func TestComms_Threading(t *testing.T) {
 	store.db.Exec(`INSERT INTO workspaces(id, name) VALUES(1, 'companyA')`)
 	c := &Comms{Store: store}
 	ch, _ := c.CreateDMChannel(1, "a/b", "a/c")
-	parent, _ := c.PostMessage(ch.ID, 0, "a/b", "a/c", "parent")
-	reply, _ := c.PostMessage(ch.ID, parent.ID, "a/c", "a/b", "reply")
+	parent, _ := c.PostMessage(ch.ID, 0, "a/b", "a/c", "parent", "message")
+	reply, _ := c.PostMessage(ch.ID, parent.ID, "a/c", "a/b", "reply", "message")
 
 	thread, err := c.ReadThread(parent.ID)
 	if err != nil {

@@ -33,6 +33,7 @@ type PostInput struct {
 	ThreadID int64  `json:"thread_id,omitempty" jsonschema:"thread id for replies"`
 	To       string `json:"to,omitempty" jsonschema:"recipient workspace/project"`
 	Content  string `json:"content" jsonschema:"message content"`
+	Status   string `json:"status,omitempty" jsonschema:"delivered | in_progress | done | message (default)"`
 }
 type ReadChanInput struct {
 	Channel int64 `json:"channel,omitempty" jsonschema:"channel id (defaults to this session's channel)"`
@@ -150,6 +151,7 @@ func newServer(callerID string) *mcpserver.Server {
 			"from":    callerID,
 			"to":      in.To,
 			"content": in.Content,
+			"status":  in.Status,
 		}
 		if in.ThreadID != 0 {
 			params["thread_id"] = in.ThreadID

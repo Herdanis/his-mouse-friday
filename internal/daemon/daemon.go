@@ -74,6 +74,7 @@ type PostParams struct {
 	From     string `json:"from"`
 	To       string `json:"to"`
 	Content  string `json:"content"`
+	Status   string `json:"status,omitempty"` // delivered | in_progress | done | message (default)
 }
 type PostResult struct {
 	MessageID int64 `json:"message_id"`
@@ -201,7 +202,7 @@ func (d *Daemon) handleEngage(ctx context.Context, req protocol.Request) protoco
 	if err != nil {
 		return errResp(req.ID, "channel: "+err.Error())
 	}
-	_, err = d.Comms.PostMessage(ch.ID, 0, p.From, p.Project, p.Task)
+	_, err = d.Comms.PostMessage(ch.ID, 0, p.From, p.Project, p.Task, "delivered")
 	if err != nil {
 		return errResp(req.ID, "post task: "+err.Error())
 	}
@@ -240,7 +241,7 @@ func (d *Daemon) handlePost(req protocol.Request) protocol.Response {
 	if err := json.Unmarshal(req.Params, &p); err != nil {
 		return errResp(req.ID, "bad params: "+err.Error())
 	}
-	msg, err := d.Comms.PostMessage(p.Channel, p.ThreadID, p.From, p.To, p.Content)
+	msg, err := d.Comms.PostMessage(p.Channel, p.ThreadID, p.From, p.To, p.Content, p.Status)
 	if err != nil {
 		return errResp(req.ID, err.Error())
 	}

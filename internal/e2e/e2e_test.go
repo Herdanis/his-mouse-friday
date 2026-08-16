@@ -54,33 +54,47 @@ func TestVerticalSlice(t *testing.T) {
 		t.Fatalf("engage returned %+v", engage)
 	}
 
-	// user-service-agent posts done.
+	// user-service-agent posts in_progress then done.
+	mustSend(t, d, "post_message", map[string]any{
+		"channel": engage.ChannelID,
+		"from":    "companyA/user-service",
+		"to":      "companyA/payment-service",
+		"content": "working on it",
+		"status":  "in_progress",
+	})
 	mustSend(t, d, "post_message", map[string]any{
 		"channel": engage.ChannelID,
 		"from":    "companyA/user-service",
 		"to":      "companyA/payment-service",
 		"content": "done, added payment_status to User model",
+		"status":  "done",
 	})
 
 	// payment-agent reads channel.
 	readResp := mustSend(t, d, "read_channel", map[string]any{"channel": engage.ChannelID})
 	var msgs []daemon.Message
 	json.Unmarshal(readResp.Result, &msgs)
-	if len(msgs) != 2 {
-		t.Fatalf("expected 2 messages, got %d", len(msgs))
+	if len(msgs) != 3 {
+		t.Fatalf("expected 3 messages, got %d", len(msgs))
 	}
 
-	// Verify task message: from payment → user-service.
+	// Verify task message: status=delivered.
 	task := msgs[0]
 	if task.FromProject != "companyA/payment-service" || task.ToProject != "companyA/user-service" {
 		t.Errorf("task sender: from=%q to=%q, want payment→user-service", task.FromProject, task.ToProject)
+	}
+	if task.Status != "delivered" {
+		t.Errorf("task status: %q want delivered", task.Status)
 	}
 	if task.Content != "add payment_status field to User" {
 		t.Errorf("task content: %q", task.Content)
 	}
 
-	// Verify reply: from user-service → payment.
-	reply := msgs[1]
+	// Verify in_progress + done.
+	if msgs[1].Status != "in_progress" {
+		t.Errorf("msg 1 status: %q want in_progress", msgs[1].Status)
+	}
+	reply := msgs[2]
 	if reply.FromProject != "companyA/user-service" || reply.ToProject != "companyA/payment-service" {
 		t.Errorf("reply sender: from=%q to=%q, want user-service→payment", reply.FromProject, reply.ToProject)
 	}
