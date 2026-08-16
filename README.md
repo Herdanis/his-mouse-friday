@@ -12,6 +12,18 @@ editing foreign code directly.
 
 ## Setup
 
+**Option A — Slash command (recommended):**
+
+Copy the commands to your opencode config:
+
+    cp examples/commands/hmf-*.md ~/.config/opencode/commands/
+
+Then in any opencode session:
+- `/hmf-setup` — full guided setup (workspace, project, config files, tailored MOUSE.md)
+- `/hmf-register` — fast registration (one question, minimal config)
+
+**Option B — Manual:**
+
 1. Start the daemon:
 
        hmf up
