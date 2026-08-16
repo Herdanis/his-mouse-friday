@@ -134,8 +134,12 @@ func (d *Daemon) Handle(ctx context.Context, req protocol.Request) protocol.Resp
 		return d.handleResolve(req)
 	case "workspace_add":
 		return d.handleWorkspaceAdd(req)
+	case "workspace_list":
+		return d.handleWorkspaceList(req)
 	case "project_add":
 		return d.handleProjectAdd(req)
+	case "project_list":
+		return d.handleProjectList(req)
 	case "status":
 		return d.handleStatus(req)
 	case "shutdown":
@@ -311,6 +315,70 @@ func (d *Daemon) handleProjectAdd(req protocol.Request) protocol.Response {
 		return errResp(req.ID, err.Error())
 	}
 	result, _ := json.Marshal(ProjectAddResult{ID: proj.ID})
+	return protocol.Response{ID: req.ID, Result: result}
+}
+
+func (d *Daemon) handleWorkspaceList(req protocol.Request) protocol.Response {
+	rows, err := d.Store.db.Query(`SELECT name FROM workspaces ORDER BY name`)
+	if err != nil {
+		return errResp(req.ID, err.Error())
+	}
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			return errResp(req.ID, err.Error())
+		}
+		names = append(names, n)
+	}
+	if names == nil {
+		names = []string{}
+	}
+	result, _ := json.Marshal(names)
+	return protocol.Response{ID: req.ID, Result: result}
+}
+
+func (d *Daemon) handleProjectList(req protocol.Request) protocol.Response {
+	var p ListParams
+	if len(req.Params) > 0 {
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			return errResp(req.ID, "bad params: "+err.Error())
+		}
+	}
+	type item struct {
+		Workspace string `json:"workspace"`
+		Name      string `json:"name"`
+		Path      string `json:"path"`
+	}
+	var out []item
+	if p.Workspace != "" {
+		projs, err := d.Registry.ListProjects(p.Workspace)
+		if err != nil {
+			return errResp(req.ID, err.Error())
+		}
+		for _, pr := range projs {
+			out = append(out, item{Workspace: p.Workspace, Name: pr.Name, Path: pr.Path})
+		}
+	} else {
+		rows, err := d.Store.db.Query(
+			`SELECT w.name, p.name, p.path FROM projects p JOIN workspaces w ON p.workspace_id=w.id ORDER BY w.name, p.name`)
+		if err != nil {
+			return errResp(req.ID, err.Error())
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var it item
+			if err := rows.Scan(&it.Workspace, &it.Name, &it.Path); err != nil {
+				return errResp(req.ID, err.Error())
+			}
+			out = append(out, it)
+		}
+	}
+	if out == nil {
+		out = []item{}
+	}
+	result, _ := json.Marshal(out)
 	return protocol.Response{ID: req.ID, Result: result}
 }
 

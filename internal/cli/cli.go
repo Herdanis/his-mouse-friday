@@ -99,7 +99,33 @@ func workspaceCmd() *cobra.Command {
 			return nil
 		},
 	}
+	list := &cobra.Command{
+		Use:   "list",
+		Short: "List all workspaces",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			resp, err := callDaemon("workspace_list", struct{}{})
+			if err != nil {
+				return err
+			}
+			if resp.Error != nil {
+				return fmt.Errorf("%s", resp.Error.Message)
+			}
+			var names []string
+			if err := json.Unmarshal(resp.Result, &names); err != nil {
+				return fmt.Errorf("parse: %w", err)
+			}
+			if len(names) == 0 {
+				fmt.Println("(no workspaces)")
+				return nil
+			}
+			for _, n := range names {
+				fmt.Println(n)
+			}
+			return nil
+		},
+	}
 	c.AddCommand(add)
+	c.AddCommand(list)
 	return c
 }
 
@@ -127,7 +153,45 @@ func projectCmd() *cobra.Command {
 	}
 	add.Flags().StringVar(&ws, "workspace", "", "workspace name")
 	add.MarkFlagRequired("workspace")
+
+	var listWs string
+	list := &cobra.Command{
+		Use:   "list",
+		Short: "List projects (optionally filtered by workspace)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			params := map[string]any{}
+			if listWs != "" {
+				params["workspace"] = listWs
+			}
+			resp, err := callDaemon("project_list", params)
+			if err != nil {
+				return err
+			}
+			if resp.Error != nil {
+				return fmt.Errorf("%s", resp.Error.Message)
+			}
+			var items []struct {
+				Workspace string `json:"workspace"`
+				Name      string `json:"name"`
+				Path      string `json:"path"`
+			}
+			if err := json.Unmarshal(resp.Result, &items); err != nil {
+				return fmt.Errorf("parse: %w", err)
+			}
+			if len(items) == 0 {
+				fmt.Println("(no projects)")
+				return nil
+			}
+			for _, it := range items {
+				fmt.Printf("%s/%s\t%s\n", it.Workspace, it.Name, it.Path)
+			}
+			return nil
+		},
+	}
+	list.Flags().StringVar(&listWs, "workspace", "", "filter by workspace")
+
 	c.AddCommand(add)
+	c.AddCommand(list)
 	return c
 }
 

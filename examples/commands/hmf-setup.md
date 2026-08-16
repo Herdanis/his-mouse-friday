@@ -1,79 +1,64 @@
 ---
 description: Guided setup for his-mouse-friday — register workspace + project, write config files
 ---
-Interactive setup wizard for his-mouse-friday. Present numbered options, let the user pick. Do NOT scan the repo, read manifests, or infer anything. Use templates. One question at a time, wait for the answer, then proceed.
+Interactive setup wizard for his-mouse-friday. Ask one question at a time, wait for the answer, proceed. Do NOT explore the CLI with --help, do NOT scan the repo, do NOT read manifests. Run exact commands below, parse output, show options.
 
 ## Step 1: Check daemon
 
-Run `hmf status`. 
+Run: `hmf status`
 
-- If it fails: respond "Daemon not running. Run `hmf up` in a separate terminal, then run /hmf-setup again." and STOP. Do nothing else.
-- If running: show the status line (workspaces/projects/sessions count), then continue to Step 2.
+- If it fails: respond "Daemon not running. Run `hmf up` in a separate terminal, then run /hmf-setup again." and STOP.
+- If running: say "Daemon running." and continue.
 
 ## Step 2: Workspace
 
-Show the user a numbered list of existing workspaces by running:
+Run: `hmf workspace list`
 
-```bash
-hmf status
-```
-
-Then ask ONE question:
+Parse the output (one workspace name per line). Show the user:
 
 ```
 Workspace:
-1. <existing-ws-1>
-2. <existing-ws-2>
+1. <name-1>
+2. <name-2>
 3. Create new workspace
-Pick a number: 
+Pick a number:
 ```
 
-- If they pick an existing workspace → use that name, go to Step 3.
-- If they pick "Create new" → ask "New workspace name: " then run `hmf workspace add <name>`. Go to Step 3.
+- Number → use that workspace name.
+- Create new → ask "New workspace name:", then run `hmf workspace add <name>`.
 
-Do not proceed until the user answers.
+Wait for the user's answer before proceeding.
 
-## Step 3: Project name + path
+## Step 3: Project name
 
-Suggest a project name from the current directory:
+Run: `basename "$(pwd)"`
 
-```bash
-basename "$(pwd)"
-```
-
-Ask ONE question:
+Show the user:
 
 ```
-Project name (enter to accept "<suggested>"): 
+Project name (enter to accept "<suggested>"):
 ```
 
-- If user presses enter → use the suggested name.
-- If user types a name → use that.
+- Empty → use suggested.
+- Typed → use that.
 
-Path is always the current working directory. Do not ask for path.
+Then run: `hmf project add <name> "$(pwd)" --workspace <ws>`
 
-Then run:
-
-```bash
-hmf project add <name> "$(pwd)" --workspace <ws>
-```
-
-- If it errors: show the error, ask for a different name, retry.
-- If success: continue to Step 4.
+- Error → show it, ask for a different name.
+- Success → continue.
 
 ## Step 4: Config files
 
-Check which files exist in the repo root (`ls mouse.yaml MOUSE.md AGENTS.md 2>/dev/null`). For each MISSING file, tell the user what you'll write and ask yes/no:
+Run: `ls mouse.yaml MOUSE.md AGENTS.md 2>/dev/null`
 
+For each file that does NOT exist, ask one yes/no question. Write the exact template if yes. Skip if no or if file exists.
+
+### mouse.yaml
+
+Ask: "Write mouse.yaml? (Y/n):"
+
+If yes, write exactly:
 ```
-Write mouse.yaml? (Y/n): 
-```
-
-If yes (or user presses enter), write the TEMPLATE below. If no, skip. If file already exists, skip silently.
-
-### mouse.yaml template (do not customize — user edits later)
-
-```yaml
 agent:
   primary: opencode
   model: default
@@ -86,9 +71,12 @@ a2a:
   allow_outbound: true
 ```
 
-### MOUSE.md template (do not customize — user edits later)
+### MOUSE.md
 
-```markdown
+Ask: "Write MOUSE.md? (Y/n):"
+
+If yes, write exactly (replace <project-name> with the actual name):
+```
 # <project-name> Agent Runbook
 
 ## Ownership
@@ -104,11 +92,12 @@ a2a:
 <what this agent must NOT do, escalation paths>
 ```
 
-Replace `<project-name>` with the actual project name. Leave the other placeholders as-is — the user fills them in.
+### AGENTS.md
 
-### AGENTS.md template
+Ask: "Write AGENTS.md? (Y/n):"
 
-```markdown
+If yes, write exactly:
+```
 See ./MOUSE.md for this project's agent guide and ownership scope.
 ```
 
@@ -125,4 +114,4 @@ Next:
 - Daemon must be running (hmf up) for orchestration
 ```
 
-Stop. Do not do anything else.
+Stop. Nothing else.
