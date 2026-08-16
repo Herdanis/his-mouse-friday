@@ -57,7 +57,55 @@ Then run: `hmf project add <name> "$(pwd)" --workspace <ws>`
 - Error → show it, ask for a different name.
 - Success → continue.
 
-## Step 4: Write config files
+## Step 4: Permissions
+
+Before writing config files, ask the user what this project's agent should NOT do. Two questions.
+
+### Question 1: Command restrictions
+
+Show the user:
+
+```
+Commands to DENY (agent cannot run, e.g. "kubectl delete", "gcloud * delete"):
+Type patterns separated by commas, or press enter for defaults:
+  kubectl delete, kubectl apply, gcloud * delete, aws * delete
+```
+
+- If user types patterns → use them as the deny list.
+- If user presses enter (empty) → use the defaults shown.
+- If user types "none" → empty deny list (allow all commands).
+
+### Question 2: Command approval (ask)
+
+Show the user:
+
+```
+Commands to ASK before running (e.g. "kubectl scale", "gcloud * update"):
+Type patterns separated by commas, or press enter for default:
+  kubectl scale
+```
+
+- If user types patterns → use them as the ask list.
+- If user presses enter (empty) → use the default shown.
+- If user types "none" → empty ask list.
+
+### Question 3: File restrictions
+
+Show the user:
+
+```
+Files to DENY access (e.g. ".env", "*.key", "secrets/**"):
+Type patterns separated by commas, or press enter for defaults:
+  .env, *.key, .terraform/**, secrets/**
+```
+
+- If user types patterns → use them as the deny list.
+- If user presses enter (empty) → use the defaults shown.
+- If user types "none" → empty deny list (allow all files).
+
+Store the three answers. Use them when writing mouse.yaml + opencode.json in Step 5.
+
+## Step 5: Write config files
 
 Run: `ls mouse.yaml MOUSE.md AGENTS.md opencode.json 2>/dev/null`
 
@@ -65,7 +113,9 @@ Write all missing files immediately. Do NOT ask which ones. Do NOT show file con
 
 For each file that ALREADY exists, skip it.
 
-### If mouse.yaml is missing, write this exact content:
+### If mouse.yaml is missing, write it using the user's answers from Step 4.
+
+Use this structure, filling in the deny/ask lists from what the user answered:
 
 ```
 agent:
@@ -78,20 +128,20 @@ agent:
 permissions:
   fs:
     deny:
-      - ".env"
-      - "*.key"
+      - "<file-deny-pattern-1>"
+      - "<file-deny-pattern-2>"
   commands:
     deny:
-      - "kubectl delete"
-      - "kubectl apply"
-      - "gcloud * delete"
-      - "aws * delete"
+      - "<cmd-deny-pattern-1>"
+      - "<cmd-deny-pattern-2>"
     ask:
-      - "kubectl scale"
+      - "<cmd-ask-pattern-1>"
 a2a:
   allow_inbound: true
   allow_outbound: true
 ```
+
+If a list is empty (user said "none"), omit that key entirely (e.g. no `ask:` block if empty).
 
 ### If MOUSE.md is missing, write this exact content (replace <project-name> with the actual project name):
 
@@ -119,11 +169,11 @@ See ./MOUSE.md for this project's agent guide and ownership scope.
 
 ### Generate opencode.json (command enforcement)
 
-Read `mouse.yaml`. Extract `permissions.commands.deny` and `permissions.commands.ask` lists. Generate `opencode.json` that enforces these via opencode's native `permission.bash` system.
+Use the command deny/ask lists from Step 4 (the same answers used for mouse.yaml). Do NOT re-read mouse.yaml — use the stored answers.
 
 If `opencode.json` already exists in the repo root, skip this step (don't overwrite user's config). Note it was skipped.
 
-If it does NOT exist, write `opencode.json` with this structure (use the actual patterns from mouse.yaml):
+If it does NOT exist, write `opencode.json` with this structure (use the actual patterns from Step 4):
 
 ```json
 {
@@ -151,7 +201,7 @@ After writing, report ONLY this line (listing only files you wrote):
 Wrote: mouse.yaml, MOUSE.md, AGENTS.md, opencode.json
 ```
 
-## Step 5: Done
+## Step 6: Done
 
 Print exactly:
 
