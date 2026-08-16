@@ -108,3 +108,31 @@ func (r *Registry) ListProjects(wsName string) ([]Project, error) {
 	}
 	return out, rows.Err()
 }
+
+func (r *Registry) DeleteWorkspace(name string) error {
+	res, err := r.Store.db.Exec(`DELETE FROM workspaces WHERE name=?`, name)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (r *Registry) DeleteProject(wsName, projName string) error {
+	wsID, err := r.getWorkspaceID(wsName)
+	if err != nil {
+		return err
+	}
+	res, err := r.Store.db.Exec(`DELETE FROM projects WHERE workspace_id=? AND name=?`, wsID, projName)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}

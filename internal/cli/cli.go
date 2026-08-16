@@ -124,8 +124,25 @@ func workspaceCmd() *cobra.Command {
 			return nil
 		},
 	}
+	del := &cobra.Command{
+		Use:   "delete [name]",
+		Args:  cobra.ExactArgs(1),
+		Short: "Delete a workspace (and its projects)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			resp, err := callDaemon("workspace_delete", map[string]any{"name": args[0]})
+			if err != nil {
+				return err
+			}
+			if resp.Error != nil {
+				return fmt.Errorf("%s", resp.Error.Message)
+			}
+			fmt.Println("workspace deleted:", args[0])
+			return nil
+		},
+	}
 	c.AddCommand(add)
 	c.AddCommand(list)
+	c.AddCommand(del)
 	return c
 }
 
@@ -190,8 +207,29 @@ func projectCmd() *cobra.Command {
 	}
 	list.Flags().StringVar(&listWs, "workspace", "", "filter by workspace")
 
+	var delWs string
+	del := &cobra.Command{
+		Use:   "delete [name]",
+		Args:  cobra.ExactArgs(1),
+		Short: "Delete a project from a workspace",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			resp, err := callDaemon("project_delete", map[string]any{"workspace": delWs, "name": args[0]})
+			if err != nil {
+				return err
+			}
+			if resp.Error != nil {
+				return fmt.Errorf("%s", resp.Error.Message)
+			}
+			fmt.Printf("project deleted: %s/%s\n", delWs, args[0])
+			return nil
+		},
+	}
+	del.Flags().StringVar(&delWs, "workspace", "", "workspace name")
+	del.MarkFlagRequired("workspace")
+
 	c.AddCommand(add)
 	c.AddCommand(list)
+	c.AddCommand(del)
 	return c
 }
 

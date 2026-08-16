@@ -136,10 +136,14 @@ func (d *Daemon) Handle(ctx context.Context, req protocol.Request) protocol.Resp
 		return d.handleWorkspaceAdd(req)
 	case "workspace_list":
 		return d.handleWorkspaceList(req)
+	case "workspace_delete":
+		return d.handleWorkspaceDelete(req)
 	case "project_add":
 		return d.handleProjectAdd(req)
 	case "project_list":
 		return d.handleProjectList(req)
+	case "project_delete":
+		return d.handleProjectDelete(req)
 	case "status":
 		return d.handleStatus(req)
 	case "shutdown":
@@ -380,6 +384,34 @@ func (d *Daemon) handleProjectList(req protocol.Request) protocol.Response {
 	}
 	result, _ := json.Marshal(out)
 	return protocol.Response{ID: req.ID, Result: result}
+}
+
+func (d *Daemon) handleWorkspaceDelete(req protocol.Request) protocol.Response {
+	var p WorkspaceAddParams
+	if err := json.Unmarshal(req.Params, &p); err != nil {
+		return errResp(req.ID, "bad params: "+err.Error())
+	}
+	if err := d.Registry.DeleteWorkspace(p.Name); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return errResp(req.ID, "workspace "+p.Name+" not found")
+		}
+		return errResp(req.ID, err.Error())
+	}
+	return protocol.Response{ID: req.ID, Result: json.RawMessage(`{}`)}
+}
+
+func (d *Daemon) handleProjectDelete(req protocol.Request) protocol.Response {
+	var p ProjectAddParams
+	if err := json.Unmarshal(req.Params, &p); err != nil {
+		return errResp(req.ID, "bad params: "+err.Error())
+	}
+	if err := d.Registry.DeleteProject(p.Workspace, p.Name); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return errResp(req.ID, "project "+p.Workspace+"/"+p.Name+" not found")
+		}
+		return errResp(req.ID, err.Error())
+	}
+	return protocol.Response{ID: req.ID, Result: json.RawMessage(`{}`)}
 }
 
 func (d *Daemon) handleStatus(req protocol.Request) protocol.Response {
