@@ -45,6 +45,7 @@ func TestVerticalSlice(t *testing.T) {
 	// payment-agent engages user-service-agent.
 	engageResp := mustSend(t, d, "engage_project_agent", map[string]any{
 		"project": "companyA/user-service",
+		"from":    "companyA/payment-service",
 		"task":    "add payment_status field to User",
 	})
 	var engage daemon.EngageResult
@@ -56,6 +57,8 @@ func TestVerticalSlice(t *testing.T) {
 	// user-service-agent posts done.
 	mustSend(t, d, "post_message", map[string]any{
 		"channel": engage.ChannelID,
+		"from":    "companyA/user-service",
+		"to":      "companyA/payment-service",
 		"content": "done, added payment_status to User model",
 	})
 
@@ -63,22 +66,26 @@ func TestVerticalSlice(t *testing.T) {
 	readResp := mustSend(t, d, "read_channel", map[string]any{"channel": engage.ChannelID})
 	var msgs []daemon.Message
 	json.Unmarshal(readResp.Result, &msgs)
-	if len(msgs) == 0 {
-		t.Fatal("no messages in channel")
+	if len(msgs) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(msgs))
 	}
 
-	// Verify the task message + the response are both present.
-	foundTask, foundDone := false, false
-	for _, m := range msgs {
-		if m.Content == "add payment_status field to User" {
-			foundTask = true
-		}
-		if m.Content == "done, added payment_status to User model" {
-			foundDone = true
-		}
+	// Verify task message: from payment → user-service.
+	task := msgs[0]
+	if task.FromProject != "companyA/payment-service" || task.ToProject != "companyA/user-service" {
+		t.Errorf("task sender: from=%q to=%q, want payment→user-service", task.FromProject, task.ToProject)
 	}
-	if !foundTask || !foundDone {
-		t.Errorf("expected task+done messages, got %+v", msgs)
+	if task.Content != "add payment_status field to User" {
+		t.Errorf("task content: %q", task.Content)
+	}
+
+	// Verify reply: from user-service → payment.
+	reply := msgs[1]
+	if reply.FromProject != "companyA/user-service" || reply.ToProject != "companyA/payment-service" {
+		t.Errorf("reply sender: from=%q to=%q, want user-service→payment", reply.FromProject, reply.ToProject)
+	}
+	if reply.Content != "done, added payment_status to User model" {
+		t.Errorf("reply content: %q", reply.Content)
 	}
 }
 
@@ -176,6 +183,7 @@ func TestVerticalSlice_OverSocket(t *testing.T) {
 
 	engageResp := send("engage_project_agent", map[string]any{
 		"project": "companyA/user-service",
+		"from":    "companyA/payment-service",
 		"task":    "add payment_status field",
 	})
 	var engage daemon.EngageResult
@@ -184,12 +192,24 @@ func TestVerticalSlice_OverSocket(t *testing.T) {
 		t.Fatal("no channel id")
 	}
 
-	send("post_message", map[string]any{"channel": engage.ChannelID, "content": "done"})
+	send("post_message", map[string]any{
+		"channel": engage.ChannelID,
+		"from":    "companyA/user-service",
+		"to":      "companyA/payment-service",
+		"content": "done",
+	})
 	readResp := send("read_channel", map[string]any{"channel": engage.ChannelID})
 	var msgs []daemon.Message
 	json.Unmarshal(readResp.Result, &msgs)
 	if len(msgs) != 2 {
 		t.Fatalf("got %d messages want 2", len(msgs))
+	}
+	// Verify sender identity on both messages.
+	if msgs[0].FromProject != "companyA/payment-service" {
+		t.Errorf("task from: %q want payment-service", msgs[0].FromProject)
+	}
+	if msgs[1].FromProject != "companyA/user-service" {
+		t.Errorf("reply from: %q want user-service", msgs[1].FromProject)
 	}
 	conn.Close()
 

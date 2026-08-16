@@ -42,6 +42,7 @@ func TestHandle_EngageProjectAgent(t *testing.T) {
 
 	params, _ := json.Marshal(map[string]any{
 		"project": "companyA/user-service",
+		"from":    "companyA/payment-service",
 		"task":    "add field payment_status",
 	})
 	req := protocol.Request{Method: "engage_project_agent", Params: params, ID: 1}
@@ -81,7 +82,7 @@ func TestHandle_PostAndRead(t *testing.T) {
 	d.Store.db.Exec(`INSERT INTO channels(id, workspace_id, name, type) VALUES(10, 1, 'dm', 'dm')`)
 
 	postParams, _ := json.Marshal(map[string]any{
-		"channel": 10, "content": "hello",
+		"channel": 10, "from": "companyA/payment", "to": "companyA/user", "content": "hello",
 	})
 	resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: postParams, ID: 1})
 	if resp.Error != nil {
@@ -95,7 +96,7 @@ func TestHandle_PostAndRead(t *testing.T) {
 	}
 	var msgs []Message
 	json.Unmarshal(resp.Result, &msgs)
-	if len(msgs) != 1 || msgs[0].Content != "hello" {
+	if len(msgs) != 1 || msgs[0].Content != "hello" || msgs[0].FromProject != "companyA/payment" {
 		t.Errorf("got %+v", msgs)
 	}
 }

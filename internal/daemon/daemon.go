@@ -60,7 +60,8 @@ func NewDaemon(sock, dbPath string) (*Daemon, error) {
 // ============================================
 
 type EngageParams struct {
-	Project string `json:"project"` // "workspace/project"
+	Project string `json:"project"` // target "workspace/project"
+	From    string `json:"from"`    // engaging agent "workspace/project"
 	Task    string `json:"task"`
 }
 type EngageResult struct {
@@ -70,6 +71,8 @@ type EngageResult struct {
 type PostParams struct {
 	Channel  int64  `json:"channel"`
 	ThreadID int64  `json:"thread_id,omitempty"`
+	From     string `json:"from"`
+	To       string `json:"to"`
 	Content  string `json:"content"`
 }
 type PostResult struct {
@@ -191,11 +194,11 @@ func (d *Daemon) handleEngage(ctx context.Context, req protocol.Request) protoco
 	if err != nil {
 		return errResp(req.ID, "session: "+err.Error())
 	}
-	ch, err := d.Comms.CreateDMChannel(proj.WorkspaceID, p.Project, p.Project)
+	ch, err := d.Comms.CreateDMChannel(proj.WorkspaceID, p.From, p.Project)
 	if err != nil {
 		return errResp(req.ID, "channel: "+err.Error())
 	}
-	_, err = d.Comms.PostMessage(ch.ID, 0, p.Project, p.Project, p.Task)
+	_, err = d.Comms.PostMessage(ch.ID, 0, p.From, p.Project, p.Task)
 	if err != nil {
 		return errResp(req.ID, "post task: "+err.Error())
 	}
@@ -217,7 +220,7 @@ func (d *Daemon) handlePost(req protocol.Request) protocol.Response {
 	if err := json.Unmarshal(req.Params, &p); err != nil {
 		return errResp(req.ID, "bad params: "+err.Error())
 	}
-	msg, err := d.Comms.PostMessage(p.Channel, p.ThreadID, "", "", p.Content)
+	msg, err := d.Comms.PostMessage(p.Channel, p.ThreadID, p.From, p.To, p.Content)
 	if err != nil {
 		return errResp(req.ID, err.Error())
 	}
