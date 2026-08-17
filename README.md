@@ -65,3 +65,27 @@ Then in any opencode session:
 - `AGENTS.md` — OpenCode instruction file (references MOUSE.md)
 
 See `examples/`.
+
+## TODOs
+
+- [ ] **Enforce edit protection for registered projects from unregistered dirs.**
+  opencode's `edit` permission is a global string (`allow`/`ask`/`deny`), not
+  path-scoped. Global `deny` + per-repo `allow` doesn't reliably block edits
+  from parent/unregistered dirs in practice. Need a plugin/hook or different
+  approach (e.g. opencode plugin that intercepts edit calls and checks hmf
+  registry, or filesystem-level enforcement).
+
+- [ ] **Fix auto-spawn reliability.** Engaged agent sometimes doesn't post back
+  (`in_progress`/`done`) when auto-spawned by `engage_project_agent` vs
+  running `opencode run` manually. Likely prompt-engineering — the task
+  prompt needs explicit instructions to use hmf tools.
+
+- [ ] **Thread `to` field through `post_message` auto-fill.** Reply messages
+  have empty `ToProject` — agent doesn't specify recipient. Could auto-fill
+  from the channel's other party.
+
+- [ ] **Session resume.** User should be able to reopen any spawned agent's
+  session (`hmf session attach <id>`) and continue directly.
+
+- [ ] **Real multi-agent scenario.** 3+ agents coordinating (payment →
+  user-service → frontend) to prove the full team model.
