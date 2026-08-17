@@ -173,6 +173,12 @@ func projectCmd() *cobra.Command {
 				return fmt.Errorf("%s", resp.Error.Message)
 			}
 			fmt.Printf("project added: %s/%s -> %s\n", ws, args[0], abs)
+			// Auto-guard: add this project's path to global opencode config.
+			if err := guardAdd(abs); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: guard failed: %v\n", err)
+			} else {
+				fmt.Println("guarded: direct edits blocked (use engage_project_agent)")
+			}
 			return nil
 		},
 	}
@@ -224,6 +230,21 @@ func projectCmd() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		Short: "Delete a project from a workspace",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Get path before deleting (for guard cleanup).
+			listResp, _ := callDaemon("project_list", map[string]any{"workspace": delWs})
+			var projects []struct {
+				Workspace string `json:"workspace"`
+				Name      string `json:"name"`
+				Path      string `json:"path"`
+			}
+			json.Unmarshal(listResp.Result, &projects)
+			var projPath string
+			for _, p := range projects {
+				if p.Name == args[0] {
+					projPath = p.Path
+					break
+				}
+			}
 			resp, err := callDaemon("project_delete", map[string]any{"workspace": delWs, "name": args[0]})
 			if err != nil {
 				return err
@@ -232,6 +253,10 @@ func projectCmd() *cobra.Command {
 				return fmt.Errorf("%s", resp.Error.Message)
 			}
 			fmt.Printf("project deleted: %s/%s\n", delWs, args[0])
+			// Remove from guard.
+			if projPath != "" {
+				guardRemove(projPath)
+			}
 			return nil
 		},
 	}
@@ -416,4 +441,58 @@ inside registered projects — they must use engage_project_agent instead.`,
 			return nil
 		},
 	}
+}
+
+// guardAdd adds a single project path to the global opencode edit deny list.
+func guardAdd(projectPath string) error {
+	home, _ := os.UserHomeDir()
+	ocPath := filepath.Join(home, ".config", "opencode", "opencode.json")
+	cfg := readJSONFile(ocPath)
+	perm := getOrCreateMap(cfg, "permission")
+	editMap := getOrCreateMap(perm, "edit")
+	editMap[projectPath+"/**"] = "deny"
+	return writeJSONFile(ocPath, cfg)
+}
+
+// guardRemove removes a single project path from the global opencode edit deny list.
+func guardRemove(projectPath string) {
+	home, _ := os.UserHomeDir()
+	ocPath := filepath.Join(home, ".config", "opencode", "opencode.json")
+	cfg := readJSONFile(ocPath)
+	perm, _ := cfg["permission"].(map[string]any)
+	if perm == nil {
+		return
+	}
+	editMap, _ := perm["edit"].(map[string]any)
+	if editMap == nil {
+		return
+	}
+	delete(editMap, projectPath+"/**")
+	writeJSONFile(ocPath, cfg)
+}
+
+func readJSONFile(path string) map[string]any {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return map[string]any{}
+	}
+	var cfg map[string]any
+	if json.Unmarshal(b, &cfg) != nil {
+		return map[string]any{}
+	}
+	return cfg
+}
+
+func getOrCreateMap(parent map[string]any, key string) map[string]any {
+	m, _ := parent[key].(map[string]any)
+	if m == nil {
+		m = map[string]any{}
+		parent[key] = m
+	}
+	return m
+}
+
+func writeJSONFile(path string, cfg map[string]any) error {
+	b, _ := json.MarshalIndent(cfg, "", "  ")
+	return os.WriteFile(path, b, 0644)
 }
