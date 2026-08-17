@@ -22,12 +22,15 @@ import (
 // ============================================
 
 type EngageInput struct {
-	Project string `json:"project" jsonschema:"workspace/project to engage"`
-	Task    string `json:"task" jsonschema:"task description"`
+	Project    string `json:"project" jsonschema:"workspace/project to engage"`
+	Task       string `json:"task" jsonschema:"task description"`
+	TimeoutSec int    `json:"timeout_sec,omitempty" jsonschema:"max seconds to wait for reply (default 300)"`
 }
 type EngageOutput struct {
-	SessionID int64 `json:"session_id"`
-	ChannelID int64 `json:"channel_id"`
+	SessionID   int64  `json:"session_id"`
+	ChannelID   int64  `json:"channel_id"`
+	ReplyStatus string `json:"reply_status,omitempty" jsonschema:"done | timeout | cancelled"`
+	Reply       string `json:"reply,omitempty" jsonschema:"agent's done message content"`
 }
 type PostInput struct {
 	Channel  int64  `json:"channel,omitempty" jsonschema:"channel id (defaults to this session's channel)"`
@@ -69,6 +72,12 @@ type ProjectAgentOutput struct {
 
 type ProjectAgentsOutput struct {
 	Agents []ProjectAgentOutput `json:"agents"`
+}
+
+type WaitDoneResult struct {
+	Status    string `json:"status"`
+	Reply     string `json:"reply,omitempty"`
+	MessageID int64  `json:"message_id,omitempty"`
 }
 
 // ============================================
@@ -146,7 +155,7 @@ func newServer(callerID string) *mcpserver.Server {
 
 	mcpserver.AddTool(srv, &mcpserver.Tool{
 		Name:        "engage_project_agent",
-		Description: "Spawn/resume target project agent and return session + channel id",
+		Description: "Spawn/resume target project agent, wait for its reply, return session + channel + reply",
 	}, func(ctx context.Context, req *mcpserver.CallToolRequest, in EngageInput) (*mcpserver.CallToolResult, EngageOutput, error) {
 		params := map[string]any{
 			"project": in.Project,
@@ -157,9 +166,30 @@ func newServer(callerID string) *mcpserver.Server {
 		if err != nil {
 			return nil, EngageOutput{}, err
 		}
-		var out EngageOutput
-		if err := json.Unmarshal(result, &out); err != nil {
+		var engageResult struct {
+			SessionID int64 `json:"session_id"`
+			ChannelID int64 `json:"channel_id"`
+			MessageID int64 `json:"message_id"`
+		}
+		if err := json.Unmarshal(result, &engageResult); err != nil {
 			return nil, EngageOutput{}, fmt.Errorf("decode engage result: %w", err)
+		}
+		out := EngageOutput{SessionID: engageResult.SessionID, ChannelID: engageResult.ChannelID}
+		timeoutMS := in.TimeoutSec * 1000
+		if timeoutMS <= 0 {
+			timeoutMS = 300000
+		}
+		waitResult, waitErr := callDaemon(ctx, "wait_for_done", map[string]any{
+			"channel":    engageResult.ChannelID,
+			"since_id":   engageResult.MessageID,
+			"timeout_ms": timeoutMS,
+		})
+		if waitErr == nil {
+			var wait WaitDoneResult
+			if json.Unmarshal(waitResult, &wait) == nil {
+				out.ReplyStatus = wait.Status
+				out.Reply = wait.Reply
+			}
 		}
 		return nil, out, nil
 	})

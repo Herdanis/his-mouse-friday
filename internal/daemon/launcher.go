@@ -38,21 +38,24 @@ func (l *Launcher) Spawn(ctx context.Context, cfg SpawnConfig) (int, error) {
 	if _, err := exec.LookPath(bin); err != nil {
 		return 0, fmt.Errorf("agent binary %q not found: %w", bin, err)
 	}
+	// Append reply protocol so spawned agent knows to post done back.
+	replyProtocol := "\n\n[REPLY PROTOCOL] When your task is complete, call the post_message MCP tool with status=\"done\" and a brief summary of what you did. This signals completion to the engaging agent."
+	fullTask := cfg.Task + replyProtocol
 	// opencode needs "run" subcommand for non-interactive mode.
 	// Pass -m only when model is set and not "default" (let opencode use its global default).
-	args := []string{cfg.Task}
+	args := []string{fullTask}
 	if strings.Contains(bin, "opencode") {
 		args = []string{"run"}
 		if cfg.Model != "" && cfg.Model != "default" {
 			args = append(args, "-m", cfg.Model)
 		}
-		args = append(args, cfg.Task)
+		args = append(args, fullTask)
 	}
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Dir = cfg.Dir
 	cmd.Env = append(os.Environ(),
 		"HMF_RUNBOOK="+cfg.Runbook,
-		"HMF_TASK="+cfg.Task,
+		"HMF_TASK="+fullTask,
 		"HMF_FROM="+cfg.FromID,
 		"HMF_PROJECT="+cfg.ProjectID,
 		"HMF_CHANNEL_ID="+fmt.Sprintf("%d", cfg.ChannelID),
