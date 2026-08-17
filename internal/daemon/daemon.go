@@ -130,7 +130,7 @@ func (d *Daemon) Handle(ctx context.Context, req protocol.Request) protocol.Resp
 	case "read_thread":
 		return d.handleReadThread(req)
 	case "list_project_agents":
-		return d.handleList(req)
+		return d.handleProjectList(req)
 	case "resolve_project":
 		return d.handleResolve(req)
 	case "workspace_add":
