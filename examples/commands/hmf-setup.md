@@ -55,7 +55,8 @@ Pick a number:
 Then run: `hmf project add <name> "$(pwd)" --workspace <ws>`
 
 - Error → show it, ask for a different name.
-- Success → continue.
+- Success → continue. The project is now auto-guarded (direct edits from
+  outside blocked via global opencode.json). No need to run 'hmf guard'.
 
 ## Step 4: Permissions
 
