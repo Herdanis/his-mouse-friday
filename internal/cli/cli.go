@@ -49,6 +49,7 @@ func NewRootCmd() *cobra.Command {
 	root.AddCommand(statusCmd())
 	root.AddCommand(initCmd())
 	root.AddCommand(configCmd())
+	root.AddCommand(guardCmd())
 	return root
 }
 
@@ -334,4 +335,85 @@ func configCmd() *cobra.Command {
 	}
 	c.AddCommand(show)
 	return c
+}
+
+func guardCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "guard",
+		Args:  cobra.NoArgs,
+		Short: "Update global opencode config to deny direct edits to registered projects",
+		Long: `Updates ~/.config/opencode/opencode.json to deny direct edits to all
+registered project directories. One command, applies to every opencode session
+everywhere. Re-run after registering new projects.
+
+Agents opening opencode in any directory will be blocked from editing files
+inside registered projects — they must use engage_project_agent instead.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			// Query all registered projects from daemon.
+			resp, err := callDaemon("project_list", struct{}{})
+			if err != nil {
+				return fmt.Errorf("daemon not running? run 'hmf up': %w", err)
+			}
+			if resp.Error != nil {
+				return fmt.Errorf("%s", resp.Error.Message)
+			}
+			var items []struct {
+				Workspace string `json:"workspace"`
+				Name      string `json:"name"`
+				Path      string `json:"path"`
+			}
+			if err := json.Unmarshal(resp.Result, &items); err != nil {
+				return fmt.Errorf("parse: %w", err)
+			}
+			if len(items) == 0 {
+				fmt.Println("no registered projects — nothing to guard")
+				return nil
+			}
+			// Read existing global opencode.json.
+			home, _ := os.UserHomeDir()
+			ocPath := filepath.Join(home, ".config", "opencode", "opencode.json")
+			existing, _ := os.ReadFile(ocPath)
+			var cfg map[string]any
+			if json.Unmarshal(existing, &cfg) != nil {
+				cfg = map[string]any{}
+			}
+			perm, _ := cfg["permission"].(map[string]any)
+			if perm == nil {
+				perm = map[string]any{}
+			}
+			editMap, _ := perm["edit"].(map[string]any)
+			if editMap == nil {
+				editMap = map[string]any{}
+			}
+			// Remove old hmf-managed patterns (any key matching a registered project path).
+			knownPaths := map[string]bool{}
+			for _, it := range items {
+				knownPaths[it.Path+"/**"] = true
+			}
+			for k := range editMap {
+				if knownPaths[k] {
+					delete(editMap, k)
+				}
+			}
+			// Add current registered project paths.
+			for _, it := range items {
+				editMap[it.Path+"/**"] = "deny"
+			}
+			perm["edit"] = editMap
+			cfg["permission"] = perm
+			b, _ := json.MarshalIndent(cfg, "", "  ")
+			if err := os.WriteFile(ocPath, b, 0644); err != nil {
+				return err
+			}
+			fmt.Printf("Updated: %s\n", ocPath)
+			fmt.Printf("Guarding %d registered projects:\n", len(items))
+			for _, it := range items {
+				fmt.Printf("  %s/%s → %s\n", it.Workspace, it.Name, it.Path)
+			}
+			fmt.Println("\nAgents in any directory cannot edit these paths directly.")
+			fmt.Println("They must use engage_project_agent to delegate changes.")
+			fmt.Println("Re-run 'hmf guard' after registering new projects.")
+			return nil
+		},
+	}
 }
