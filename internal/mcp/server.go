@@ -67,6 +67,10 @@ type ProjectAgentOutput struct {
 	Path      string `json:"path"`
 }
 
+type ProjectAgentsOutput struct {
+	Agents []ProjectAgentOutput `json:"agents"`
+}
+
 // ============================================
 // Daemon client (unix socket)
 // ============================================
@@ -221,16 +225,16 @@ func newServer(callerID string) *mcpserver.Server {
 	mcpserver.AddTool(srv, &mcpserver.Tool{
 		Name:        "list_project_agents",
 		Description: "List registered project agents",
-	}, func(ctx context.Context, req *mcpserver.CallToolRequest, in ListInput) (*mcpserver.CallToolResult, []ProjectAgentOutput, error) {
+	}, func(ctx context.Context, req *mcpserver.CallToolRequest, in ListInput) (*mcpserver.CallToolResult, ProjectAgentsOutput, error) {
 		result, err := callDaemon(ctx, "list_project_agents", in)
 		if err != nil {
-			return nil, nil, err
+			return nil, ProjectAgentsOutput{}, err
 		}
 		var agents []ProjectAgentOutput
 		if err := json.Unmarshal(result, &agents); err != nil {
-			return nil, nil, fmt.Errorf("decode agents: %w", err)
+			return nil, ProjectAgentsOutput{}, fmt.Errorf("decode agents: %w", err)
 		}
-		return nil, agents, nil
+		return nil, ProjectAgentsOutput{Agents: agents}, nil
 	})
 
 	return srv
