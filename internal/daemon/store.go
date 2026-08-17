@@ -67,6 +67,12 @@ func OpenStore(path string) (*Store, error) {
 	}
 	// Migrate: add status column if missing (pre-existing DBs).
 	db.Exec(`ALTER TABLE messages ADD COLUMN status TEXT NOT NULL DEFAULT 'message'`)
+	// Ensure the global "general" channel exists — the single lobby where all
+	// agents live. Uses a sentinel __global__ workspace so the channels.workspace_id
+	// FK is satisfied without a schema migration.
+	db.Exec(`INSERT OR IGNORE INTO workspaces(name) VALUES('__global__')`)
+	db.Exec(`INSERT OR IGNORE INTO channels(workspace_id, name, type)
+	         VALUES((SELECT id FROM workspaces WHERE name='__global__'), 'general', 'group')`)
 	return &Store{db: db}, nil
 }
 

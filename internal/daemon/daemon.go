@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -59,26 +60,6 @@ func NewDaemon(sock, dbPath string) (*Daemon, error) {
 // Wire params / results
 // ============================================
 
-type EngageParams struct {
-	Project string `json:"project"` // target "workspace/project"
-	From    string `json:"from"`    // engaging agent "workspace/project"
-	Task    string `json:"task"`
-}
-type EngageResult struct {
-	SessionID  int64 `json:"session_id"`
-	ChannelID int64 `json:"channel_id"`
-	MessageID  int64 `json:"message_id"`
-}
-type WaitDoneParams struct {
-	Channel   int64 `json:"channel"`
-	SinceID   int64 `json:"since_id,omitempty"`
-	TimeoutMS int   `json:"timeout_ms"`
-}
-type WaitDoneResult struct {
-	Status    string `json:"status"`
-	Reply     string `json:"reply,omitempty"`
-	MessageID int64  `json:"message_id,omitempty"`
-}
 type PostParams struct {
 	Channel  int64  `json:"channel"`
 	ThreadID int64  `json:"thread_id,omitempty"`
@@ -132,12 +113,8 @@ type StatusResult struct {
 // Handle dispatches a single request.
 func (d *Daemon) Handle(ctx context.Context, req protocol.Request) protocol.Response {
 	switch req.Method {
-	case "engage_project_agent":
-		return d.handleEngage(ctx, req)
-	case "wait_for_done":
-		return d.handleWaitDone(ctx, req)
 	case "post_message":
-		return d.handlePost(req)
+		return d.handlePost(ctx, req)
 	case "read_channel":
 		return d.handleReadChannel(req)
 	case "read_thread":
@@ -173,29 +150,70 @@ func (d *Daemon) Handle(ctx context.Context, req protocol.Request) protocol.Resp
 	}
 }
 
-// handleEngage resolves workspace/project, loads mouse.yaml (deny if inbound
-// disallowed), spawns the agent, creates a session + DM channel, and posts the
-// task as the first message.
-func (d *Daemon) handleEngage(ctx context.Context, req protocol.Request) protocol.Response {
-	var p EngageParams
+// findProject looks up a project by workspace name + project name.
+func (d *Daemon) findProject(ws, name string) (Project, error) {
+	var p Project
+	err := d.Store.db.QueryRow(
+		`SELECT id, workspace_id, name, path FROM projects WHERE name=? AND workspace_id=(SELECT id FROM workspaces WHERE name=?)`,
+		name, ws).Scan(&p.ID, &p.WorkspaceID, &p.Name, &p.Path)
+	return p, err
+}
+
+func (d *Daemon) handlePost(ctx context.Context, req protocol.Request) protocol.Response {
+	var p PostParams
 	if err := json.Unmarshal(req.Params, &p); err != nil {
 		return errResp(req.ID, "bad params: "+err.Error())
 	}
-	parts := strings.SplitN(p.Project, "/", 2)
-	if len(parts) != 2 {
-		return errResp(req.ID, "project must be workspace/project")
+	// Default channel = the global "general" (the lobby where all agents live).
+	chID := p.Channel
+	if chID == 0 {
+		gen, err := d.Comms.GetOrCreateGeneralChannel()
+		if err != nil {
+			return errResp(req.ID, "general channel: "+err.Error())
+		}
+		chID = gen.ID
 	}
-	wsName, projName := parts[0], parts[1]
-	proj, err := d.findProject(wsName, projName)
+	msg, err := d.Comms.PostMessage(chID, p.ThreadID, p.From, p.To, p.Content, p.Status)
 	if err != nil {
-		return errResp(req.ID, fmt.Sprintf("project %s not found: %v", p.Project, err))
+		return errResp(req.ID, err.Error())
+	}
+	// Wake the addressed agent when this is a thread root (a new task) with a
+	// recipient. Replies (thread_id set) don't wake — they're part of an
+	// ongoing thread the recipient will read on its next turn.
+	if p.ThreadID == 0 && p.To != "" {
+		if err := d.wakeAgent(ctx, msg); err != nil {
+			return errResp(req.ID, "wake: "+err.Error())
+		}
+	}
+	result, _ := json.Marshal(PostResult{MessageID: msg.ID})
+	return protocol.Response{ID: req.ID, Result: result}
+}
+
+// wakeAgent spawns the project agent addressed by msg.ToProject so it can read
+// the thread rooted at msg.ID and reply. Serverless: boot per mention, handle,
+// reply in-thread, exit.
+func (d *Daemon) wakeAgent(ctx context.Context, msg Message) error {
+	parts := strings.SplitN(msg.ToProject, "/", 2)
+	if len(parts) != 2 {
+		return fmt.Errorf("to must be workspace/project, got %q", msg.ToProject)
+	}
+	proj, err := d.findProject(parts[0], parts[1])
+	if err != nil {
+		// Not a registered agent — post the message but don't wake. Mailbox
+		// semantics: you can address anyone; delivery happens only for
+		// registered agents. Lets post_message stay a plain insert when the
+		// recipient isn't registered (backward compat + graceful addressing).
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		return fmt.Errorf("project %s not found: %w", msg.ToProject, err)
 	}
 	mouse, err := d.MouseLoader(filepath.Join(proj.Path, "mouse.yaml"))
 	if err != nil {
-		return errResp(req.ID, "read mouse.yaml: "+err.Error())
+		return fmt.Errorf("read mouse.yaml: %w", err)
 	}
 	if mouse != nil && !mouse.A2A.AllowInbound {
-		return errResp(req.ID, "project "+p.Project+" does not allow inbound engagement")
+		return fmt.Errorf("project %s does not allow inbound engagement", msg.ToProject)
 	}
 	binary := "opencode"
 	model := "default"
@@ -206,97 +224,35 @@ func (d *Daemon) handleEngage(ctx context.Context, req protocol.Request) protoco
 		}
 	}
 	runbook, _ := os.ReadFile(filepath.Join(proj.Path, "MOUSE.md"))
-	// Create session + channel BEFORE spawn so we can pass IDs to the agent.
 	tmpSess, err := d.Sessions.Create(proj.ID, binary, model, 0)
 	if err != nil {
-		return errResp(req.ID, "session: "+err.Error())
+		return fmt.Errorf("session: %w", err)
 	}
-	ch, err := d.Comms.CreateDMChannel(proj.WorkspaceID, p.From, p.Project)
-	if err != nil {
-		return errResp(req.ID, "channel: "+err.Error())
-	}
-	taskMsg, err := d.Comms.PostMessage(ch.ID, 0, p.From, p.Project, p.Task, "delivered")
-	if err != nil {
-		return errResp(req.ID, "post task: "+err.Error())
-	}
+	entrypoint := fmt.Sprintf(
+		"You were @mentioned in the general channel, message id %d. "+
+			"Call the read_thread MCP tool with thread_id=%d to load the task and any prior context. "+
+			"Handle the request. Reply in the thread using post_message with thread_id=%d, status=\"done\", "+
+			"and a one-line summary of what you did.",
+		msg.ID, msg.ID, msg.ID)
 	pid, err := d.Launcher.Spawn(ctx, SpawnConfig{
 		Dir:       proj.Path,
 		Binary:    binary,
 		Model:     model,
 		Runbook:   string(runbook),
-		Task:      p.Task,
-		FromID:    p.From,
-		ProjectID: p.Project,
-		ChannelID: ch.ID,
+		Task:      entrypoint,
+		FromID:    msg.FromProject,
+		ProjectID: msg.ToProject,
+		ChannelID: msg.ChannelID,
 		SessionID: tmpSess.ID,
+		TaskMsgID: msg.ID,
 	})
 	if err != nil {
 		d.Sessions.SetStatus(tmpSess.ID, "failed")
-		return errResp(req.ID, "spawn: "+err.Error())
+		return fmt.Errorf("spawn: %w", err)
 	}
 	d.Sessions.SetPID(tmpSess.ID, pid)
 	d.Sessions.SetStatus(tmpSess.ID, "active")
-	result, _ := json.Marshal(EngageResult{SessionID: tmpSess.ID, ChannelID: ch.ID, MessageID: taskMsg.ID})
-	return protocol.Response{ID: req.ID, Result: result}
-}
-
-// handleWaitDone blocks until a "done" status message appears on a channel
-// (with id > SinceID), or the timeout elapses. Returns status "done" with the
-// reply content, "timeout" if no done message arrived, or "cancelled" if the
-// context was cancelled.
-func (d *Daemon) handleWaitDone(ctx context.Context, req protocol.Request) protocol.Response {
-	var p WaitDoneParams
-	if err := json.Unmarshal(req.Params, &p); err != nil {
-		return errResp(req.ID, "bad params: "+err.Error())
-	}
-	if p.TimeoutMS <= 0 {
-		p.TimeoutMS = 300000
-	}
-	if p.TimeoutMS > 3600000 {
-		p.TimeoutMS = 3600000
-	}
-	deadline := time.Now().Add(time.Duration(p.TimeoutMS) * time.Millisecond)
-	for time.Now().Before(deadline) {
-		var id int64
-		var content string
-		err := d.Store.db.QueryRow(
-			`SELECT id, content FROM messages WHERE channel_id=? AND status='done' AND id > ? ORDER BY id ASC LIMIT 1`,
-			p.Channel, p.SinceID).Scan(&id, &content)
-		if err == nil {
-			result, _ := json.Marshal(WaitDoneResult{Status: "done", Reply: content, MessageID: id})
-			return protocol.Response{ID: req.ID, Result: result}
-		}
-		select {
-		case <-ctx.Done():
-			result, _ := json.Marshal(WaitDoneResult{Status: "cancelled"})
-			return protocol.Response{ID: req.ID, Result: result}
-		case <-time.After(500 * time.Millisecond):
-		}
-	}
-	result, _ := json.Marshal(WaitDoneResult{Status: "timeout"})
-	return protocol.Response{ID: req.ID, Result: result}
-}
-
-// findProject looks up a project by workspace name + project name.
-func (d *Daemon) findProject(ws, name string) (Project, error) {
-	var p Project
-	err := d.Store.db.QueryRow(
-		`SELECT id, workspace_id, name, path FROM projects WHERE name=? AND workspace_id=(SELECT id FROM workspaces WHERE name=?)`,
-		name, ws).Scan(&p.ID, &p.WorkspaceID, &p.Name, &p.Path)
-	return p, err
-}
-
-func (d *Daemon) handlePost(req protocol.Request) protocol.Response {
-	var p PostParams
-	if err := json.Unmarshal(req.Params, &p); err != nil {
-		return errResp(req.ID, "bad params: "+err.Error())
-	}
-	msg, err := d.Comms.PostMessage(p.Channel, p.ThreadID, p.From, p.To, p.Content, p.Status)
-	if err != nil {
-		return errResp(req.ID, err.Error())
-	}
-	result, _ := json.Marshal(PostResult{MessageID: msg.ID})
-	return protocol.Response{ID: req.ID, Result: result}
+	return nil
 }
 
 func (d *Daemon) handleReadChannel(req protocol.Request) protocol.Response {
@@ -304,7 +260,15 @@ func (d *Daemon) handleReadChannel(req protocol.Request) protocol.Response {
 	if err := json.Unmarshal(req.Params, &p); err != nil {
 		return errResp(req.ID, "bad params: "+err.Error())
 	}
-	msgs, err := d.Comms.ReadChannel(p.Channel, time.Time{})
+	chID := p.Channel
+	if chID == 0 {
+		gen, err := d.Comms.GetOrCreateGeneralChannel()
+		if err != nil {
+			return errResp(req.ID, "general channel: "+err.Error())
+		}
+		chID = gen.ID
+	}
+	msgs, err := d.Comms.ReadChannel(chID, time.Time{})
 	if err != nil {
 		return errResp(req.ID, err.Error())
 	}

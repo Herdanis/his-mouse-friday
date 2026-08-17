@@ -42,64 +42,56 @@ func TestVerticalSlice(t *testing.T) {
 	mustSend(t, d, "project_add", map[string]any{"workspace": "companyA", "name": "payment-service", "path": paymentDir})
 	mustSend(t, d, "project_add", map[string]any{"workspace": "companyA", "name": "user-service", "path": userDir})
 
-	// payment-agent engages user-service-agent.
-	engageResp := mustSend(t, d, "engage_project_agent", map[string]any{
-		"project": "companyA/user-service",
+	// payment posts a task to general mentioning @companyA/user-service —
+	// thread root. Daemon wakes user-service (spawns /bin/echo).
+	postResp := mustSend(t, d, "post_message", map[string]any{
 		"from":    "companyA/payment-service",
-		"task":    "add payment_status field to User",
+		"to":      "companyA/user-service",
+		"content": "add payment_status field to User",
 	})
-	var engage daemon.EngageResult
-	json.Unmarshal(engageResp.Result, &engage)
-	if engage.SessionID == 0 || engage.ChannelID == 0 {
-		t.Fatalf("engage returned %+v", engage)
+	var pr daemon.PostResult
+	json.Unmarshal(postResp.Result, &pr)
+	if pr.MessageID == 0 {
+		t.Fatalf("post returned no message id: %+v", postResp)
 	}
+	taskID := pr.MessageID
 
-	// user-service-agent posts in_progress then done.
+	// user-service posts in_progress + a threaded done reply (thread_id=taskID).
 	mustSend(t, d, "post_message", map[string]any{
-		"channel": engage.ChannelID,
-		"from":    "companyA/user-service",
-		"to":      "companyA/payment-service",
-		"content": "working on it",
-		"status":  "in_progress",
+		"thread_id": taskID,
+		"from":      "companyA/user-service",
+		"to":        "companyA/payment-service",
+		"content":   "working on it",
+		"status":    "in_progress",
 	})
 	mustSend(t, d, "post_message", map[string]any{
-		"channel": engage.ChannelID,
-		"from":    "companyA/user-service",
-		"to":      "companyA/payment-service",
-		"content": "done, added payment_status to User model",
-		"status":  "done",
+		"thread_id": taskID,
+		"from":      "companyA/user-service",
+		"to":        "companyA/payment-service",
+		"content":   "done, added payment_status to User model",
+		"status":    "done",
 	})
 
-	// payment-agent reads channel.
-	readResp := mustSend(t, d, "read_channel", map[string]any{"channel": engage.ChannelID})
+	// payment reads the thread — gets root + in_progress + done.
+	threadResp := mustSend(t, d, "read_thread", map[string]any{"thread_id": taskID})
 	var msgs []daemon.Message
-	json.Unmarshal(readResp.Result, &msgs)
+	json.Unmarshal(threadResp.Result, &msgs)
 	if len(msgs) != 3 {
-		t.Fatalf("expected 3 messages, got %d", len(msgs))
+		t.Fatalf("expected 3 messages in thread, got %d", len(msgs))
 	}
-
-	// Verify task message: status=delivered.
 	task := msgs[0]
 	if task.FromProject != "companyA/payment-service" || task.ToProject != "companyA/user-service" {
 		t.Errorf("task sender: from=%q to=%q, want payment→user-service", task.FromProject, task.ToProject)
 	}
-	if task.Status != "delivered" {
-		t.Errorf("task status: %q want delivered", task.Status)
-	}
 	if task.Content != "add payment_status field to User" {
 		t.Errorf("task content: %q", task.Content)
-	}
-
-	// Verify in_progress + done.
-	if msgs[1].Status != "in_progress" {
-		t.Errorf("msg 1 status: %q want in_progress", msgs[1].Status)
 	}
 	reply := msgs[2]
 	if reply.FromProject != "companyA/user-service" || reply.ToProject != "companyA/payment-service" {
 		t.Errorf("reply sender: from=%q to=%q, want user-service→payment", reply.FromProject, reply.ToProject)
 	}
-	if reply.Content != "done, added payment_status to User model" {
-		t.Errorf("reply content: %q", reply.Content)
+	if reply.Status != "done" || reply.Content != "done, added payment_status to User model" {
+		t.Errorf("reply: status=%q content=%q", reply.Status, reply.Content)
 	}
 }
 
@@ -195,35 +187,39 @@ func TestVerticalSlice_OverSocket(t *testing.T) {
 	send("project_add", map[string]any{"workspace": "companyA", "name": "payment-service", "path": wsDir})
 	send("project_add", map[string]any{"workspace": "companyA", "name": "user-service", "path": userDir})
 
-	engageResp := send("engage_project_agent", map[string]any{
-		"project": "companyA/user-service",
+	// Post a task to general — wakes user-service (/bin/echo), thread root.
+	postResp := send("post_message", map[string]any{
 		"from":    "companyA/payment-service",
-		"task":    "add payment_status field",
+		"to":      "companyA/user-service",
+		"content": "add payment_status field",
 	})
-	var engage daemon.EngageResult
-	json.Unmarshal(engageResp.Result, &engage)
-	if engage.ChannelID == 0 {
-		t.Fatal("no channel id")
+	var pr daemon.PostResult
+	json.Unmarshal(postResp.Result, &pr)
+	if pr.MessageID == 0 {
+		t.Fatal("no message id")
 	}
 
+	// Reply in-thread.
 	send("post_message", map[string]any{
-		"channel": engage.ChannelID,
-		"from":    "companyA/user-service",
-		"to":      "companyA/payment-service",
-		"content": "done",
+		"thread_id": pr.MessageID,
+		"from":      "companyA/user-service",
+		"to":        "companyA/payment-service",
+		"content":   "done",
+		"status":    "done",
 	})
-	readResp := send("read_channel", map[string]any{"channel": engage.ChannelID})
+
+	// Read thread — root + done.
+	threadResp := send("read_thread", map[string]any{"thread_id": pr.MessageID})
 	var msgs []daemon.Message
-	json.Unmarshal(readResp.Result, &msgs)
+	json.Unmarshal(threadResp.Result, &msgs)
 	if len(msgs) != 2 {
 		t.Fatalf("got %d messages want 2", len(msgs))
 	}
-	// Verify sender identity on both messages.
 	if msgs[0].FromProject != "companyA/payment-service" {
 		t.Errorf("task from: %q want payment-service", msgs[0].FromProject)
 	}
-	if msgs[1].FromProject != "companyA/user-service" {
-		t.Errorf("reply from: %q want user-service", msgs[1].FromProject)
+	if msgs[1].FromProject != "companyA/user-service" || msgs[1].Status != "done" {
+		t.Errorf("reply: from=%q status=%q want user-service/done", msgs[1].FromProject, msgs[1].Status)
 	}
 	conn.Close()
 

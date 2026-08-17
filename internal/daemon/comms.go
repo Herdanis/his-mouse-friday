@@ -37,13 +37,18 @@ func (c *Comms) CreateDMChannel(wsID int64, projA, projB string) (Channel, error
 	if err != nil {
 		return Channel{}, err
 	}
-	id, _ := res.LastInsertId()
-	if id == 0 {
+	// Detect existing-channel case via RowsAffected, NOT LastInsertId:
+	// modernc/sqlite returns the stale last-insert rowid (not 0) on
+	// ON CONFLICT DO NOTHING, which yields a bogus channel id and trips the
+	// messages FK on the very next PostMessage.
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
 		var ch Channel
 		err = c.Store.db.QueryRow(`SELECT id, workspace_id, name, type FROM channels WHERE workspace_id=? AND name=?`, wsID, name).
 			Scan(&ch.ID, &ch.WorkspaceID, &ch.Name, &ch.Type)
 		return ch, err
 	}
+	id, _ := res.LastInsertId()
 	return Channel{ID: id, WorkspaceID: wsID, Name: name, Type: "dm"}, nil
 }
 
@@ -111,4 +116,16 @@ func dmChannelName(projA, projB string) string {
 		return projA + "::" + projB
 	}
 	return projB + "::" + projA
+}
+
+// GetOrCreateGeneralChannel returns the single global "general" channel where
+// all agents live. It is created on store init; this just looks it up.
+func (c *Comms) GetOrCreateGeneralChannel() (Channel, error) {
+	var ch Channel
+	err := c.Store.db.QueryRow(
+		`SELECT c.id, c.workspace_id, c.name, c.type
+		 FROM channels c JOIN workspaces w ON c.workspace_id=w.id
+		 WHERE c.name='general' AND w.name='__global__'`).
+		Scan(&ch.ID, &ch.WorkspaceID, &ch.Name, &ch.Type)
+	return ch, err
 }

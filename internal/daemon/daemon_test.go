@@ -31,46 +31,47 @@ func setupDaemon(t *testing.T) *Daemon {
 	}
 }
 
-func TestHandle_EngageProjectAgent(t *testing.T) {
+func TestHandle_PostToGeneralWakesAgent(t *testing.T) {
 	d := setupDaemon(t)
 	d.Registry.AddWorkspace("companyA")
-	d.Registry.AddProject("companyA", "payment-service", "/tmp/payment")
-	d.Registry.AddProject("companyA", "user-service", "/tmp/user")
 	userDir := t.TempDir()
 	os.WriteFile(filepath.Join(userDir, "mouse.yaml"), []byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n"), 0644)
 	d.Registry.AddProject("companyA", "user-service", userDir)
 
+	// Post a task to general mentioning @companyA/user-service — thread root.
 	params, _ := json.Marshal(map[string]any{
-		"project": "companyA/user-service",
 		"from":    "companyA/payment-service",
-		"task":    "add field payment_status",
+		"to":      "companyA/user-service",
+		"content": "add field payment_status",
 	})
-	req := protocol.Request{Method: "engage_project_agent", Params: params, ID: 1}
-
-	resp := d.Handle(context.Background(), req)
+	resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: params, ID: 1})
 	if resp.Error != nil {
-		t.Fatalf("engage failed: %s", resp.Error.Message)
+		t.Fatalf("post failed: %s", resp.Error.Message)
 	}
-	var result EngageResult
-	json.Unmarshal(resp.Result, &result)
-	if result.SessionID == 0 {
-		t.Errorf("no session id")
+	var pr PostResult
+	json.Unmarshal(resp.Result, &pr)
+	if pr.MessageID == 0 {
+		t.Fatal("no message id")
 	}
-	if result.ChannelID == 0 {
-		t.Errorf("no channel id")
+	// Wake fired: a session was created for the addressed project.
+	var sessCount int
+	d.Store.db.QueryRow(
+		`SELECT count(*) FROM sessions WHERE project_id=
+		  (SELECT id FROM projects WHERE name='user-service')`).Scan(&sessCount)
+	if sessCount == 0 {
+		t.Fatal("post to general did not wake the addressed agent (no session created)")
 	}
 }
 
-func TestHandle_Engage_InboundDenied(t *testing.T) {
+func TestHandle_Post_InboundDenied(t *testing.T) {
 	d := setupDaemon(t)
 	d.Registry.AddWorkspace("companyA")
 	userDir := t.TempDir()
 	os.WriteFile(filepath.Join(userDir, "mouse.yaml"), []byte("agent:\n  primary:\n    provider: opencode\n"), 0644)
 	d.Registry.AddProject("companyA", "user-service", userDir)
 
-	params, _ := json.Marshal(map[string]any{"project": "companyA/user-service", "task": "x"})
-	req := protocol.Request{Method: "engage_project_agent", Params: params, ID: 1}
-	resp := d.Handle(context.Background(), req)
+	params, _ := json.Marshal(map[string]any{"from": "companyA/payment", "to": "companyA/user-service", "content": "x"})
+	resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: params, ID: 1})
 	if resp.Error == nil {
 		t.Fatal("expected inbound-denied error")
 	}
@@ -101,12 +102,20 @@ func TestHandle_PostAndRead(t *testing.T) {
 	}
 }
 
-func TestHandle_ProjectNotFound(t *testing.T) {
+func TestHandle_PostToUnregisteredAgentSkipsWake(t *testing.T) {
 	d := setupDaemon(t)
-	params, _ := json.Marshal(map[string]any{"project": "nowhere/ghost", "task": "x"})
-	resp := d.Handle(context.Background(), protocol.Request{Method: "engage_project_agent", Params: params, ID: 1})
-	if resp.Error == nil {
-		t.Fatal("expected not-found error")
+	d.Registry.AddWorkspace("companyA")
+
+	// Addressing an unregistered agent: message posts, no wake (mailbox semantics).
+	params, _ := json.Marshal(map[string]any{"from": "companyA/payment", "to": "companyA/ghost", "content": "hello"})
+	resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: params, ID: 1})
+	if resp.Error != nil {
+		t.Fatalf("post to unregistered agent should succeed (skip wake): %s", resp.Error.Message)
+	}
+	var sessCount int
+	d.Store.db.QueryRow("SELECT count(*) FROM sessions").Scan(&sessCount)
+	if sessCount != 0 {
+		t.Fatalf("no wake expected for unregistered agent, got %d sessions", sessCount)
 	}
 }
 

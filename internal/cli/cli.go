@@ -7,6 +7,8 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/herdanis/his-mouse-friday/internal/config"
@@ -49,6 +51,7 @@ func NewRootCmd() *cobra.Command {
 	root.AddCommand(statusCmd())
 	root.AddCommand(initCmd())
 	root.AddCommand(configCmd())
+	root.AddCommand(doneCmd())
 	return root
 }
 
@@ -334,6 +337,48 @@ func configCmd() *cobra.Command {
 	}
 	c.AddCommand(show)
 	return c
+}
+
+// doneCmd posts a "done" reply to the engaging agent. Spawned agents run this
+// as a one-line shell command instead of writing python/heredocs to hit the
+// daemon socket (which the bash tool wrapper mangles). Env (set by the
+// launcher): HMF_CHANNEL_ID, HMF_TASK_MSG_ID, HMF_PROJECT, HMF_FROM.
+func doneCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "done [summary]",
+		Short: "Post a done reply to the engaging agent (spawned agents signal completion)",
+		Args:  cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			channelStr := os.Getenv("HMF_CHANNEL_ID")
+			if channelStr == "" {
+				return fmt.Errorf("HMF_CHANNEL_ID not set; 'hmf done' is for agents spawned by 'hmf engage'")
+			}
+			params := map[string]any{
+				"channel": atoi64(channelStr),
+				"from":    os.Getenv("HMF_PROJECT"),
+				"to":      os.Getenv("HMF_FROM"),
+				"content": strings.Join(args, " "),
+				"status":  "done",
+			}
+			if tid := os.Getenv("HMF_TASK_MSG_ID"); tid != "" {
+				params["thread_id"] = atoi64(tid)
+			}
+			resp, err := callDaemon("post_message", params)
+			if err != nil {
+				return err
+			}
+			if resp.Error != nil {
+				return fmt.Errorf("%s", resp.Error.Message)
+			}
+			fmt.Println("done")
+			return nil
+		},
+	}
+}
+
+func atoi64(s string) int64 {
+	n, _ := strconv.ParseInt(s, 10, 64)
+	return n
 }
 
 // Protection model: global opencode.json has "edit": "ask" (prompts for

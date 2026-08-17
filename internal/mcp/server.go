@@ -21,26 +21,15 @@ import (
 // Tool input / output types
 // ============================================
 
-type EngageInput struct {
-	Project    string `json:"project" jsonschema:"workspace/project to engage"`
-	Task       string `json:"task" jsonschema:"task description"`
-	TimeoutSec int    `json:"timeout_sec,omitempty" jsonschema:"max seconds to wait for reply (default 300)"`
-}
-type EngageOutput struct {
-	SessionID   int64  `json:"session_id"`
-	ChannelID   int64  `json:"channel_id"`
-	ReplyStatus string `json:"reply_status,omitempty" jsonschema:"done | timeout | cancelled"`
-	Reply       string `json:"reply,omitempty" jsonschema:"agent's done message content"`
-}
 type PostInput struct {
-	Channel  int64  `json:"channel,omitempty" jsonschema:"channel id (defaults to this session's channel)"`
-	ThreadID int64  `json:"thread_id,omitempty" jsonschema:"thread id for replies"`
-	To       string `json:"to,omitempty" jsonschema:"recipient workspace/project"`
+	Channel  int64  `json:"channel,omitempty" jsonschema:"channel id (defaults to the global general channel)"`
+	ThreadID int64  `json:"thread_id,omitempty" jsonschema:"thread id for replies; omit (0) for a thread root / new task"`
+	To       string `json:"to,omitempty" jsonschema:"recipient workspace/project — a thread root with a to wakes that agent"`
 	Content  string `json:"content" jsonschema:"message content"`
 	Status   string `json:"status,omitempty" jsonschema:"delivered | in_progress | done | message (default)"`
 }
 type ReadChanInput struct {
-	Channel int64 `json:"channel,omitempty" jsonschema:"channel id (defaults to this session's channel)"`
+	Channel int64 `json:"channel,omitempty" jsonschema:"channel id (defaults to the global general channel)"`
 }
 type ReadThreadInput struct {
 	ThreadID int64 `json:"thread_id" jsonschema:"thread id"`
@@ -72,12 +61,6 @@ type ProjectAgentOutput struct {
 
 type ProjectAgentsOutput struct {
 	Agents []ProjectAgentOutput `json:"agents"`
-}
-
-type WaitDoneResult struct {
-	Status    string `json:"status"`
-	Reply     string `json:"reply,omitempty"`
-	MessageID int64  `json:"message_id,omitempty"`
 }
 
 // ============================================
@@ -148,66 +131,24 @@ func envChannelID() int64 {
 
 // newServer builds the MCP server and registers the 5 orchestration tools.
 // callerID is the resolved "workspace/project" of the repo this shim runs in
-// ("" if unregistered/open mode). It's injected as the `from` field on engage
-// and post calls so the daemon records who sent each message.
+// ("" if unregistered/open mode). It's injected as the `from` field on post
+// calls so the daemon records who sent each message. A thread-root post
+// (no thread_id) with a `to` wakes the addressed agent.
 func newServer(callerID string) *mcpserver.Server {
 	srv := mcpserver.NewServer(&mcpserver.Implementation{Name: "hmf-mcp", Version: "v0.1.0"}, nil)
 
 	mcpserver.AddTool(srv, &mcpserver.Tool{
-		Name:        "engage_project_agent",
-		Description: "Spawn/resume target project agent, wait for its reply, return session + channel + reply",
-	}, func(ctx context.Context, req *mcpserver.CallToolRequest, in EngageInput) (*mcpserver.CallToolResult, EngageOutput, error) {
-		params := map[string]any{
-			"project": in.Project,
-			"from":    callerID,
-			"task":    in.Task,
-		}
-		result, err := callDaemon(ctx, "engage_project_agent", params)
-		if err != nil {
-			return nil, EngageOutput{}, err
-		}
-		var engageResult struct {
-			SessionID int64 `json:"session_id"`
-			ChannelID int64 `json:"channel_id"`
-			MessageID int64 `json:"message_id"`
-		}
-		if err := json.Unmarshal(result, &engageResult); err != nil {
-			return nil, EngageOutput{}, fmt.Errorf("decode engage result: %w", err)
-		}
-		out := EngageOutput{SessionID: engageResult.SessionID, ChannelID: engageResult.ChannelID}
-		timeoutMS := in.TimeoutSec * 1000
-		if timeoutMS <= 0 {
-			timeoutMS = 300000
-		}
-		waitResult, waitErr := callDaemon(ctx, "wait_for_done", map[string]any{
-			"channel":    engageResult.ChannelID,
-			"since_id":   engageResult.MessageID,
-			"timeout_ms": timeoutMS,
-		})
-		if waitErr == nil {
-			var wait WaitDoneResult
-			if json.Unmarshal(waitResult, &wait) == nil {
-				out.ReplyStatus = wait.Status
-				out.Reply = wait.Reply
-			}
-		}
-		return nil, out, nil
-	})
-
-	mcpserver.AddTool(srv, &mcpserver.Tool{
 		Name:        "post_message",
-		Description: "Post a message to a channel or thread (channel defaults to this session)",
+		Description: "Post a message to the general channel (or a thread). A thread-root message (no thread_id) with a `to` wakes that agent. Replies set thread_id.",
 	}, func(ctx context.Context, req *mcpserver.CallToolRequest, in PostInput) (*mcpserver.CallToolResult, struct{}, error) {
-		ch := in.Channel
-		if ch == 0 {
-			ch = envChannelID()
-		}
 		params := map[string]any{
-			"channel": ch,
 			"from":    callerID,
 			"to":      in.To,
 			"content": in.Content,
 			"status":  in.Status,
+		}
+		if in.Channel != 0 {
+			params["channel"] = in.Channel
 		}
 		if in.ThreadID != 0 {
 			params["thread_id"] = in.ThreadID
@@ -220,13 +161,17 @@ func newServer(callerID string) *mcpserver.Server {
 
 	mcpserver.AddTool(srv, &mcpserver.Tool{
 		Name:        "read_channel",
-		Description: "Read messages in a channel (defaults to this session's channel)",
+		Description: "Read messages in a channel (defaults to this session's channel, else the global general channel)",
 	}, func(ctx context.Context, req *mcpserver.CallToolRequest, in ReadChanInput) (*mcpserver.CallToolResult, MessagesOutput, error) {
 		ch := in.Channel
 		if ch == 0 {
 			ch = envChannelID()
 		}
-		result, err := callDaemon(ctx, "read_channel", map[string]any{"channel": ch})
+		params := map[string]any{}
+		if ch != 0 {
+			params["channel"] = ch
+		}
+		result, err := callDaemon(ctx, "read_channel", params)
 		if err != nil {
 			return nil, MessagesOutput{}, err
 		}
