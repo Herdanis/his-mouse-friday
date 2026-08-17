@@ -3,6 +3,10 @@
   "permission": {
     "bash": {
       "*": "ask"
-    }
+    },
+    "edit": "allow",
+    "read": "allow",
+    "glob": "allow",
+    "grep": "allow"
   }
 }
