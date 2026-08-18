@@ -13,14 +13,14 @@ type Channel struct {
 }
 
 type Message struct {
-	ID          int64
-	ChannelID   int64
-	ThreadID    int64
-	FromProject string
-	ToProject   string
-	Content     string
-	Status      string
-	TS          time.Time
+	ID          int64     `json:"id"`
+	ChannelID   int64     `json:"channel_id"`
+	ThreadID    int64     `json:"thread_id"`
+	FromProject string    `json:"from_project"`
+	ToProject   string    `json:"to_project"`
+	Content     string    `json:"content"`
+	Status      string    `json:"status"`
+	TS          time.Time `json:"ts"`
 }
 
 type Comms struct {

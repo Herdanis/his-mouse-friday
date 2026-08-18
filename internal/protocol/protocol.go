@@ -22,8 +22,12 @@ type ResponseError struct {
 	Message string `json:"message"`
 }
 
-// StateDir returns the daemon's state directory (~/.hmf).
+// StateDir returns the daemon's state directory. Respects HMF_STATE_DIR for
+// tests (temp dir) + future relocation; defaults to ~/.hmf.
 func StateDir() string {
+	if dir := os.Getenv("HMF_STATE_DIR"); dir != "" {
+		return dir
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		home = "."
