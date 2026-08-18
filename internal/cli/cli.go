@@ -351,7 +351,7 @@ func doneCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			channelStr := os.Getenv("HMF_CHANNEL_ID")
 			if channelStr == "" {
-				return fmt.Errorf("HMF_CHANNEL_ID not set; 'hmf done' is for agents spawned by 'hmf engage'")
+				return fmt.Errorf("HMF_CHANNEL_ID not set; 'hmf done' is for agents spawned by an hmf wake (post_message with a `to`)")
 			}
 			params := map[string]any{
 				"channel": atoi64(channelStr),
