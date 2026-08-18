@@ -119,6 +119,124 @@ func TestHandle_PostToUnregisteredAgentSkipsWake(t *testing.T) {
 	}
 }
 
+// ============================================
+// task_status — guards the orchestrator's "still working vs died vs done" signal
+// ============================================
+
+// postTask sets up a thread-root message + (optionally) a session linked by
+// task_msg_id, returning the thread root id. Decouples task_status logic from
+// spawn timing — we insert rows directly.
+func postTask(t *testing.T, d *Daemon, sessionStatus string, exitCode int, withDone bool) int64 {
+	t.Helper()
+	d.Store.db.Exec(`INSERT INTO workspaces(id, name) VALUES(1, 'companyA')`)
+	d.Store.db.Exec(`INSERT INTO projects(id, workspace_id, name, path) VALUES(1, 1, 'user-service', '/tmp/user')`)
+
+	// Thread root message in the general channel.
+	res, err := d.Store.db.Exec(
+		`INSERT INTO messages(channel_id, thread_id, from_project, to_project, content, status, ts)
+		 VALUES(1, NULL, 'companyA/payment', 'companyA/user-service', 'task', 'message', datetime('now'))`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootID, _ := res.LastInsertId()
+
+	if sessionStatus != "" {
+		d.Store.db.Exec(
+			`INSERT INTO sessions(project_id, agent_binary, model, status, pid, created_at, task_msg_id, exit_code)
+			 VALUES(1, 'opencode', 'default', ?, 12345, datetime('now'), ?, ?)`,
+			sessionStatus, rootID, exitCode)
+	}
+	if withDone {
+		d.Store.db.Exec(
+			`INSERT INTO messages(channel_id, thread_id, from_project, to_project, content, status, ts)
+			 VALUES(1, ?, 'companyA/user-service', 'companyA/payment', 'done', 'done', datetime('now'))`,
+			rootID)
+	}
+	return rootID
+}
+
+func TestHandle_TaskStatus_Working(t *testing.T) {
+	d := setupDaemon(t)
+	rootID := postTask(t, d, "active", 0, false)
+	resp := d.Handle(context.Background(), protocol.Request{
+		Method: "task_status",
+		Params: mustJSON(t, map[string]any{"thread_id": rootID}),
+		ID:     1,
+	})
+	if resp.Error != nil {
+		t.Fatal(resp.Error.Message)
+	}
+	var ts TaskStatusResult
+	json.Unmarshal(resp.Result, &ts)
+	if ts.AgentStatus != "working" || ts.HasDone {
+		t.Fatalf("want working/no-done, got %+v", ts)
+	}
+}
+
+func TestHandle_TaskStatus_ExitedWithDone(t *testing.T) {
+	d := setupDaemon(t)
+	rootID := postTask(t, d, "exited", 0, true)
+	resp := d.Handle(context.Background(), protocol.Request{
+		Method: "task_status",
+		Params: mustJSON(t, map[string]any{"thread_id": rootID}),
+		ID:     1,
+	})
+	var ts TaskStatusResult
+	json.Unmarshal(resp.Result, &ts)
+	if ts.AgentStatus != "exited" || !ts.HasDone || ts.ExitCode != 0 {
+		t.Fatalf("want exited+done+code0, got %+v", ts)
+	}
+}
+
+func TestHandle_TaskStatus_FailedNoDone(t *testing.T) {
+	d := setupDaemon(t)
+	rootID := postTask(t, d, "failed", 1, false)
+	resp := d.Handle(context.Background(), protocol.Request{
+		Method: "task_status",
+		Params: mustJSON(t, map[string]any{"thread_id": rootID}),
+		ID:     1,
+	})
+	var ts TaskStatusResult
+	json.Unmarshal(resp.Result, &ts)
+	if ts.AgentStatus != "failed" || ts.HasDone || ts.ExitCode != 1 {
+		t.Fatalf("want failed+no-done+code1, got %+v", ts)
+	}
+}
+
+func TestHandle_TaskStatus_NoAgent(t *testing.T) {
+	d := setupDaemon(t)
+	// No session linked to the thread root — wake never fired.
+	rootID := postTask(t, d, "", 0, false)
+	resp := d.Handle(context.Background(), protocol.Request{
+		Method: "task_status",
+		Params: mustJSON(t, map[string]any{"thread_id": rootID}),
+		ID:     1,
+	})
+	var ts TaskStatusResult
+	json.Unmarshal(resp.Result, &ts)
+	if ts.AgentStatus != "no_agent" || ts.HasDone {
+		t.Fatalf("want no_agent/no-done, got %+v", ts)
+	}
+}
+
+func TestHandle_TaskStatus_RequiresThreadID(t *testing.T) {
+	d := setupDaemon(t)
+	resp := d.Handle(context.Background(), protocol.Request{
+		Method: "task_status",
+		Params: mustJSON(t, map[string]any{}),
+		ID:     1,
+	})
+	if resp.Error == nil {
+		t.Fatal("expected error for missing thread_id")
+	}
+}
+
+func mustJSON(t *testing.T, v any) json.RawMessage {
+	t.Helper()
+	b, _ := json.Marshal(v)
+	return b
+}
+
 // TestServe_Smoke exercises the unix socket server end-to-end:
 // start Serve, send one status request over the socket, read the response.
 func TestServe_Smoke(t *testing.T) {

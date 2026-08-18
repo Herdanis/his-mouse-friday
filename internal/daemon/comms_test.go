@@ -83,7 +83,36 @@ func TestComms_DMChannelNormalized(t *testing.T) {
 	}
 }
 
-// TestComms_CreateDMChannelExistingAfterUnrelatedInsert guards against a
+// GetOrCreateGeneralChannel returns the single global lobby where all agents
+// live. It must be auto-created on store init + idempotent on lookup.
+func TestComms_GeneralChannel(t *testing.T) {
+	store := newTestStore(t)
+	c := &Comms{Store: store}
+
+	ch, err := c.GetOrCreateGeneralChannel()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ch.Name != "general" || ch.Type != "group" {
+		t.Errorf("got %+v, want name=general type=group", ch)
+	}
+	if ch.ID == 0 {
+		t.Fatal("no channel id")
+	}
+
+	// Idempotent: a second lookup returns the same channel.
+	ch2, _ := c.GetOrCreateGeneralChannel()
+	if ch2.ID != ch.ID {
+		t.Errorf("non-idempotent: got %d then %d", ch.ID, ch2.ID)
+	}
+
+	// Posts to general are readable via ReadChannel(ch.ID).
+	c.PostMessage(ch.ID, 0, "ws/a", "ws/b", "lobby msg", "message")
+	msgs, _ := c.ReadChannel(ch.ID, time.Time{})
+	if len(msgs) != 1 || msgs[0].Content != "lobby msg" {
+		t.Errorf("got %+v", msgs)
+	}
+}
 // modernc/sqlite quirk: ON CONFLICT DO NOTHING leaves LastInsertId() holding
 // the rowid of the most recent successful INSERT on the connection (not 0).
 // CreateDMChannel must detect the existing-channel case via RowsAffected and
