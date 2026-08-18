@@ -71,6 +71,16 @@ type PostParams struct {
 type PostResult struct {
 	MessageID int64 `json:"message_id"`
 }
+type TaskStatusParams struct {
+	ThreadID int64 `json:"thread_id"`
+}
+type TaskStatusResult struct {
+	HasDone     bool   `json:"has_done"`
+	AgentStatus string `json:"agent_status"` // working | exited | failed | no_agent
+	SessionID   int64  `json:"session_id,omitempty"`
+	PID         int    `json:"pid,omitempty"`
+	ExitCode    int    `json:"exit_code,omitempty"`
+}
 type ReadChanParams struct {
 	Channel int64 `json:"channel"`
 }
@@ -115,6 +125,8 @@ func (d *Daemon) Handle(ctx context.Context, req protocol.Request) protocol.Resp
 	switch req.Method {
 	case "post_message":
 		return d.handlePost(ctx, req)
+	case "task_status":
+		return d.handleTaskStatus(req)
 	case "read_channel":
 		return d.handleReadChannel(req)
 	case "read_thread":
@@ -224,7 +236,7 @@ func (d *Daemon) wakeAgent(ctx context.Context, msg Message) error {
 		}
 	}
 	runbook, _ := os.ReadFile(filepath.Join(proj.Path, "MOUSE.md"))
-	tmpSess, err := d.Sessions.Create(proj.ID, binary, model, 0)
+	tmpSess, err := d.Sessions.Create(proj.ID, binary, model, 0, msg.ID)
 	if err != nil {
 		return fmt.Errorf("session: %w", err)
 	}
@@ -245,6 +257,9 @@ func (d *Daemon) wakeAgent(ctx context.Context, msg Message) error {
 		ChannelID: msg.ChannelID,
 		SessionID: tmpSess.ID,
 		TaskMsgID: msg.ID,
+		OnExit: func(code int) {
+			d.Sessions.MarkExited(tmpSess.ID, code)
+		},
 	})
 	if err != nil {
 		d.Sessions.SetStatus(tmpSess.ID, "failed")
@@ -253,6 +268,53 @@ func (d *Daemon) wakeAgent(ctx context.Context, msg Message) error {
 	d.Sessions.SetPID(tmpSess.ID, pid)
 	d.Sessions.SetStatus(tmpSess.ID, "active")
 	return nil
+}
+
+// handleTaskStatus reports the state of the agent spawned for a task thread:
+// is it still working, exited cleanly, failed, or never woke. Plus whether a
+// done reply has landed. Lets the orchestrator poll "still working vs died"
+// instead of guessing from channel reads.
+func (d *Daemon) handleTaskStatus(req protocol.Request) protocol.Response {
+	var p TaskStatusParams
+	if err := json.Unmarshal(req.Params, &p); err != nil {
+		return errResp(req.ID, "bad params: "+err.Error())
+	}
+	if p.ThreadID == 0 {
+		return errResp(req.ID, "thread_id is required")
+	}
+	var doneCount int
+	d.Store.db.QueryRow(
+		`SELECT count(*) FROM messages WHERE thread_id=? AND status='done'`, p.ThreadID).Scan(&doneCount)
+
+	var sessID int64
+	var status string
+	var pid sql.NullInt64
+	var exitCode sql.NullInt64
+	err := d.Store.db.QueryRow(
+		`SELECT id, status, pid, exit_code FROM sessions WHERE task_msg_id=? ORDER BY id DESC LIMIT 1`,
+		p.ThreadID).Scan(&sessID, &status, &pid, &exitCode)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			result, _ := json.Marshal(TaskStatusResult{HasDone: doneCount > 0, AgentStatus: "no_agent"})
+			return protocol.Response{ID: req.ID, Result: result}
+		}
+		return errResp(req.ID, err.Error())
+	}
+	agentStatus := "working"
+	switch status {
+	case "exited":
+		agentStatus = "exited"
+	case "failed":
+		agentStatus = "failed"
+	}
+	result, _ := json.Marshal(TaskStatusResult{
+		HasDone:     doneCount > 0,
+		AgentStatus: agentStatus,
+		SessionID:   sessID,
+		PID:         int(pid.Int64),
+		ExitCode:    int(exitCode.Int64),
+	})
+	return protocol.Response{ID: req.ID, Result: result}
 }
 
 func (d *Daemon) handleReadChannel(req protocol.Request) protocol.Response {

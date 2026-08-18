@@ -26,6 +26,7 @@ type SpawnConfig struct {
 	ChannelID int64  // hmf channel for this conversation
 	SessionID int64  // hmf session id
 	TaskMsgID int64  // hmf task message id; spawned agent threads its done reply to this
+	OnExit    func(exitCode int)
 }
 
 // Spawn starts the agent binary in dir with the task as initial prompt.
@@ -77,6 +78,15 @@ func (l *Launcher) Spawn(ctx context.Context, cfg SpawnConfig) (int, error) {
 	if err := cmd.Start(); err != nil {
 		return 0, fmt.Errorf("spawn %q: %w", bin, err)
 	}
-	go func() { _ = cmd.Wait() }()
+	go func() {
+		_ = cmd.Wait()
+		if cfg.OnExit != nil {
+			code := -1
+			if cmd.ProcessState != nil {
+				code = cmd.ProcessState.ExitCode()
+			}
+			cfg.OnExit(code)
+		}
+	}()
 	return cmd.Process.Pid, nil
 }

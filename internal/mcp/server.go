@@ -63,6 +63,20 @@ type ProjectAgentsOutput struct {
 	Agents []ProjectAgentOutput `json:"agents"`
 }
 
+type PostOutput struct {
+	MessageID int64 `json:"message_id" jsonschema:"the id of the posted message (use as thread_id for replies / task_status)"`
+}
+type TaskStatusInput struct {
+	ThreadID int64 `json:"thread_id" jsonschema:"the task message id (thread root) to check status of"`
+}
+type TaskStatusOutput struct {
+	HasDone     bool   `json:"has_done"`
+	AgentStatus string `json:"agent_status" jsonschema:"working | exited | failed | no_agent"`
+	SessionID   int64  `json:"session_id,omitempty"`
+	PID         int    `json:"pid,omitempty"`
+	ExitCode    int    `json:"exit_code,omitempty"`
+}
+
 // ============================================
 // Daemon client (unix socket)
 // ============================================
@@ -139,8 +153,8 @@ func newServer(callerID string) *mcpserver.Server {
 
 	mcpserver.AddTool(srv, &mcpserver.Tool{
 		Name:        "post_message",
-		Description: "Post a message to the general channel (or a thread). A thread-root message (no thread_id) with a `to` wakes that agent. Replies set thread_id.",
-	}, func(ctx context.Context, req *mcpserver.CallToolRequest, in PostInput) (*mcpserver.CallToolResult, struct{}, error) {
+		Description: "Post a message to the general channel (or a thread). A thread-root message (no thread_id) with a `to` wakes that agent. Replies set thread_id. Returns message_id.",
+	}, func(ctx context.Context, req *mcpserver.CallToolRequest, in PostInput) (*mcpserver.CallToolResult, PostOutput, error) {
 		params := map[string]any{
 			"from":    callerID,
 			"to":      in.To,
@@ -153,10 +167,28 @@ func newServer(callerID string) *mcpserver.Server {
 		if in.ThreadID != 0 {
 			params["thread_id"] = in.ThreadID
 		}
-		if _, err := callDaemon(ctx, "post_message", params); err != nil {
-			return nil, struct{}{}, err
+		result, err := callDaemon(ctx, "post_message", params)
+		if err != nil {
+			return nil, PostOutput{}, err
 		}
-		return nil, struct{}{}, nil
+		var pr PostOutput
+		json.Unmarshal(result, &pr)
+		return nil, pr, nil
+	})
+
+	mcpserver.AddTool(srv, &mcpserver.Tool{
+		Name:        "task_status",
+		Description: "Check the status of a delegated task: is the agent still working, exited cleanly, failed, or never woke. Plus whether a done reply has landed.",
+	}, func(ctx context.Context, req *mcpserver.CallToolRequest, in TaskStatusInput) (*mcpserver.CallToolResult, TaskStatusOutput, error) {
+		result, err := callDaemon(ctx, "task_status", map[string]any{"thread_id": in.ThreadID})
+		if err != nil {
+			return nil, TaskStatusOutput{}, err
+		}
+		var ts TaskStatusOutput
+		if err := json.Unmarshal(result, &ts); err != nil {
+			return nil, TaskStatusOutput{}, fmt.Errorf("decode task_status: %w", err)
+		}
+		return nil, ts, nil
 	})
 
 	mcpserver.AddTool(srv, &mcpserver.Tool{

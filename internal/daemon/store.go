@@ -67,6 +67,10 @@ func OpenStore(path string) (*Store, error) {
 	}
 	// Migrate: add status column if missing (pre-existing DBs).
 	db.Exec(`ALTER TABLE messages ADD COLUMN status TEXT NOT NULL DEFAULT 'message'`)
+	// Migrate: link sessions to the task message they were spawned for, + track
+	// exit code so task_status can tell "still working" from "agent died".
+	db.Exec(`ALTER TABLE sessions ADD COLUMN task_msg_id INTEGER`)
+	db.Exec(`ALTER TABLE sessions ADD COLUMN exit_code INTEGER`)
 	// Ensure the global "general" channel exists — the single lobby where all
 	// agents live. Uses a sentinel __global__ workspace so the channels.workspace_id
 	// FK is satisfied without a schema migration.

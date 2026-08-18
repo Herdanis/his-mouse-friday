@@ -10,7 +10,7 @@ func TestSessionStore_CreateAndGet(t *testing.T) {
 	r.AddProject("companyA", "payment-service", "/tmp/payment")
 
 	ss := &SessionStore{Store: r.Store}
-	s, err := ss.Create(1, "opencode", "default", 12345)
+	s, err := ss.Create(1, "opencode", "default", 12345, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -31,7 +31,7 @@ func TestSessionStore_SetStatus(t *testing.T) {
 	store.db.Exec(`INSERT INTO workspaces(id, name) VALUES(1, 'ws')`)
 	store.db.Exec(`INSERT INTO projects(id, workspace_id, name, path) VALUES(1, 1, 'p', '/tmp/p')`)
 	ss := &SessionStore{Store: store}
-	s, _ := ss.Create(1, "opencode", "default", 99)
+	s, _ := ss.Create(1, "opencode", "default", 99, 200)
 	if err := ss.SetStatus(s.ID, "failed"); err != nil {
 		t.Fatal(err)
 	}
