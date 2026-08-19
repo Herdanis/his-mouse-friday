@@ -178,7 +178,7 @@ func TestShim_ReadThreadShape(t *testing.T) {
 		"status":    "done",
 	})
 
-	result := mustCallDaemon(t, "read_thread", map[string]any{"thread_id": threadID})
+	result := mustCallDaemon(t, "read_thread", map[string]any{"message_id": threadID})
 	var msgs []MessageOutput
 	if err := json.Unmarshal(result, &msgs); err != nil {
 		t.Fatalf("unmarshal []MessageOutput: %v", err)

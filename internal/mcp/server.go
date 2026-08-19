@@ -33,7 +33,7 @@ type ReadChanInput struct {
 	Channel int64 `json:"channel,omitempty" jsonschema:"channel id (defaults to the global general channel)"`
 }
 type ReadThreadInput struct {
-	ThreadID int64 `json:"thread_id" jsonschema:"thread id"`
+	MessageID int64 `json:"message_id" jsonschema:"any message id on the thread (root or reply) — the handler resolves it to the thread root"`
 }
 type ListInput struct {
 	Workspace string `json:"workspace,omitempty" jsonschema:"workspace name filter"`
@@ -222,7 +222,7 @@ func newServer(callerID string) *mcpserver.Server {
 
 	mcpserver.AddTool(srv, &mcpserver.Tool{
 		Name:        "read_thread",
-		Description: "Read a message thread",
+		Description: "Read a message thread. Pass any message_id from the thread (root or reply) — the handler resolves it to the thread root and returns all messages in the conversation.",
 	}, func(ctx context.Context, req *mcpserver.CallToolRequest, in ReadThreadInput) (*mcpserver.CallToolResult, MessagesOutput, error) {
 		result, err := protocol.Call("read_thread", in)
 		if err != nil {

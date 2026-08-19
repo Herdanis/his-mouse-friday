@@ -109,7 +109,7 @@ type ReadChanParams struct {
 	Channel int64 `json:"channel"`
 }
 type ReadThreadParams struct {
-	ThreadID int64 `json:"thread_id"`
+	MessageID int64 `json:"message_id"`
 }
 type WorkspaceAddParams struct {
 	Name string `json:"name"`
@@ -494,7 +494,17 @@ func (d *Daemon) handleReadThread(req protocol.Request) protocol.Response {
 	if err := json.Unmarshal(req.Params, &p); err != nil {
 		return errResp(req.ID, "bad params: "+err.Error())
 	}
-	msgs, err := d.Comms.ReadThread(p.ThreadID)
+	if p.MessageID == 0 {
+		return errResp(req.ID, "message_id is required")
+	}
+	// Resolve to thread root: if reply (thread_id set), use that; if root, use id.
+	var parentID int64
+	err := d.Store.db.QueryRow(
+		`SELECT IFNULL(thread_id, id) FROM messages WHERE id=?`, p.MessageID).Scan(&parentID)
+	if err != nil {
+		return errResp(req.ID, "message not found")
+	}
+	msgs, err := d.Comms.ReadThread(parentID)
 	if err != nil {
 		return errResp(req.ID, err.Error())
 	}

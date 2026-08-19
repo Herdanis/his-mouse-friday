@@ -77,7 +77,7 @@ func TestVerticalSlice(t *testing.T) {
 	})
 
 	// payment reads the thread — gets root + in_progress + done.
-	threadResp := mustSend(t, d, "read_thread", map[string]any{"thread_id": taskID})
+	threadResp := mustSend(t, d, "read_thread", map[string]any{"message_id": taskID})
 	var msgs []daemon.Message
 	json.Unmarshal(threadResp.Result, &msgs)
 	if len(msgs) != 3 {
@@ -217,7 +217,7 @@ func TestVerticalSlice_OverSocket(t *testing.T) {
 	})
 
 	// Read thread — root + done.
-	threadResp := send("read_thread", map[string]any{"thread_id": pr.MessageID})
+	threadResp := send("read_thread", map[string]any{"message_id": pr.MessageID})
 	var msgs []daemon.Message
 	json.Unmarshal(threadResp.Result, &msgs)
 	if len(msgs) != 2 {

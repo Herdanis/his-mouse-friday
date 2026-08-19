@@ -127,7 +127,7 @@ func TestCLI_DonePostsThreadedReply(t *testing.T) {
 
 	// Verify the done reply landed: status=done, thread_id=threadParentID,
 	// content="all done", from=HMF_PROJECT, to=HMF_FROM.
-	result := mustCLICall(t, "read_thread", map[string]any{"thread_id": threadParentID})
+	result := mustCLICall(t, "read_thread", map[string]any{"message_id": threadParentID})
 	var msgs []daemon.Message
 	json.Unmarshal(result, &msgs)
 	// root (task) + done reply.
