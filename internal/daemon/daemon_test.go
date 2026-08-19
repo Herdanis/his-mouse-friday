@@ -717,3 +717,50 @@ func TestWakeAgent_ResumeUsesCanonicalSessionID(t *testing.T) {
 		t.Errorf("capturer called %d times, want 1 (only on fresh spawn)", calls)
 	}
 }
+
+func TestWakeAgent_PrefixGeneratedOnceAndInherited(t *testing.T) {
+	d := setupDaemon(t)
+	d.Registry.AddWorkspace("companyA")
+	userDir := t.TempDir()
+	os.WriteFile(filepath.Join(userDir, "mouse.yaml"),
+		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n"), 0644)
+	d.Registry.AddProject("companyA", "user-service", userDir)
+
+	// First wake: generates a prefix.
+	p1, _ := json.Marshal(map[string]any{"from": "companyA/payment", "to": "companyA/user-service", "content": "t1"})
+	r1 := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: p1, ID: 1})
+	var pr1 PostResult
+	json.Unmarshal(r1.Result, &pr1)
+
+	var prefix1, name1 string
+	d.Store.db.QueryRow(`SELECT prefix, name FROM sessions WHERE task_msg_id=?`, pr1.MessageID).Scan(&prefix1, &name1)
+	if len(prefix1) != 5 {
+		t.Fatalf("prefix len: got %d want 5", len(prefix1))
+	}
+	if name1 != prefix1+"-user-service" {
+		t.Errorf("name: got %q want %q-user-service", name1, prefix1)
+	}
+
+	// Mark first session exited so wake guard allows the second.
+	d.Store.db.Exec(`UPDATE sessions SET status='exited' WHERE task_msg_id=?`, pr1.MessageID)
+
+	// Second wake (reply, same thread root): should inherit prefix1.
+	p2, _ := json.Marshal(map[string]any{
+		"channel": 1, "thread_id": pr1.MessageID, "from": "companyA/payment",
+		"to": "companyA/user-service", "content": "t2",
+	})
+	r2 := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: p2, ID: 2})
+	if r2.Error != nil {
+		t.Fatalf("second post: %s", r2.Error.Message)
+	}
+
+	// Latest session for this root is the second wake's. Its prefix must
+	// equal prefix1 (inherited), not a freshly-generated one.
+	var latestPrefix string
+	d.Store.db.QueryRow(
+		`SELECT prefix FROM sessions WHERE root_thread_id=? ORDER BY id DESC LIMIT 1`,
+		pr1.MessageID).Scan(&latestPrefix)
+	if latestPrefix != prefix1 {
+		t.Errorf("second wake prefix: got %q want %q (inherited)", latestPrefix, prefix1)
+	}
+}

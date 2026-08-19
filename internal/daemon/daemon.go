@@ -2,7 +2,9 @@ package daemon
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +18,18 @@ import (
 	"github.com/herdanis/his-mouse-friday/internal/config"
 	"github.com/herdanis/his-mouse-friday/internal/protocol"
 )
+
+// generatePrefix returns 5 hex chars from crypto/rand for a root session's
+// human-friendly name. Used once per thread root; inherited by siblings.
+func generatePrefix() string {
+	b := make([]byte, 3) // 3 bytes = 6 hex chars; truncate to 5.
+	if _, err := rand.Read(b); err != nil {
+		// crypto/rand should not fail; if it does, the prefix is just less
+		// collision-resistant. Don't crash the wake path.
+		return "00000"
+	}
+	return hex.EncodeToString(b)[:5]
+}
 
 // ============================================
 // Daemon
@@ -296,7 +310,20 @@ func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error
 	} else if msg.ThreadID != 0 {
 		rootID = msg.ThreadID
 	}
-	tmpSess, err := d.Sessions.Create(proj.ID, binary, model, 0, msg.ID, rootID, "", "")
+	// Prefix: lookup an existing one for this root (inherit), else generate.
+	var prefix string
+	var existingName sql.NullString
+	err = d.Store.db.QueryRow(
+		`SELECT prefix, name FROM sessions WHERE root_thread_id=? AND prefix IS NOT NULL ORDER BY id ASC LIMIT 1`,
+		rootID).Scan(&prefix, &existingName)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("prefix lookup: %w", err)
+	}
+	if prefix == "" {
+		prefix = generatePrefix()
+	}
+	name := prefix + "-" + proj.Name
+	tmpSess, err := d.Sessions.Create(proj.ID, binary, model, 0, msg.ID, rootID, prefix, name)
 	if err != nil {
 		return fmt.Errorf("session: %w", err)
 	}
