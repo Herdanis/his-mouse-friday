@@ -624,7 +624,7 @@ func (d *Daemon) handleStatus(req protocol.Request) protocol.Response {
 // or fresh spawns pre-capture) to "" / 0 so the CLI renders clean dashes.
 func (d *Daemon) handleSessionList(req protocol.Request) protocol.Response {
 	rows, err := d.Store.db.Query(
-		`SELECT s.name, p.name, s.status, IFNULL(s.opencode_session_id,''), IFNULL(s.root_thread_id,0), s.created_at
+		`SELECT IFNULL(s.name,'-'), p.name, s.status, IFNULL(s.opencode_session_id,''), IFNULL(s.root_thread_id,0), IFNULL(s.created_at,'')
 		 FROM sessions s JOIN projects p ON s.project_id=p.id
 		 ORDER BY s.id DESC`)
 	if err != nil {
