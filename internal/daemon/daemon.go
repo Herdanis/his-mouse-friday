@@ -381,13 +381,20 @@ func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error
 	d.Sessions.SetStatus(tmpSess.ID, "active")
 	// Capture opencode session ID by title (unique per hmf session) for
 	// display in hmf session list + future hmf session attach.
-	if ocID, err := d.CaptureAgentSessionID(spawnCfg); err != nil {
-		log.Printf("capture session id for session %d: %v", tmpSess.ID, err)
-	} else if ocID != "" {
+	// ponytail: fixed 2s delay before capture — opencode needs time to
+	// register the session after cmd.Start(). Upgrade path: poll
+	// opencode session list until the title appears (up to 10s).
+	go func() {
+		time.Sleep(2 * time.Second)
+		ocID, err := d.CaptureAgentSessionID(spawnCfg)
+		if err != nil || ocID == "" {
+			log.Printf("capture session id for session %d: ocID=%q err=%v", tmpSess.ID, ocID, err)
+			return
+		}
 		if err := d.Sessions.SetAgentSessionID(tmpSess.ID, ocID); err != nil {
 			log.Printf("set session id for session %d: %v", tmpSess.ID, err)
 		}
-	}
+	}()
 	return nil
 }
 
