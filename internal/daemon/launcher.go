@@ -29,6 +29,7 @@ type SpawnConfig struct {
 	TaskMsgID      int64  // hmf task message id; spawned agent threads its done reply to this
 	OnExit         func(exitCode int)
 	AgentSessionID string // non-empty = resume this agent session via runtime-specific resume flag
+	AgentProfile  string // agent profile name (e.g. "cavecrew-builder") — passed as --agent to opencode
 }
 
 // Spawn starts the agent binary in dir with the task as initial prompt.
@@ -45,9 +46,9 @@ func buildArgs(cfg SpawnConfig) (bin string, args []string) {
 	switch {
 	case isOpencode(bin):
 		if cfg.AgentSessionID != "" {
-			args = opencodeResumeArgs(cfg.AgentSessionID, task, cfg.Model)
+			args = opencodeResumeArgs(cfg.AgentSessionID, task, cfg.Model, cfg.AgentProfile)
 		} else {
-			args = opencodeFreshArgs(task, cfg.Model)
+			args = opencodeFreshArgs(task, cfg.Model, cfg.AgentProfile)
 		}
 	default:
 		// Unknown runtime: no resume support. Run <bin> <task> directly.
