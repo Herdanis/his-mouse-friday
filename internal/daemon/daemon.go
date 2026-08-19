@@ -293,13 +293,13 @@ func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error
 	}
 	binary := "opencode"
 	model := "default"
-	profile := ""
+	var extraArgs []string
 	if mouse != nil && mouse.Agent.Primary.Provider != "" {
 		binary = mouse.Agent.Primary.Provider
 		if mouse.Agent.Primary.Model != "" {
 			model = mouse.Agent.Primary.Model
 		}
-		profile = mouse.Agent.Primary.Profile
+		extraArgs = mouse.Agent.Primary.Args
 	}
 	runbook, _ := os.ReadFile(filepath.Join(proj.Path, "MOUSE.md"))
 	// rootID: explicitly passed (cross-project delegation from a child agent
@@ -357,7 +357,7 @@ func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error
 		SessionID:      tmpSess.ID,
 		TaskMsgID:      msg.ID,
 		AgentSessionID: canonicalSessionID,
-		AgentProfile:   profile,
+		ExtraArgs:       extraArgs,
 		OnExit: func(code int) {
 			d.Sessions.MarkExited(tmpSess.ID, code)
 			if !d.SafetyNetEnabled {

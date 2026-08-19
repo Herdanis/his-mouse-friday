@@ -18,12 +18,12 @@ type AgentConfig struct {
 	Secondary AgentTarget `yaml:"secondary"`
 }
 
-// AgentTarget identifies a coding agent runtime + model + optional profile.
+// AgentTarget identifies a coding agent runtime + model + optional extra CLI args.
 // Empty provider = unset (secondary optional).
 type AgentTarget struct {
-	Provider string `yaml:"provider"`
-	Model    string `yaml:"model"`
-	Profile  string `yaml:"profile"` // agent profile name (e.g. "cavecrew-builder") — passed as --agent to opencode run
+	Provider string   `yaml:"provider"`
+	Model    string   `yaml:"model"`
+	Args     []string `yaml:"args"` // extra CLI args passed to the agent binary (platform-specific, e.g. ["--agent", "cavecrew-builder"])
 }
 
 type PermissionsConfig struct {

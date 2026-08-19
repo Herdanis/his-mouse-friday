@@ -18,27 +18,23 @@ func isOpencode(binary string) bool {
 	return strings.Contains(binary, "opencode")
 }
 
-// opencodeResumeArgs returns args for `opencode run --auto -s <session_id> [--agent <profile>] [-m <model>] <task>`.
+// opencodeResumeArgs returns args for `opencode run --auto -s <session_id> [--agent <profile>] [-m <model>] <extra_args> <task>`.
 // --auto: spawned agents have no TTY, can't answer bash:ask prompts — auto-approve
 // non-denied permissions so the agent can actually work. Denies in opencode.json
 // still block (only "ask" is auto-approved).
-func opencodeResumeArgs(sessionID, task, model, profile string) []string {
+func opencodeResumeArgs(sessionID, task, model string, extra []string) []string {
 	args := []string{"run", "--auto", "-s", sessionID}
-	if profile != "" {
-		args = append(args, "--agent", profile)
-	}
+	args = append(args, extra...)
 	if model != "" && model != "default" {
 		args = append(args, "-m", model)
 	}
 	return append(args, task)
 }
 
-// opencodeFreshArgs returns args for `opencode run --auto [--agent <profile>] [-m <model>] <task>`.
-func opencodeFreshArgs(task, model, profile string) []string {
+// opencodeFreshArgs returns args for `opencode run --auto [--agent <profile>] [-m <model>] <extra_args> <task>`.
+func opencodeFreshArgs(task, model string, extra []string) []string {
 	args := []string{"run", "--auto"}
-	if profile != "" {
-		args = append(args, "--agent", profile)
-	}
+	args = append(args, extra...)
 	if model != "" && model != "default" {
 		args = append(args, "-m", model)
 	}
