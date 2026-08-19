@@ -118,14 +118,27 @@ func envChannelID() int64 {
 // newServer builds the MCP server and registers the 5 orchestration tools.
 // callerID is the resolved "workspace/project" of the repo this shim runs in
 // ("" if unregistered/open mode). It's injected as the `from` field on post
-// calls so the daemon records who sent each message. A thread-root post
-// (no thread_id) with a `to` wakes the addressed agent.
+// calls so the daemon records who sent each message.
+//
+// Thread tracking: the shim auto-binds every post_message to a single thread
+// per session. Orchestrator sessions start with no thread — the first post
+// creates a thread root, and the returned message_id becomes the session's
+// thread. All subsequent posts auto-set thread_id=<that>. Spawned agents
+// inherit HMF_TASK_MSG_ID as their thread (the root's). This means: one
+// thread per root session, all agent-to-agent comms in the same conversation,
+// new thread only when opencode restarts (new shim = new session).
 func newServer(callerID string) *mcpserver.Server {
 	srv := mcpserver.NewServer(&mcpserver.Implementation{Name: "hmf-mcp", Version: "v0.1.0"}, nil)
 
+	// Thread binding: spawned agents inherit from env; orchestrator starts fresh.
+	var currentThread int64
+	if tid := os.Getenv("HMF_TASK_MSG_ID"); tid != "" {
+		fmt.Sscanf(tid, "%d", &currentThread)
+	}
+
 	mcpserver.AddTool(srv, &mcpserver.Tool{
 		Name:        "post_message",
-		Description: "Post a message to the general channel (or a thread). A thread-root message (no thread_id) with a `to` wakes that agent. Replies set thread_id. Returns message_id. For follow-up tasks on the SAME project in the same conversation, post a REPLY (set thread_id to the original task's message_id, set to to the same project) — the agent resumes its prior opencode session and remembers context from the prior task. New thread root = fresh agent, no memory.",
+		Description: "Post a message to the general channel (or a thread). A thread-root message (no thread_id) with a `to` wakes that agent. Replies set thread_id. Returns message_id. The shim auto-binds all your posts to the same thread per session — you don't need to manage thread_id manually. First post creates the thread; subsequent posts continue it (the agent resumes its prior session with context).",
 	}, func(ctx context.Context, req *mcpserver.CallToolRequest, in PostInput) (*mcpserver.CallToolResult, PostOutput, error) {
 		params := map[string]any{
 			"from":    callerID,
@@ -136,13 +149,19 @@ func newServer(callerID string) *mcpserver.Server {
 		if in.Channel != 0 {
 			params["channel"] = in.Channel
 		}
-		if in.ThreadID != 0 {
-			params["thread_id"] = in.ThreadID
+		// Thread binding: if caller didn't set thread_id, auto-bind to the
+		// session's current thread. First post has no current thread →
+		// creates a thread root; the returned message_id becomes the
+		// session's thread for all future posts.
+		threadID := in.ThreadID
+		if threadID == 0 {
+			threadID = currentThread
+		}
+		if threadID != 0 {
+			params["thread_id"] = threadID
 		}
 		// If caller is a spawned agent, propagate the caller's root so cross-
-		// project delegations bind to the original thread root, not the
-		// caller's session. HMF_TASK_MSG_ID is set by the launcher; absent
-		// for user-initiated orchestrator sessions.
+		// project delegations bind to the original thread root.
 		if tid := os.Getenv("HMF_TASK_MSG_ID"); tid != "" {
 			var rootID int64
 			fmt.Sscanf(tid, "%d", &rootID)
@@ -156,6 +175,10 @@ func newServer(callerID string) *mcpserver.Server {
 		}
 		var pr PostOutput
 		json.Unmarshal(result, &pr)
+		// First post (no prior thread) → bind the session to this thread root.
+		if currentThread == 0 && pr.MessageID != 0 {
+			currentThread = pr.MessageID
+		}
 		return nil, pr, nil
 	})
 
