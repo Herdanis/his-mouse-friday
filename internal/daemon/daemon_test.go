@@ -688,8 +688,9 @@ func TestWakeAgent_ResumeUsesCanonicalSessionID(t *testing.T) {
 	// Mark the first session exited so the wake guard allows a follow-up.
 	d.Store.db.Exec(`UPDATE sessions SET status='exited' WHERE task_msg_id=?`, pr1.MessageID)
 
-	// Second wake: reply on the same thread, same project — should resume
-	// ses_fresh1, NOT call the capturer again.
+	// Second wake: reply on the same thread, same project — fresh spawn
+	// (resume disabled: opencode run -s doesn't exit). Both spawns are
+	// fresh; capturer called twice.
 	p2, _ := json.Marshal(map[string]any{
 		"channel": 1, "thread_id": pr1.MessageID, "from": "companyA/payment",
 		"to": "companyA/user-service", "content": "follow-up",
@@ -702,14 +703,15 @@ func TestWakeAgent_ResumeUsesCanonicalSessionID(t *testing.T) {
 	if len(spawnArgs) != 2 {
 		t.Fatalf("expected 2 spawns, got %d", len(spawnArgs))
 	}
+	// Both spawns fresh — no AgentSessionID (no resume).
 	if spawnArgs[0] != "" {
 		t.Errorf("first spawn: AgentSessionID=%q want empty (fresh)", spawnArgs[0])
 	}
-	if spawnArgs[1] != "ses_fresh1" {
-		t.Errorf("second spawn: AgentSessionID=%q want ses_fresh1 (resume)", spawnArgs[1])
+	if spawnArgs[1] != "" {
+		t.Errorf("second spawn: AgentSessionID=%q want empty (fresh, resume disabled)", spawnArgs[1])
 	}
-	if calls != 1 {
-		t.Errorf("capturer called %d times, want 1 (only on fresh spawn)", calls)
+	if calls != 2 {
+		t.Errorf("capturer called %d times, want 2 (both fresh spawn)", calls)
 	}
 }
 

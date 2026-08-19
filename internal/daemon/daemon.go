@@ -327,19 +327,13 @@ func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error
 		return fmt.Errorf("session: %w", err)
 	}
 	// Resume lookup: is there a canonical opencode session for (parentID, proj.ID)?
-	// Empty result => fresh spawn; non-empty => resume via `opencode run -s <id>`.
-	var canonicalSessionID string
-	err = d.Store.db.QueryRow(
-		`SELECT opencode_session_id FROM sessions
-		  WHERE root_thread_id=? AND project_id=? AND opencode_session_id IS NOT NULL
-		  ORDER BY id ASC LIMIT 1`,
-		parentID, proj.ID).Scan(&canonicalSessionID)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("canonical lookup: %w", err)
-	}
+	// Fresh spawn always — opencode run -s (resume) doesn't exit after the
+	// task, leaving sessions stuck "active" forever. The agent reads prior
+	// context from the thread via read_thread instead of opencode session
+	// memory. When opencode fixes -s exit behavior, re-enable resume here.
 	entrypoint := fmt.Sprintf(
 		"You were @mentioned in the general channel, message id %d. "+
-			"Call the read_thread MCP tool with thread_id=%d to load the task and any prior context. "+
+			"Call the read_thread MCP tool with message_id=%d to load the task and any prior context. "+
 			"Handle the request. Reply in the thread using post_message with thread_id=%d, status=\"done\", "+
 			"and a one-line summary of what you did.",
 		msg.ID, parentID, parentID)
@@ -354,7 +348,6 @@ func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error
 		ChannelID:      msg.ChannelID,
 		SessionID:      tmpSess.ID,
 		TaskMsgID:      msg.ID,
-		AgentSessionID: canonicalSessionID,
 		OnExit: func(code int) {
 			d.Sessions.MarkExited(tmpSess.ID, code)
 			if !d.SafetyNetEnabled {
@@ -385,19 +378,14 @@ func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error
 	}
 	d.Sessions.SetPID(tmpSess.ID, pid)
 	d.Sessions.SetStatus(tmpSess.ID, "active")
-	// Capture OC ID only on fresh spawn (canonical was empty). Binds the
-	// new opencode session to this hmf session row so later wakes resume it.
-	// ponytail: no mutex — concurrent wakes on the same (root, project) are
-	// already serialized by the wake guard (threadSessionActive suppresses
-	// the second wake while the first is still active). If that guard ever
-	// loosens, add a sync.Mutex around capture+SetAgentSessionID here.
-	if canonicalSessionID == "" {
-		if ocID, err := d.CaptureAgentSessionID(spawnCfg); err != nil {
-			log.Printf("capture oc id for session %d: %v", tmpSess.ID, err)
-		} else if ocID != "" {
-			if err := d.Sessions.SetAgentSessionID(tmpSess.ID, ocID); err != nil {
-				log.Printf("set oc id for session %d: %v", tmpSess.ID, err)
-			}
+	// Capture opencode session ID for display in hmf session list. Not used
+	// for resume (resume disabled — opencode run -s doesn't exit). Kept for
+	// traceability + future re-enable when opencode fixes -s exit behavior.
+	if ocID, err := d.CaptureAgentSessionID(spawnCfg); err != nil {
+		log.Printf("capture oc id for session %d: %v", tmpSess.ID, err)
+	} else if ocID != "" {
+		if err := d.Sessions.SetAgentSessionID(tmpSess.ID, ocID); err != nil {
+			log.Printf("set oc id for session %d: %v", tmpSess.ID, err)
 		}
 	}
 	return nil
