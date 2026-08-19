@@ -378,16 +378,6 @@ func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error
 	}
 	d.Sessions.SetPID(tmpSess.ID, pid)
 	d.Sessions.SetStatus(tmpSess.ID, "active")
-	// Capture opencode session ID for display in hmf session list. Not used
-	// for resume (resume disabled — opencode run -s doesn't exit). Kept for
-	// traceability + future re-enable when opencode fixes -s exit behavior.
-	if ocID, err := d.CaptureAgentSessionID(spawnCfg); err != nil {
-		log.Printf("capture oc id for session %d: %v", tmpSess.ID, err)
-	} else if ocID != "" {
-		if err := d.Sessions.SetAgentSessionID(tmpSess.ID, ocID); err != nil {
-			log.Printf("set oc id for session %d: %v", tmpSess.ID, err)
-		}
-	}
 	return nil
 }
 

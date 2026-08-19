@@ -656,16 +656,8 @@ func TestHandle_NoWakeOnActiveSession(t *testing.T) {
 	}
 }
 
-func TestWakeAgent_ResumeUsesCanonicalSessionID(t *testing.T) {
+func TestWakeAgent_AlwaysFreshSpawn(t *testing.T) {
 	d := setupDaemon(t)
-	// Inject a fake OC-ID capturer so we don't depend on real opencode.
-	captured := []string{"ses_fresh1", "ses_fresh2"}
-	calls := 0
-	d.CaptureAgentSessionID = func(cfg SpawnConfig) (string, error) {
-		id := captured[calls%len(captured)]
-		calls++
-		return id, nil
-	}
 	// Stub the launcher's Spawn to record args without running opencode.
 	var spawnArgs []string
 	d.Launcher = &Launcher{Binary: "/bin/echo", SpawnFn: func(cfg SpawnConfig) (int, error) {
@@ -703,15 +695,12 @@ func TestWakeAgent_ResumeUsesCanonicalSessionID(t *testing.T) {
 	if len(spawnArgs) != 2 {
 		t.Fatalf("expected 2 spawns, got %d", len(spawnArgs))
 	}
-	// Both spawns fresh — no AgentSessionID (no resume).
+	// Both spawns fresh — no AgentSessionID (resume disabled, no capture).
 	if spawnArgs[0] != "" {
 		t.Errorf("first spawn: AgentSessionID=%q want empty (fresh)", spawnArgs[0])
 	}
 	if spawnArgs[1] != "" {
-		t.Errorf("second spawn: AgentSessionID=%q want empty (fresh, resume disabled)", spawnArgs[1])
-	}
-	if calls != 2 {
-		t.Errorf("capturer called %d times, want 2 (both fresh spawn)", calls)
+		t.Errorf("second spawn: AgentSessionID=%q want empty (fresh)", spawnArgs[1])
 	}
 }
 
