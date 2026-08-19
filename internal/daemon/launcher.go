@@ -107,3 +107,32 @@ func (l *Launcher) Spawn(ctx context.Context, cfg SpawnConfig) (int, error) {
 	}()
 	return cmd.Process.Pid, nil
 }
+
+
+// ============================================
+// captureOCSessionID — post-spawn opencode session list query
+// ============================================
+
+// captureOCSessionID queries `opencode session list` in cfg.Dir and returns
+// the top row's session ID. Returns ("", nil) if no sessions exist. Used by
+// wakeAgent after a fresh spawn to bind the new opencode session to the hmf
+// session row for later resume. Race mitigation: callers should serialize
+// concurrent calls (a sync.Mutex in Daemon covers it — see Task 9).
+func captureOCSessionID(cfg SpawnConfig) (string, error) {
+	cmd := exec.CommandContext(context.Background(), cfg.Binary, "session", "list")
+	cmd.Dir = cfg.Dir
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("opencode session list: %w", err)
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "ses_") {
+			// ID is the first whitespace-delimited token.
+			if id := strings.Fields(line)[0]; id != "" {
+				return id, nil
+			}
+		}
+	}
+	return "", nil
+}

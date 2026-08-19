@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -201,5 +202,62 @@ func TestLauncher_ResumeArgUsesSessionFlag(t *testing.T) {
 	want = []string{"run", "do thing"}
 	if !reflect.DeepEqual(args, want) {
 		t.Fatalf("fresh args: got %v want %v", args, want)
+	}
+}
+
+
+// ============================================
+// captureOCSessionID — post-spawn opencode session list query
+// ============================================
+
+func TestCaptureOCSessionID_ParsesTopRow(t *testing.T) {
+	// Stub: write a fake "opencode" script to a temp dir that prints a
+	// known session list table.
+	binDir := t.TempDir()
+	binPath := filepath.Join(binDir, "opencode")
+	script := `#!/bin/sh
+# Args: session list — emit a table like opencode does.
+if [ "$1" = "session" ] && [ "$2" = "list" ]; then
+  printf "Session ID                      Title                                                                    Updated\n"
+  printf "────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n"
+  printf "ses_xyz789                       test task                                                                10:40 PM\n"
+  exit 0
+fi
+exit 1
+`
+	if err := os.WriteFile(binPath, []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := SpawnConfig{Dir: t.TempDir(), Binary: binPath}
+	id, err := captureOCSessionID(cfg)
+	if err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+	if id != "ses_xyz789" {
+		t.Errorf("got %q want ses_xyz789", id)
+	}
+}
+
+func TestCaptureOCSessionID_NoSessionsReturnsEmpty(t *testing.T) {
+	binDir := t.TempDir()
+	binPath := filepath.Join(binDir, "opencode")
+	script := `#!/bin/sh
+if [ "$1" = "session" ] && [ "$2" = "list" ]; then
+  printf "Session ID                      Title                                                                    Updated\n"
+  printf "────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n"
+  exit 0
+fi
+exit 1
+`
+	os.WriteFile(binPath, []byte(script), 0755)
+
+	cfg := SpawnConfig{Dir: t.TempDir(), Binary: binPath}
+	id, err := captureOCSessionID(cfg)
+	if err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+	if id != "" {
+		t.Errorf("got %q want empty", id)
 	}
 }
