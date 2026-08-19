@@ -37,8 +37,12 @@ type Daemon struct {
 	// safety net, polluting threads the test then manually populates with
 	// done replies.
 	SafetyNetEnabled bool
-	Sock             string
-	shutdownCh       chan struct{}
+	// CaptureOCSessionID is injectable for tests so wakeAgent's post-spawn
+	// capture step doesn't depend on real opencode. Default in NewDaemon is
+	// the real captureOCSessionID.
+	CaptureOCSessionID func(cfg SpawnConfig) (string, error)
+	Sock               string
+	shutdownCh         chan struct{}
 }
 
 // NewDaemon wires a Daemon with default components for the given socket + db.
@@ -48,15 +52,16 @@ func NewDaemon(sock, dbPath string) (*Daemon, error) {
 		return nil, err
 	}
 	return &Daemon{
-		Store:            store,
-		Registry:         &Registry{Store: store},
-		Sessions:         &SessionStore{Store: store},
-		Comms:            &Comms{Store: store},
-		Launcher:         &Launcher{},
-		MouseLoader:      config.LoadMouse,
-		SafetyNetEnabled: true,
-		Sock:             sock,
-		shutdownCh:       make(chan struct{}),
+		Store:             store,
+		Registry:          &Registry{Store: store},
+		Sessions:          &SessionStore{Store: store},
+		Comms:             &Comms{Store: store},
+		Launcher:          &Launcher{},
+		MouseLoader:       config.LoadMouse,
+		SafetyNetEnabled:  true,
+		CaptureOCSessionID: captureOCSessionID,
+		Sock:              sock,
+		shutdownCh:        make(chan struct{}),
 	}, nil
 }
 
@@ -295,23 +300,35 @@ func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error
 	if err != nil {
 		return fmt.Errorf("session: %w", err)
 	}
+	// Resume lookup: is there a canonical opencode session for (rootID, proj.ID)?
+	// Empty result => fresh spawn; non-empty => resume via `opencode run -s <id>`.
+	var canonicalOCID string
+	err = d.Store.db.QueryRow(
+		`SELECT opencode_session_id FROM sessions
+		  WHERE root_thread_id=? AND project_id=? AND opencode_session_id IS NOT NULL
+		  ORDER BY id ASC LIMIT 1`,
+		rootID, proj.ID).Scan(&canonicalOCID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("canonical lookup: %w", err)
+	}
 	entrypoint := fmt.Sprintf(
 		"You were @mentioned in the general channel, message id %d. "+
 			"Call the read_thread MCP tool with thread_id=%d to load the task and any prior context. "+
 			"Handle the request. Reply in the thread using post_message with thread_id=%d, status=\"done\", "+
 			"and a one-line summary of what you did.",
 		msg.ID, msg.ID, msg.ID)
-	pid, err := d.Launcher.Spawn(ctx, SpawnConfig{
-		Dir:       proj.Path,
-		Binary:    binary,
-		Model:     model,
-		Runbook:   string(runbook),
-		Task:      entrypoint,
-		FromID:    msg.FromProject,
-		ProjectID: msg.ToProject,
-		ChannelID: msg.ChannelID,
-		SessionID: tmpSess.ID,
-		TaskMsgID: msg.ID,
+	spawnCfg := SpawnConfig{
+		Dir:               proj.Path,
+		Binary:            binary,
+		Model:             model,
+		Runbook:           string(runbook),
+		Task:              entrypoint,
+		FromID:            msg.FromProject,
+		ProjectID:         msg.ToProject,
+		ChannelID:         msg.ChannelID,
+		SessionID:         tmpSess.ID,
+		TaskMsgID:         msg.ID,
+		OpencodeSessionID: canonicalOCID,
 		OnExit: func(code int) {
 			d.Sessions.MarkExited(tmpSess.ID, code)
 			if !d.SafetyNetEnabled {
@@ -334,13 +351,29 @@ func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error
 				}
 			}
 		},
-	})
+	}
+	pid, err := d.Launcher.Spawn(ctx, spawnCfg)
 	if err != nil {
 		d.Sessions.SetStatus(tmpSess.ID, "failed")
 		return fmt.Errorf("spawn: %w", err)
 	}
 	d.Sessions.SetPID(tmpSess.ID, pid)
 	d.Sessions.SetStatus(tmpSess.ID, "active")
+	// Capture OC ID only on fresh spawn (canonical was empty). Binds the
+	// new opencode session to this hmf session row so later wakes resume it.
+	// ponytail: no mutex — concurrent wakes on the same (root, project) are
+	// already serialized by the wake guard (threadSessionActive suppresses
+	// the second wake while the first is still active). If that guard ever
+	// loosens, add a sync.Mutex around capture+SetOCSessionID here.
+	if canonicalOCID == "" {
+		if ocID, err := d.CaptureOCSessionID(spawnCfg); err != nil {
+			log.Printf("capture oc id for session %d: %v", tmpSess.ID, err)
+		} else if ocID != "" {
+			if err := d.Sessions.SetOCSessionID(tmpSess.ID, ocID); err != nil {
+				log.Printf("set oc id for session %d: %v", tmpSess.ID, err)
+			}
+		}
+	}
 	return nil
 }
 

@@ -44,6 +44,10 @@ func spinDaemon(t *testing.T) (*daemon.Daemon, func()) {
 	}
 	d.Launcher = &daemon.Launcher{Binary: "/bin/echo"}
 	d.MouseLoader = config.LoadMouse
+	// /bin/echo exits immediately without posting a done reply — the safety
+	// net would post synthetic BLOCKED replies and pollute the threads these
+	// tests assert on. Disable it (matches setupDaemon in daemon_test.go).
+	d.SafetyNetEnabled = false
 
 	ctx, cancel := context.WithCancel(context.Background())
 	serveErr := make(chan error, 1)

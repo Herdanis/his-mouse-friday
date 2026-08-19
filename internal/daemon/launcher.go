@@ -12,6 +12,8 @@ import (
 
 type Launcher struct {
 	Binary string // override for testing; empty = use binary arg
+	// SpawnFn overrides Spawn for testing. If nil, real Spawn runs.
+	SpawnFn func(cfg SpawnConfig) (int, error)
 }
 
 // SpawnConfig holds everything the spawned agent needs to do work + reply.
@@ -54,6 +56,9 @@ func buildArgs(cfg SpawnConfig) (bin string, args []string) {
 }
 
 func (l *Launcher) Spawn(ctx context.Context, cfg SpawnConfig) (int, error) {
+	if l.SpawnFn != nil {
+		return l.SpawnFn(cfg)
+	}
 	// Project-scope confinement: pin the agent to its registered project dir so it
 	// can't wander to a different clone / deployed copy / home directory. Handles
 	// the case where a project has clones elsewhere (e.g. a stow-deployed copy in

@@ -32,7 +32,10 @@ func setupDaemon(t *testing.T) *Daemon {
 		MouseLoader: func(path string) (*config.MouseConfig, error) {
 			return config.LoadMouse(path)
 		},
-		shutdownCh: make(chan struct{}),
+		// Default no-op stub so /bin/echo tests don't shell out to real
+		// opencode. Individual tests that exercise capture override this.
+		CaptureOCSessionID: func(SpawnConfig) (string, error) { return "", nil },
+		shutdownCh:         make(chan struct{}),
 	}
 }
 
@@ -655,5 +658,62 @@ func TestHandle_NoWakeOnActiveSession(t *testing.T) {
 	d.Store.db.QueryRow(`SELECT count(*) FROM sessions WHERE root_thread_id=500`).Scan(&sessCount)
 	if sessCount != 1 {
 		t.Fatalf("expected no new session (1 pre-existing active), got %d with root_thread_id=500", sessCount)
+	}
+}
+
+func TestWakeAgent_ResumeUsesCanonicalSessionID(t *testing.T) {
+	d := setupDaemon(t)
+	// Inject a fake OC-ID capturer so we don't depend on real opencode.
+	captured := []string{"ses_fresh1", "ses_fresh2"}
+	calls := 0
+	d.CaptureOCSessionID = func(cfg SpawnConfig) (string, error) {
+		id := captured[calls%len(captured)]
+		calls++
+		return id, nil
+	}
+	// Stub the launcher's Spawn to record args without running opencode.
+	var spawnArgs []string
+	d.Launcher = &Launcher{Binary: "/bin/echo", SpawnFn: func(cfg SpawnConfig) (int, error) {
+		spawnArgs = append(spawnArgs, cfg.OpencodeSessionID)
+		return 1, nil
+	}}
+
+	d.Registry.AddWorkspace("companyA")
+	userDir := t.TempDir()
+	os.WriteFile(filepath.Join(userDir, "mouse.yaml"),
+		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n"), 0644)
+	d.Registry.AddProject("companyA", "user-service", userDir)
+
+	// First wake: thread root, fresh spawn, captures OC ID ses_fresh1.
+	p1, _ := json.Marshal(map[string]any{"from": "companyA/payment", "to": "companyA/user-service", "content": "task 1"})
+	r1 := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: p1, ID: 1})
+	var pr1 PostResult
+	json.Unmarshal(r1.Result, &pr1)
+
+	// Mark the first session exited so the wake guard allows a follow-up.
+	d.Store.db.Exec(`UPDATE sessions SET status='exited' WHERE task_msg_id=?`, pr1.MessageID)
+
+	// Second wake: reply on the same thread, same project — should resume
+	// ses_fresh1, NOT call the capturer again.
+	p2, _ := json.Marshal(map[string]any{
+		"channel": 1, "thread_id": pr1.MessageID, "from": "companyA/payment",
+		"to": "companyA/user-service", "content": "follow-up",
+	})
+	r2 := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: p2, ID: 2})
+	if r2.Error != nil {
+		t.Fatalf("second post: %s", r2.Error.Message)
+	}
+
+	if len(spawnArgs) != 2 {
+		t.Fatalf("expected 2 spawns, got %d", len(spawnArgs))
+	}
+	if spawnArgs[0] != "" {
+		t.Errorf("first spawn: OpencodeSessionID=%q want empty (fresh)", spawnArgs[0])
+	}
+	if spawnArgs[1] != "ses_fresh1" {
+		t.Errorf("second spawn: OpencodeSessionID=%q want ses_fresh1 (resume)", spawnArgs[1])
+	}
+	if calls != 1 {
+		t.Errorf("capturer called %d times, want 1 (only on fresh spawn)", calls)
 	}
 }
