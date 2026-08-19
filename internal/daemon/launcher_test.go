@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"os/exec"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -169,5 +170,36 @@ func TestLauncher_SetsTaskMsgIDEnv(t *testing.T) {
 	out, _ := cmd.Output()
 	if strings.TrimSpace(string(out)) != "999" {
 		t.Errorf("HMF_TASK_MSG_ID: got %q want 999", strings.TrimSpace(string(out)))
+	}
+}
+
+
+// ============================================
+// Resume arg construction (OpencodeSessionID)
+// ============================================
+
+func TestLauncher_ResumeArgUsesSessionFlag(t *testing.T) {
+	cfg := SpawnConfig{
+		Dir:               t.TempDir(),
+		Binary:            "opencode",
+		Model:             "",
+		Task:              "do thing",
+		OpencodeSessionID: "ses_abc123",
+	}
+	bin, args := buildArgs(cfg)
+	if bin != "opencode" {
+		t.Fatalf("bin: got %q want opencode", bin)
+	}
+	want := []string{"run", "-s", "ses_abc123", "do thing"}
+	if !reflect.DeepEqual(args, want) {
+		t.Fatalf("args: got %v want %v", args, want)
+	}
+
+	// Fresh spawn (no OpencodeSessionID): no -s flag.
+	cfg.OpencodeSessionID = ""
+	_, args = buildArgs(cfg)
+	want = []string{"run", "do thing"}
+	if !reflect.DeepEqual(args, want) {
+		t.Fatalf("fresh args: got %v want %v", args, want)
 	}
 }

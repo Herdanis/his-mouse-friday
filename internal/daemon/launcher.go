@@ -27,19 +27,33 @@ type SpawnConfig struct {
 	SessionID int64  // hmf session id
 	TaskMsgID int64  // hmf task message id; spawned agent threads its done reply to this
 	OnExit    func(exitCode int)
+	OpencodeSessionID string // non-empty = resume this opencode session via -s
 }
 
 // Spawn starts the agent binary in dir with the task as initial prompt.
 // Channel/session IDs + runbook passed via env vars so the spawned agent
 // can read_channel, post_message back via hmf-mcp.
+// buildArgs decides the binary + args for an opencode spawn. Pure function
+// so tests can verify resume vs. fresh arg construction without running
+// opencode. cfg.Binary must be set; cfg.Dir is not consulted here.
+func buildArgs(cfg SpawnConfig) (bin string, args []string) {
+	bin = cfg.Binary
+	task := cfg.Task
+	args = []string{task}
+	if strings.Contains(bin, "opencode") {
+		args = []string{"run"}
+		if cfg.OpencodeSessionID != "" {
+			args = append(args, "-s", cfg.OpencodeSessionID)
+		}
+		if cfg.Model != "" && cfg.Model != "default" {
+			args = append(args, "-m", cfg.Model)
+		}
+		args = append(args, task)
+	}
+	return bin, args
+}
+
 func (l *Launcher) Spawn(ctx context.Context, cfg SpawnConfig) (int, error) {
-	bin := cfg.Binary
-	if l.Binary != "" {
-		bin = l.Binary
-	}
-	if _, err := exec.LookPath(bin); err != nil {
-		return 0, fmt.Errorf("agent binary %q not found: %w", bin, err)
-	}
 	// Project-scope confinement: pin the agent to its registered project dir so it
 	// can't wander to a different clone / deployed copy / home directory. Handles
 	// the case where a project has clones elsewhere (e.g. a stow-deployed copy in
@@ -58,15 +72,13 @@ func (l *Launcher) Spawn(ctx context.Context, cfg SpawnConfig) (int, error) {
 	// and surface the blocker to the user.
 	replyProtocol := "\n\n[REPLY PROTOCOL] You MUST post a done reply before exiting — whether you completed the task, hit a blocker, or couldn't start. Thread it to your task (thread_id=" + fmt.Sprintf("%d", cfg.TaskMsgID) + "). Use the post_message MCP tool with status=\"done\" and a one-line summary (preferred — needs no shell permission, works under bash:ask). If blocked (permission denied, file not found, missing tool, command requires ask-approval you can't get), prefix the summary with \"BLOCKED: \" and state what stopped you. Alternatively, if you have shell access, run: hmf done \"<summary>\". Do NOT write python or heredocs to hit the daemon socket directly — the bash wrapper mangles multi-line commands. Never exit without posting a done reply."
 	fullTask := cfg.Task + scope + replyProtocol
-	// opencode needs "run" subcommand for non-interactive mode.
-	// Pass -m only when model is set and not "default" (let opencode use its global default).
-	args := []string{fullTask}
-	if strings.Contains(bin, "opencode") {
-		args = []string{"run"}
-		if cfg.Model != "" && cfg.Model != "default" {
-			args = append(args, "-m", cfg.Model)
-		}
-		args = append(args, fullTask)
+	cfg.Task = fullTask // so buildArgs emits the full task string
+	bin, args := buildArgs(cfg)
+	if l.Binary != "" {
+		bin = l.Binary
+	}
+	if _, err := exec.LookPath(bin); err != nil {
+		return 0, fmt.Errorf("agent binary %q not found: %w", bin, err)
 	}
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Dir = cfg.Dir
