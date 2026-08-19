@@ -169,6 +169,40 @@ func (d *Daemon) findProject(ws, name string) (Project, error) {
 	return p, err
 }
 
+// threadHasDone reports whether any message on the thread (root or replies)
+// has status='done'. Used to suppress re-waking a finished thread.
+func (d *Daemon) threadHasDone(threadID int64) bool {
+	if threadID == 0 {
+		return false
+	}
+	var n int
+	d.Store.db.QueryRow(
+		`SELECT count(*) FROM messages WHERE (id=? OR thread_id=?) AND status='done'`,
+		threadID, threadID).Scan(&n)
+	return n > 0
+}
+
+// threadSessionActive reports whether the latest session bound to the thread
+// is still active (process still running). Used to suppress a second wake
+// while the first is still working.
+//
+// ponytail: queries root_thread_id (not task_msg_id) so it catches the
+// reply-wake session too — Task 8's reply-wake stores task_msg_id=<reply-msg-id>,
+// not the thread root, so a task_msg_id=? filter would miss it.
+func (d *Daemon) threadSessionActive(threadID int64) bool {
+	if threadID == 0 {
+		return false
+	}
+	var status string
+	err := d.Store.db.QueryRow(
+		`SELECT status FROM sessions WHERE root_thread_id=? ORDER BY id DESC LIMIT 1`,
+		threadID).Scan(&status)
+	if err != nil {
+		return false // no session → not active
+	}
+	return status == "active"
+}
+
 func (d *Daemon) handlePost(ctx context.Context, req protocol.Request) protocol.Response {
 	var p PostParams
 	if err := json.Unmarshal(req.Params, &p); err != nil {
@@ -187,12 +221,19 @@ func (d *Daemon) handlePost(ctx context.Context, req protocol.Request) protocol.
 	if err != nil {
 		return errResp(req.ID, err.Error())
 	}
-	// Wake any to-addressed message — thread root OR reply. Reply wakes
-	// enable session resume (follow-up in an existing thread re-spawns the
-	// agent). Guards in Task 7 suppress done threads / active sessions.
+	// Wake any to-addressed message — thread root OR reply. Two guards
+	// suppress the wake: (1) the thread already has a done reply (finished
+	// — don't re-wake), (2) the thread's latest session is still active
+	// (agent running — let it pick up the new message on its next turn).
 	if p.To != "" {
-		if err := d.wakeAgent(ctx, p, msg); err != nil {
-			return errResp(req.ID, "wake: "+err.Error())
+		if d.threadHasDone(p.ThreadID) {
+			// Message still posts — visible in read_thread. Just no wake.
+		} else if d.threadSessionActive(p.ThreadID) {
+			// Agent still running — no new wake.
+		} else {
+			if err := d.wakeAgent(ctx, p, msg); err != nil {
+				return errResp(req.ID, "wake: "+err.Error())
+			}
 		}
 	}
 	result, _ := json.Marshal(PostResult{MessageID: msg.ID})

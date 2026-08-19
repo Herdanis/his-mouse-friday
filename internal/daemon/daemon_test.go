@@ -580,3 +580,79 @@ func TestHandle_ReplyWithToWakesAgent(t *testing.T) {
 		t.Fatalf("expected wake on reply-with-to, got %d sessions for thread 500", sessCount)
 	}
 }
+
+
+// ============================================
+// Wake guards — no wake on done thread or active session
+// ============================================
+
+func TestHandle_NoWakeOnThreadWithDone(t *testing.T) {
+	d := setupDaemon(t)
+	d.Registry.AddWorkspace("companyA")
+	userDir := t.TempDir()
+	os.WriteFile(filepath.Join(userDir, "mouse.yaml"),
+		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n"), 0644)
+	d.Registry.AddProject("companyA", "user-service", userDir)
+
+	// Seed: thread root 500, an exited session bound to it, and a done reply.
+	// Exited session means the active-session guard won't fire — only the
+	// done-reply guard should suppress the wake here.
+	d.Store.db.Exec(`INSERT INTO messages(id, channel_id, thread_id, from_project, to_project, content, status, ts)
+		VALUES(500, 1, NULL, 'companyA/payment', 'companyA/user-service', 'task', 'message', datetime('now'))`)
+	d.Store.db.Exec(`INSERT INTO sessions(project_id, agent_binary, model, status, pid, created_at, task_msg_id, root_thread_id)
+		VALUES((SELECT id FROM projects WHERE name='user-service'), 'opencode', 'default', 'exited', 0, datetime('now'), 500, 500)`)
+	d.Store.db.Exec(`INSERT INTO messages(channel_id, thread_id, from_project, to_project, content, status, ts)
+		VALUES(1, 500, 'companyA/user-service', 'companyA/payment', 'done', 'done', datetime('now'))`)
+
+	// Follow-up reply with to= — would wake without guards; must NOT wake
+	// because the thread already has a done reply.
+	params, _ := json.Marshal(map[string]any{
+		"channel": 1, "thread_id": 500, "from": "companyA/payment",
+		"to": "companyA/user-service", "content": "follow-up",
+	})
+	resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: params, ID: 1})
+	if resp.Error != nil {
+		t.Fatalf("post: %s", resp.Error.Message)
+	}
+	// Task 8's reply-wake creates new session with task_msg_id=<reply-msg-id>
+	// and root_thread_id=500. Assert on root_thread_id — count must stay at
+	// 1 (only the seed); a new wake would push it to 2.
+	var sessCount int
+	d.Store.db.QueryRow(`SELECT count(*) FROM sessions WHERE root_thread_id=500`).Scan(&sessCount)
+	if sessCount != 1 {
+		t.Fatalf("expected no wake on done thread, got %d sessions with root_thread_id=500", sessCount)
+	}
+}
+
+func TestHandle_NoWakeOnActiveSession(t *testing.T) {
+	d := setupDaemon(t)
+	d.Registry.AddWorkspace("companyA")
+	userDir := t.TempDir()
+	os.WriteFile(filepath.Join(userDir, "mouse.yaml"),
+		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n"), 0644)
+	d.Registry.AddProject("companyA", "user-service", userDir)
+
+	// Seed: thread root 500 with an ACTIVE session bound. No done reply —
+	// the done-reply guard won't fire; only the active-session guard should
+	// suppress the wake here.
+	d.Store.db.Exec(`INSERT INTO messages(id, channel_id, thread_id, from_project, to_project, content, status, ts)
+		VALUES(500, 1, NULL, 'companyA/payment', 'companyA/user-service', 'task', 'message', datetime('now'))`)
+	d.Store.db.Exec(`INSERT INTO sessions(project_id, agent_binary, model, status, pid, created_at, task_msg_id, root_thread_id)
+		VALUES((SELECT id FROM projects WHERE name='user-service'), 'opencode', 'default', 'active', 0, datetime('now'), 500, 500)`)
+
+	params, _ := json.Marshal(map[string]any{
+		"channel": 1, "thread_id": 500, "from": "companyA/payment",
+		"to": "companyA/user-service", "content": "follow-up",
+	})
+	resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: params, ID: 1})
+	if resp.Error != nil {
+		t.Fatalf("post: %s", resp.Error.Message)
+	}
+	// Pre-existing active session is the only one bound to root 500. A new
+	// wake would create a second session with root_thread_id=500.
+	var sessCount int
+	d.Store.db.QueryRow(`SELECT count(*) FROM sessions WHERE root_thread_id=500`).Scan(&sessCount)
+	if sessCount != 1 {
+		t.Fatalf("expected no new session (1 pre-existing active), got %d with root_thread_id=500", sessCount)
+	}
+}
