@@ -51,12 +51,12 @@ type Daemon struct {
 	// safety net, polluting threads the test then manually populates with
 	// done replies.
 	SafetyNetEnabled bool
-	// CaptureOCSessionID is injectable for tests so wakeAgent's post-spawn
+	// CaptureAgentSessionID is injectable for tests so wakeAgent's post-spawn
 	// capture step doesn't depend on real opencode. Default in NewDaemon is
-	// the real captureOCSessionID.
-	CaptureOCSessionID func(cfg SpawnConfig) (string, error)
-	Sock               string
-	shutdownCh         chan struct{}
+	// the real captureAgentSessionID.
+	CaptureAgentSessionID func(cfg SpawnConfig) (string, error)
+	Sock                  string
+	shutdownCh            chan struct{}
 }
 
 // NewDaemon wires a Daemon with default components for the given socket + db.
@@ -66,16 +66,16 @@ func NewDaemon(sock, dbPath string) (*Daemon, error) {
 		return nil, err
 	}
 	return &Daemon{
-		Store:             store,
-		Registry:          &Registry{Store: store},
-		Sessions:          &SessionStore{Store: store},
-		Comms:             &Comms{Store: store},
-		Launcher:          &Launcher{},
-		MouseLoader:       config.LoadMouse,
-		SafetyNetEnabled:  true,
-		CaptureOCSessionID: captureOCSessionID,
-		Sock:              sock,
-		shutdownCh:        make(chan struct{}),
+		Store:                 store,
+		Registry:              &Registry{Store: store},
+		Sessions:              &SessionStore{Store: store},
+		Comms:                 &Comms{Store: store},
+		Launcher:              &Launcher{},
+		MouseLoader:           config.LoadMouse,
+		SafetyNetEnabled:      true,
+		CaptureAgentSessionID: captureAgentSessionID,
+		Sock:                  sock,
+		shutdownCh:            make(chan struct{}),
 	}, nil
 }
 
@@ -142,12 +142,12 @@ type StatusResult struct {
 
 // SessionListItem is a row for the session_list RPC.
 type SessionListItem struct {
-	Name              string `json:"name"`
-	Project           string `json:"project"`
-	Status            string `json:"status"`
-	OpencodeSessionID string `json:"opencode_session_id,omitempty"`
-	RootThreadID      int64  `json:"root_thread_id,omitempty"`
-	CreatedAt         string `json:"created_at"`
+	Name           string `json:"name"`
+	Project        string `json:"project"`
+	Status         string `json:"status"`
+	AgentSessionID string `json:"session_id,omitempty"`
+	RootThreadID   int64  `json:"root_thread_id,omitempty"`
+	CreatedAt      string `json:"created_at"`
 }
 
 // ============================================
@@ -328,12 +328,12 @@ func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error
 	}
 	// Resume lookup: is there a canonical opencode session for (rootID, proj.ID)?
 	// Empty result => fresh spawn; non-empty => resume via `opencode run -s <id>`.
-	var canonicalOCID string
+	var canonicalSessionID string
 	err = d.Store.db.QueryRow(
 		`SELECT opencode_session_id FROM sessions
 		  WHERE root_thread_id=? AND project_id=? AND opencode_session_id IS NOT NULL
 		  ORDER BY id ASC LIMIT 1`,
-		rootID, proj.ID).Scan(&canonicalOCID)
+		rootID, proj.ID).Scan(&canonicalSessionID)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("canonical lookup: %w", err)
 	}
@@ -344,17 +344,17 @@ func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error
 			"and a one-line summary of what you did.",
 		msg.ID, msg.ID, msg.ID)
 	spawnCfg := SpawnConfig{
-		Dir:               proj.Path,
-		Binary:            binary,
-		Model:             model,
-		Runbook:           string(runbook),
-		Task:              entrypoint,
-		FromID:            msg.FromProject,
-		ProjectID:         msg.ToProject,
-		ChannelID:         msg.ChannelID,
-		SessionID:         tmpSess.ID,
-		TaskMsgID:         msg.ID,
-		OpencodeSessionID: canonicalOCID,
+		Dir:            proj.Path,
+		Binary:         binary,
+		Model:          model,
+		Runbook:        string(runbook),
+		Task:           entrypoint,
+		FromID:         msg.FromProject,
+		ProjectID:      msg.ToProject,
+		ChannelID:      msg.ChannelID,
+		SessionID:      tmpSess.ID,
+		TaskMsgID:      msg.ID,
+		AgentSessionID: canonicalSessionID,
 		OnExit: func(code int) {
 			d.Sessions.MarkExited(tmpSess.ID, code)
 			if !d.SafetyNetEnabled {
@@ -390,12 +390,12 @@ func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error
 	// ponytail: no mutex — concurrent wakes on the same (root, project) are
 	// already serialized by the wake guard (threadSessionActive suppresses
 	// the second wake while the first is still active). If that guard ever
-	// loosens, add a sync.Mutex around capture+SetOCSessionID here.
-	if canonicalOCID == "" {
-		if ocID, err := d.CaptureOCSessionID(spawnCfg); err != nil {
+	// loosens, add a sync.Mutex around capture+SetAgentSessionID here.
+	if canonicalSessionID == "" {
+		if ocID, err := d.CaptureAgentSessionID(spawnCfg); err != nil {
 			log.Printf("capture oc id for session %d: %v", tmpSess.ID, err)
 		} else if ocID != "" {
-			if err := d.Sessions.SetOCSessionID(tmpSess.ID, ocID); err != nil {
+			if err := d.Sessions.SetAgentSessionID(tmpSess.ID, ocID); err != nil {
 				log.Printf("set oc id for session %d: %v", tmpSess.ID, err)
 			}
 		}
@@ -611,7 +611,7 @@ func (d *Daemon) handleStatus(req protocol.Request) protocol.Response {
 // or fresh spawns pre-capture) to "" / 0 so the CLI renders clean dashes.
 func (d *Daemon) handleSessionList(req protocol.Request) protocol.Response {
 	rows, err := d.Store.db.Query(
-		`SELECT IFNULL(s.name,'-'), p.name, s.status, IFNULL(s.opencode_session_id,''), IFNULL(s.root_thread_id,0), IFNULL(s.created_at,'')
+		`SELECT IFNULL(s.name,'-'), p.name, s.status, IFNULL(s.opencode_session_id,'') AS session_id, IFNULL(s.root_thread_id,0), IFNULL(s.created_at,'')
 		 FROM sessions s JOIN projects p ON s.project_id=p.id
 		 ORDER BY s.id DESC`)
 	if err != nil {
@@ -621,7 +621,7 @@ func (d *Daemon) handleSessionList(req protocol.Request) protocol.Response {
 	var out []SessionListItem
 	for rows.Next() {
 		var it SessionListItem
-		if err := rows.Scan(&it.Name, &it.Project, &it.Status, &it.OpencodeSessionID, &it.RootThreadID, &it.CreatedAt); err != nil {
+		if err := rows.Scan(&it.Name, &it.Project, &it.Status, &it.AgentSessionID, &it.RootThreadID, &it.CreatedAt); err != nil {
 			return errResp(req.ID, err.Error())
 		}
 		out = append(out, it)

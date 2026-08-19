@@ -37,9 +37,9 @@ func TestVerticalSlice(t *testing.T) {
 		Launcher:    &daemon.Launcher{Binary: "/bin/echo"},
 		MouseLoader: config.LoadMouse,
 		// No-op capturer: this test constructs Daemon directly (not via
-		// NewDaemon, which would default to the real captureOCSessionID).
+		// NewDaemon, which would default to the real captureAgentSessionID).
 		// /bin/echo spawns exit immediately; no real opencode session to bind.
-		CaptureOCSessionID: func(daemon.SpawnConfig) (string, error) { return "", nil },
+		CaptureAgentSessionID: func(daemon.SpawnConfig) (string, error) { return "", nil },
 	}
 	// Register workspace + projects via daemon methods.
 	mustSend(t, d, "workspace_add", map[string]any{"name": "companyA"})

@@ -34,8 +34,8 @@ func setupDaemon(t *testing.T) *Daemon {
 		},
 		// Default no-op stub so /bin/echo tests don't shell out to real
 		// opencode. Individual tests that exercise capture override this.
-		CaptureOCSessionID: func(SpawnConfig) (string, error) { return "", nil },
-		shutdownCh:         make(chan struct{}),
+		CaptureAgentSessionID: func(SpawnConfig) (string, error) { return "", nil },
+		shutdownCh:            make(chan struct{}),
 	}
 }
 
@@ -407,7 +407,6 @@ func TestServe_Shutdown(t *testing.T) {
 	}
 }
 
-
 // ============================================
 // Session resume schema migrations
 // ============================================
@@ -435,7 +434,6 @@ func TestStore_SessionsSchemaMigrations(t *testing.T) {
 		}
 	}
 }
-
 
 // ============================================
 // Session resume fields — Create stores root_thread_id, prefix, name
@@ -473,14 +471,14 @@ func TestSessions_CreateStoresResumeFields(t *testing.T) {
 	}
 }
 
-func TestSessions_SetOCSessionID(t *testing.T) {
+func TestSessions_SetAgentSessionID(t *testing.T) {
 	store := newTestStore(t)
 	store.db.Exec(`INSERT INTO workspaces(id, name) VALUES(1, 'ws')`)
 	store.db.Exec(`INSERT INTO projects(id, workspace_id, name, path) VALUES(1, 1, 'p', '/tmp/p')`)
 	s := &SessionStore{Store: store}
 	sess, _ := s.Create(1, "opencode", "default", 0, 42, 42, "abc12", "abc12-dotfiles")
-	if err := s.SetOCSessionID(sess.ID, "ses_xyz789"); err != nil {
-		t.Fatalf("SetOCSessionID: %v", err)
+	if err := s.SetAgentSessionID(sess.ID, "ses_xyz789"); err != nil {
+		t.Fatalf("SetAgentSessionID: %v", err)
 	}
 	var got string
 	store.db.QueryRow(`SELECT opencode_session_id FROM sessions WHERE id=?`, sess.ID).Scan(&got)
@@ -511,7 +509,6 @@ func TestWakeAgent_StoresRootThreadID(t *testing.T) {
 		t.Errorf("thread root: root_thread_id=%d want %d", rootTID, pr.MessageID)
 	}
 }
-
 
 func TestHandle_CrossProjectDelegationInheritsRoot(t *testing.T) {
 	d := setupDaemon(t)
@@ -584,7 +581,6 @@ func TestHandle_ReplyWithToWakesAgent(t *testing.T) {
 		t.Fatalf("expected wake on reply-with-to, got %d sessions for thread 500", sessCount)
 	}
 }
-
 
 // ============================================
 // Wake guard — no wake on active session (done threads ARE re-wakeable)
@@ -665,7 +661,7 @@ func TestWakeAgent_ResumeUsesCanonicalSessionID(t *testing.T) {
 	// Inject a fake OC-ID capturer so we don't depend on real opencode.
 	captured := []string{"ses_fresh1", "ses_fresh2"}
 	calls := 0
-	d.CaptureOCSessionID = func(cfg SpawnConfig) (string, error) {
+	d.CaptureAgentSessionID = func(cfg SpawnConfig) (string, error) {
 		id := captured[calls%len(captured)]
 		calls++
 		return id, nil
@@ -673,7 +669,7 @@ func TestWakeAgent_ResumeUsesCanonicalSessionID(t *testing.T) {
 	// Stub the launcher's Spawn to record args without running opencode.
 	var spawnArgs []string
 	d.Launcher = &Launcher{Binary: "/bin/echo", SpawnFn: func(cfg SpawnConfig) (int, error) {
-		spawnArgs = append(spawnArgs, cfg.OpencodeSessionID)
+		spawnArgs = append(spawnArgs, cfg.AgentSessionID)
 		return 1, nil
 	}}
 
@@ -707,10 +703,10 @@ func TestWakeAgent_ResumeUsesCanonicalSessionID(t *testing.T) {
 		t.Fatalf("expected 2 spawns, got %d", len(spawnArgs))
 	}
 	if spawnArgs[0] != "" {
-		t.Errorf("first spawn: OpencodeSessionID=%q want empty (fresh)", spawnArgs[0])
+		t.Errorf("first spawn: AgentSessionID=%q want empty (fresh)", spawnArgs[0])
 	}
 	if spawnArgs[1] != "ses_fresh1" {
-		t.Errorf("second spawn: OpencodeSessionID=%q want ses_fresh1 (resume)", spawnArgs[1])
+		t.Errorf("second spawn: AgentSessionID=%q want ses_fresh1 (resume)", spawnArgs[1])
 	}
 	if calls != 1 {
 		t.Errorf("capturer called %d times, want 1 (only on fresh spawn)", calls)

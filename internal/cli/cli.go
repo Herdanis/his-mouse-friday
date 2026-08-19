@@ -64,8 +64,8 @@ func downCmd() *cobra.Command {
 func workspaceCmd() *cobra.Command {
 	c := &cobra.Command{Use: "workspace"}
 	add := &cobra.Command{
-		Use:   "add [name]",
-		Args:  cobra.ExactArgs(1),
+		Use:  "add [name]",
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if _, err := protocol.Call("workspace_add", map[string]any{"name": args[0]}); err != nil {
 				return err
@@ -121,8 +121,8 @@ func projectCmd() *cobra.Command {
 	c := &cobra.Command{Use: "project"}
 	var ws string
 	add := &cobra.Command{
-		Use:   "add [name] [path]",
-		Args:  cobra.ExactArgs(2),
+		Use:  "add [name] [path]",
+		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			abs, err := filepath.Abs(args[1])
 			if err != nil {
@@ -349,7 +349,7 @@ func sessionCmd() *cobra.Command {
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 			fmt.Fprintln(w, "NAME\tPROJECT\tSTATUS\tSESSION\tROOT\tCREATED")
 			for _, it := range items {
-				oc := it.OpencodeSessionID
+				oc := it.AgentSessionID
 				if oc == "" {
 					oc = "-"
 				}

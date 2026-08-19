@@ -174,18 +174,17 @@ func TestLauncher_SetsTaskMsgIDEnv(t *testing.T) {
 	}
 }
 
-
 // ============================================
-// Resume arg construction (OpencodeSessionID)
+// Resume arg construction (AgentSessionID)
 // ============================================
 
 func TestLauncher_ResumeArgUsesSessionFlag(t *testing.T) {
 	cfg := SpawnConfig{
-		Dir:               t.TempDir(),
-		Binary:            "opencode",
-		Model:             "",
-		Task:              "do thing",
-		OpencodeSessionID: "ses_abc123",
+		Dir:            t.TempDir(),
+		Binary:         "opencode",
+		Model:          "",
+		Task:           "do thing",
+		AgentSessionID: "ses_abc123",
 	}
 	bin, args := buildArgs(cfg)
 	if bin != "opencode" {
@@ -196,8 +195,8 @@ func TestLauncher_ResumeArgUsesSessionFlag(t *testing.T) {
 		t.Fatalf("args: got %v want %v", args, want)
 	}
 
-	// Fresh spawn (no OpencodeSessionID): no -s flag.
-	cfg.OpencodeSessionID = ""
+	// Fresh spawn (no AgentSessionID): no -s flag.
+	cfg.AgentSessionID = ""
 	_, args = buildArgs(cfg)
 	want = []string{"run", "do thing"}
 	if !reflect.DeepEqual(args, want) {
@@ -205,12 +204,11 @@ func TestLauncher_ResumeArgUsesSessionFlag(t *testing.T) {
 	}
 }
 
-
 // ============================================
-// captureOCSessionID — post-spawn opencode session list query
+// captureAgentSessionID — post-spawn opencode session list query
 // ============================================
 
-func TestCaptureOCSessionID_ParsesTopRow(t *testing.T) {
+func TestCaptureAgentSessionID_ParsesTopRow(t *testing.T) {
 	// Stub: write a fake "opencode" script to a temp dir that prints a
 	// known session list table.
 	binDir := t.TempDir()
@@ -230,7 +228,7 @@ exit 1
 	}
 
 	cfg := SpawnConfig{Dir: t.TempDir(), Binary: binPath}
-	id, err := captureOCSessionID(cfg)
+	id, err := captureAgentSessionID(cfg)
 	if err != nil {
 		t.Fatalf("capture: %v", err)
 	}
@@ -239,7 +237,7 @@ exit 1
 	}
 }
 
-func TestCaptureOCSessionID_NoSessionsReturnsEmpty(t *testing.T) {
+func TestCaptureAgentSessionID_NoSessionsReturnsEmpty(t *testing.T) {
 	binDir := t.TempDir()
 	binPath := filepath.Join(binDir, "opencode")
 	script := `#!/bin/sh
@@ -253,7 +251,7 @@ exit 1
 	os.WriteFile(binPath, []byte(script), 0755)
 
 	cfg := SpawnConfig{Dir: t.TempDir(), Binary: binPath}
-	id, err := captureOCSessionID(cfg)
+	id, err := captureAgentSessionID(cfg)
 	if err != nil {
 		t.Fatalf("capture: %v", err)
 	}

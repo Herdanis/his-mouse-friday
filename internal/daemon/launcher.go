@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"strings"
 
 	"github.com/herdanis/his-mouse-friday/internal/protocol"
 )
@@ -18,39 +17,40 @@ type Launcher struct {
 
 // SpawnConfig holds everything the spawned agent needs to do work + reply.
 type SpawnConfig struct {
-	Dir       string // repo path to run in
-	Binary    string // agent binary (opencode, /bin/echo, etc.)
-	Model     string // model id
-	Runbook   string // MOUSE.md content
-	Task      string // the task to perform
-	FromID    string // engaging agent's "workspace/project" identity
-	ProjectID string // this project's "workspace/project" identity
-	ChannelID int64  // hmf channel for this conversation
-	SessionID int64  // hmf session id
-	TaskMsgID int64  // hmf task message id; spawned agent threads its done reply to this
-	OnExit    func(exitCode int)
-	OpencodeSessionID string // non-empty = resume this opencode session via -s
+	Dir            string // repo path to run in
+	Binary         string // agent binary (opencode, /bin/echo, etc.)
+	Model          string // model id
+	Runbook        string // MOUSE.md content
+	Task           string // the task to perform
+	FromID         string // engaging agent's "workspace/project" identity
+	ProjectID      string // this project's "workspace/project" identity
+	ChannelID      int64  // hmf channel for this conversation
+	SessionID      int64  // hmf session id
+	TaskMsgID      int64  // hmf task message id; spawned agent threads its done reply to this
+	OnExit         func(exitCode int)
+	AgentSessionID string // non-empty = resume this agent session via runtime-specific resume flag
 }
 
 // Spawn starts the agent binary in dir with the task as initial prompt.
 // Channel/session IDs + runbook passed via env vars so the spawned agent
 // can read_channel, post_message back via hmf-mcp.
-// buildArgs decides the binary + args for an opencode spawn. Pure function
-// so tests can verify resume vs. fresh arg construction without running
-// opencode. cfg.Binary must be set; cfg.Dir is not consulted here.
+// buildArgs decides the binary + args for an agent spawn. Pure function
+// so tests can verify resume vs. fresh arg construction without spawning.
+// ponytail: only opencode supported; switch on binary name when codex /
+// claude-code land — add runtime_<name>.go with the same fn signatures.
 func buildArgs(cfg SpawnConfig) (bin string, args []string) {
 	bin = cfg.Binary
 	task := cfg.Task
 	args = []string{task}
-	if strings.Contains(bin, "opencode") {
-		args = []string{"run"}
-		if cfg.OpencodeSessionID != "" {
-			args = append(args, "-s", cfg.OpencodeSessionID)
+	switch {
+	case isOpencode(bin):
+		if cfg.AgentSessionID != "" {
+			args = opencodeResumeArgs(cfg.AgentSessionID, task)
+		} else {
+			args = opencodeFreshArgs(task)
 		}
-		if cfg.Model != "" && cfg.Model != "default" {
-			args = append(args, "-m", cfg.Model)
-		}
-		args = append(args, task)
+	default:
+		// Unknown runtime: no resume support. Run <bin> <task> directly.
 	}
 	return bin, args
 }
@@ -113,31 +113,21 @@ func (l *Launcher) Spawn(ctx context.Context, cfg SpawnConfig) (int, error) {
 	return cmd.Process.Pid, nil
 }
 
-
 // ============================================
-// captureOCSessionID — post-spawn opencode session list query
+// captureAgentSessionID — post-spawn opencode session list query
 // ============================================
 
-// captureOCSessionID queries `opencode session list` in cfg.Dir and returns
-// the top row's session ID. Returns ("", nil) if no sessions exist. Used by
-// wakeAgent after a fresh spawn to bind the new opencode session to the hmf
-// session row for later resume. Race mitigation: callers should serialize
-// concurrent calls (a sync.Mutex in Daemon covers it — see Task 9).
-func captureOCSessionID(cfg SpawnConfig) (string, error) {
-	cmd := exec.CommandContext(context.Background(), cfg.Binary, "session", "list")
-	cmd.Dir = cfg.Dir
-	out, err := cmd.Output()
+// captureAgentSessionID queries the agent runtime for the session ID of the
+// just-spawned process. Currently delegates to opencode's session list. When
+// other runtimes land, switch on cfg.Binary and call <runtime>ListSessions +
+// <runtime>ParseSessionID.
+func captureAgentSessionID(cfg SpawnConfig) (string, error) {
+	if !isOpencode(cfg.Binary) {
+		return "", nil // unknown runtime: no capture, no resume
+	}
+	out, err := opencodeListSessions(context.Background(), cfg.Binary, cfg.Dir)
 	if err != nil {
 		return "", fmt.Errorf("opencode session list: %w", err)
 	}
-	for _, line := range strings.Split(string(out), "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "ses_") {
-			// ID is the first whitespace-delimited token.
-			if id := strings.Fields(line)[0]; id != "" {
-				return id, nil
-			}
-		}
-	}
-	return "", nil
+	return opencodeParseSessionID(out), nil
 }

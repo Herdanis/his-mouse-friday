@@ -13,12 +13,12 @@ type Session struct {
 	Status      string
 	PID         int
 	CreatedAt   time.Time
-	// Resume feature: bind spawned opencode session to a thread root for resume,
-	// plus human-friendly name + random prefix for tracing sibling sessions.
-	OpencodeSessionID string
-	Name              string
-	RootThreadID      int64
-	Prefix            string
+	// Resume feature: bind spawned agent runtime session to a thread root for
+	// resume, plus human-friendly name + random prefix for tracing siblings.
+	AgentSessionID string
+	Name           string
+	RootThreadID   int64
+	Prefix         string
 }
 
 type SessionStore struct {
@@ -80,9 +80,10 @@ func nullIfEmpty(s string) any {
 	return s
 }
 
-// SetOCSessionID binds the opencode session id (captured post-spawn via
-// `opencode session list`) to a hmf session row so later wakes can resume it.
-func (s *SessionStore) SetOCSessionID(id int64, ocID string) error {
+// SetAgentSessionID binds the agent runtime session id (captured post-spawn)
+// to a hmf session row so later wakes can resume it. DB column stays
+// opencode_session_id — migration cost > benefit.
+func (s *SessionStore) SetAgentSessionID(id int64, ocID string) error {
 	_, err := s.Store.db.Exec(`UPDATE sessions SET opencode_session_id=? WHERE id=?`, ocID, id)
 	return err
 }
