@@ -53,15 +53,12 @@ CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(thread_id);
 `
 
 func OpenStore(path string) (*Store, error) {
-	db, err := sql.Open("sqlite", path)
+	// busy_timeout via DSN: applies to EVERY connection in the pool. Per-
+	// connection PRAGMA only sticks to one pooled connection; the rest still
+	// default to 0 → SQLITE_BUSY on concurrent writes (OnExit goroutine vs
+	// request handler). 5s wait is plenty for hmf's low-concurrency workload.
+	db, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(5000)")
 	if err != nil {
-		return nil, err
-	}
-	// busy_timeout: concurrent writers (e.g. wakeAgent's OnExit goroutine
-	// posting a synthetic BLOCKED reply while a read_channel request runs)
-	// wait up to 5s instead of failing immediately with SQLITE_BUSY.
-	if _, err := db.Exec(`PRAGMA busy_timeout=5000`); err != nil {
-		db.Close()
 		return nil, err
 	}
 	if _, err := db.Exec(`PRAGMA foreign_keys=ON`); err != nil {

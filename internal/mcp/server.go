@@ -125,7 +125,7 @@ func newServer(callerID string) *mcpserver.Server {
 
 	mcpserver.AddTool(srv, &mcpserver.Tool{
 		Name:        "post_message",
-		Description: "Post a message to the general channel (or a thread). A thread-root message (no thread_id) with a `to` wakes that agent. Replies set thread_id. Returns message_id.",
+		Description: "Post a message to the general channel (or a thread). A thread-root message (no thread_id) with a `to` wakes that agent. Replies set thread_id. Returns message_id. For follow-up tasks on the SAME project in the same conversation, post a REPLY (set thread_id to the original task's message_id, set to to the same project) — the agent resumes its prior opencode session and remembers context from the prior task. New thread root = fresh agent, no memory.",
 	}, func(ctx context.Context, req *mcpserver.CallToolRequest, in PostInput) (*mcpserver.CallToolResult, PostOutput, error) {
 		params := map[string]any{
 			"from":    callerID,

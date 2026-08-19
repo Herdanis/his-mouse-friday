@@ -207,19 +207,6 @@ func (d *Daemon) findProject(ws, name string) (Project, error) {
 	return p, err
 }
 
-// threadHasDone reports whether any message on the thread (root or replies)
-// has status='done'. Used to suppress re-waking a finished thread.
-func (d *Daemon) threadHasDone(threadID int64) bool {
-	if threadID == 0 {
-		return false
-	}
-	var n int
-	d.Store.db.QueryRow(
-		`SELECT count(*) FROM messages WHERE (id=? OR thread_id=?) AND status='done'`,
-		threadID, threadID).Scan(&n)
-	return n > 0
-}
-
 // threadSessionActive reports whether the latest session bound to the thread
 // is still active (process still running). Used to suppress a second wake
 // while the first is still working.
@@ -259,14 +246,14 @@ func (d *Daemon) handlePost(ctx context.Context, req protocol.Request) protocol.
 	if err != nil {
 		return errResp(req.ID, err.Error())
 	}
-	// Wake any to-addressed message — thread root OR reply. Two guards
-	// suppress the wake: (1) the thread already has a done reply (finished
-	// — don't re-wake), (2) the thread's latest session is still active
+	// Wake any to-addressed message — thread root OR reply. One guard
+	// suppresses the wake: the thread's latest session is still active
 	// (agent running — let it pick up the new message on its next turn).
+	// A thread with a prior done reply IS re-wakeable: a follow-up task in
+	// the same conversation resumes the agent's prior opencode session so it
+	// keeps context from the prior task.
 	if p.To != "" {
-		if d.threadHasDone(p.ThreadID) {
-			// Message still posts — visible in read_thread. Just no wake.
-		} else if d.threadSessionActive(p.ThreadID) {
+		if d.threadSessionActive(p.ThreadID) {
 			// Agent still running — no new wake.
 		} else {
 			if err := d.wakeAgent(ctx, p, msg); err != nil {

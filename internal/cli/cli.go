@@ -347,7 +347,7 @@ func sessionCmd() *cobra.Command {
 				return nil
 			}
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, "NAME\tPROJECT\tSTATUS\tOC_SESSION\tROOT\tCREATED")
+			fmt.Fprintln(w, "NAME\tPROJECT\tSTATUS\tSESSION\tROOT\tCREATED")
 			for _, it := range items {
 				oc := it.OpencodeSessionID
 				if oc == "" {

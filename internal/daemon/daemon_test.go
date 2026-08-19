@@ -587,10 +587,13 @@ func TestHandle_ReplyWithToWakesAgent(t *testing.T) {
 
 
 // ============================================
-// Wake guards — no wake on done thread or active session
+// Wake guard — no wake on active session (done threads ARE re-wakeable)
 // ============================================
 
-func TestHandle_NoWakeOnThreadWithDone(t *testing.T) {
+// Re-waking a done thread is the follow-up resume path: the orchestrator
+// posts a follow-up reply on a thread whose prior task already got a done
+// reply, hmf resumes the agent's prior opencode session, agent keeps context.
+func TestHandle_RewakeOnDoneThread(t *testing.T) {
 	d := setupDaemon(t)
 	d.Registry.AddWorkspace("companyA")
 	userDir := t.TempDir()
@@ -599,8 +602,6 @@ func TestHandle_NoWakeOnThreadWithDone(t *testing.T) {
 	d.Registry.AddProject("companyA", "user-service", userDir)
 
 	// Seed: thread root 500, an exited session bound to it, and a done reply.
-	// Exited session means the active-session guard won't fire — only the
-	// done-reply guard should suppress the wake here.
 	d.Store.db.Exec(`INSERT INTO messages(id, channel_id, thread_id, from_project, to_project, content, status, ts)
 		VALUES(500, 1, NULL, 'companyA/payment', 'companyA/user-service', 'task', 'message', datetime('now'))`)
 	d.Store.db.Exec(`INSERT INTO sessions(project_id, agent_binary, model, status, pid, created_at, task_msg_id, root_thread_id)
@@ -608,8 +609,8 @@ func TestHandle_NoWakeOnThreadWithDone(t *testing.T) {
 	d.Store.db.Exec(`INSERT INTO messages(channel_id, thread_id, from_project, to_project, content, status, ts)
 		VALUES(1, 500, 'companyA/user-service', 'companyA/payment', 'done', 'done', datetime('now'))`)
 
-	// Follow-up reply with to= — would wake without guards; must NOT wake
-	// because the thread already has a done reply.
+	// Follow-up reply with to= — SHOULD wake (resume path). Session is
+	// exited, not active; done reply doesn't block re-wake anymore.
 	params, _ := json.Marshal(map[string]any{
 		"channel": 1, "thread_id": 500, "from": "companyA/payment",
 		"to": "companyA/user-service", "content": "follow-up",
@@ -618,13 +619,11 @@ func TestHandle_NoWakeOnThreadWithDone(t *testing.T) {
 	if resp.Error != nil {
 		t.Fatalf("post: %s", resp.Error.Message)
 	}
-	// Task 8's reply-wake creates new session with task_msg_id=<reply-msg-id>
-	// and root_thread_id=500. Assert on root_thread_id — count must stay at
-	// 1 (only the seed); a new wake would push it to 2.
+	// A new session was created for this thread (count goes 1 → 2).
 	var sessCount int
 	d.Store.db.QueryRow(`SELECT count(*) FROM sessions WHERE root_thread_id=500`).Scan(&sessCount)
-	if sessCount != 1 {
-		t.Fatalf("expected no wake on done thread, got %d sessions with root_thread_id=500", sessCount)
+	if sessCount != 2 {
+		t.Fatalf("expected re-wake on done thread, got %d sessions with root_thread_id=500", sessCount)
 	}
 }
 
