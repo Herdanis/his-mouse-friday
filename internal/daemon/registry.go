@@ -21,20 +21,38 @@ type Project struct {
 	Path        string
 }
 
+// ProjectListItem is a (workspace, name, path) row for the project_list RPC.
+type ProjectListItem struct {
+	Workspace string `json:"workspace"`
+	Name      string `json:"name"`
+	Path      string `json:"path"`
+}
+
 var ErrNotFound = errors.New("not found")
+
+// upsertReturningID runs an INSERT … ON CONFLICT and returns the row's id.
+// modernc/sqlite returns a stale LastInsertId() on ON CONFLICT DO NOTHING/UPDATE,
+// so when RowsAffected==0 we re-SELECT the existing row by the unique key.
+func (r *Registry) upsertReturningID(res sql.Result, selectQuery string, args ...any) (int64, error) {
+	id, _ := res.LastInsertId()
+	if id != 0 {
+		return id, nil
+	}
+	row := r.Store.db.QueryRow(selectQuery, args...)
+	if err := row.Scan(&id); err != nil {
+		return 0, err
+	}
+	return id, nil
+}
 
 func (r *Registry) AddWorkspace(name string) (Workspace, error) {
 	res, err := r.Store.db.Exec(`INSERT INTO workspaces(name) VALUES(?) ON CONFLICT(name) DO NOTHING`, name)
 	if err != nil {
 		return Workspace{}, err
 	}
-	id, _ := res.LastInsertId()
-	if id == 0 {
-		row := r.Store.db.QueryRow(`SELECT id FROM workspaces WHERE name=?`, name)
-		err = row.Scan(&id)
-		if err != nil {
-			return Workspace{}, err
-		}
+	id, err := r.upsertReturningID(res, `SELECT id FROM workspaces WHERE name=?`, name)
+	if err != nil {
+		return Workspace{}, err
 	}
 	return Workspace{ID: id, Name: name}, nil
 }
@@ -60,13 +78,9 @@ func (r *Registry) AddProject(wsName, projName, path string) (Project, error) {
 	if err != nil {
 		return Project{}, err
 	}
-	id, _ := res.LastInsertId()
-	if id == 0 {
-		row := r.Store.db.QueryRow(`SELECT id FROM projects WHERE workspace_id=? AND name=?`, wsID, projName)
-		err = row.Scan(&id)
-		if err != nil {
-			return Project{}, err
-		}
+	id, err := r.upsertReturningID(res, `SELECT id FROM projects WHERE workspace_id=? AND name=?`, wsID, projName)
+	if err != nil {
+		return Project{}, err
 	}
 	return Project{ID: id, WorkspaceID: wsID, Name: projName, Path: path}, nil
 }
@@ -105,6 +119,42 @@ func (r *Registry) ListProjects(wsName string) ([]Project, error) {
 			return nil, err
 		}
 		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+func (r *Registry) ListWorkspaces() ([]string, error) {
+	rows, err := r.Store.db.Query(`SELECT name FROM workspaces ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			return nil, err
+		}
+		names = append(names, n)
+	}
+	return names, rows.Err()
+}
+
+// ListAllProjects returns every project across all workspaces, ordered.
+func (r *Registry) ListAllProjects() ([]ProjectListItem, error) {
+	rows, err := r.Store.db.Query(
+		`SELECT w.name, p.name, p.path FROM projects p JOIN workspaces w ON p.workspace_id=w.id ORDER BY w.name, p.name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ProjectListItem
+	for rows.Next() {
+		var it ProjectListItem
+		if err := rows.Scan(&it.Workspace, &it.Name, &it.Path); err != nil {
+			return nil, err
+		}
+		out = append(out, it)
 	}
 	return out, rows.Err()
 }

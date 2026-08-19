@@ -51,7 +51,12 @@ func (l *Launcher) Spawn(ctx context.Context, cfg SpawnConfig) (int, error) {
 	// sibling's) on the shared DM channel. Offer both paths: the post_message
 	// MCP tool (needs no shell permission, works under bash:ask) and the one-line
 	// `hmf done` CLI. Ban python/heredocs — the bash tool wrapper mangles them.
-	replyProtocol := "\n\n[REPLY PROTOCOL] When your task is complete, post a done reply threaded to your task (thread_id=" + fmt.Sprintf("%d", cfg.TaskMsgID) + "). Do ONE of:\n  1. Call the post_message MCP tool with status=\"done\", thread_id=" + fmt.Sprintf("%d", cfg.TaskMsgID) + ", and a one-line summary. (Preferred — needs no shell permission.)\n  2. Or, if you have shell access, run: hmf done \"<one-line summary>\"\nDo NOT write python or heredocs to hit the daemon socket directly — the bash wrapper mangles multi-line commands."
+	// MUST-REPLY rule: a spawned agent has no TTY, so it can't answer bash:ask
+	// prompts. Without this rule, agents that hit a permission wall just exit
+	// silently and the orchestrator polls forever. Forcing a done reply on every
+	// exit path (success, blocked, or failed) lets the orchestrator stop polling
+	// and surface the blocker to the user.
+	replyProtocol := "\n\n[REPLY PROTOCOL] You MUST post a done reply before exiting — whether you completed the task, hit a blocker, or couldn't start. Thread it to your task (thread_id=" + fmt.Sprintf("%d", cfg.TaskMsgID) + "). Use the post_message MCP tool with status=\"done\" and a one-line summary (preferred — needs no shell permission, works under bash:ask). If blocked (permission denied, file not found, missing tool, command requires ask-approval you can't get), prefix the summary with \"BLOCKED: \" and state what stopped you. Alternatively, if you have shell access, run: hmf done \"<summary>\". Do NOT write python or heredocs to hit the daemon socket directly — the bash wrapper mangles multi-line commands. Never exit without posting a done reply."
 	fullTask := cfg.Task + scope + replyProtocol
 	// opencode needs "run" subcommand for non-interactive mode.
 	// Pass -m only when model is set and not "default" (let opencode use its global default).

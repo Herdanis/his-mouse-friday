@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -16,30 +15,6 @@ import (
 	"github.com/herdanis/his-mouse-friday/internal/protocol"
 	"github.com/spf13/cobra"
 )
-
-func callDaemon(method string, params any) (protocol.Response, error) {
-	var raw json.RawMessage
-	if params != nil {
-		b, _ := json.Marshal(params)
-		raw = b
-	}
-	req := protocol.Request{Method: method, Params: raw, ID: 1}
-	conn, err := net.Dial("unix", protocol.SocketPath())
-	if err != nil {
-		return protocol.Response{}, fmt.Errorf("daemon not running? run 'hmf up': %w", err)
-	}
-	defer conn.Close()
-	enc := json.NewEncoder(conn)
-	dec := json.NewDecoder(conn)
-	if err := enc.Encode(&req); err != nil {
-		return protocol.Response{}, err
-	}
-	var resp protocol.Response
-	if err := dec.Decode(&resp); err != nil {
-		return protocol.Response{}, err
-	}
-	return resp, nil
-}
 
 func NewRootCmd() *cobra.Command {
 	root := &cobra.Command{Use: "hmf"}
@@ -77,12 +52,8 @@ func downCmd() *cobra.Command {
 		Use:   "down",
 		Short: "Stop the hmf daemon",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			resp, err := callDaemon("shutdown", struct{}{})
-			if err != nil {
+			if _, err := protocol.Call("shutdown", struct{}{}); err != nil {
 				return err
-			}
-			if resp.Error != nil {
-				return fmt.Errorf("%s", resp.Error.Message)
 			}
 			return nil
 		},
@@ -95,12 +66,8 @@ func workspaceCmd() *cobra.Command {
 		Use:   "add [name]",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			resp, err := callDaemon("workspace_add", map[string]any{"name": args[0]})
-			if err != nil {
+			if _, err := protocol.Call("workspace_add", map[string]any{"name": args[0]}); err != nil {
 				return err
-			}
-			if resp.Error != nil {
-				return fmt.Errorf("%s", resp.Error.Message)
 			}
 			fmt.Println("workspace added:", args[0])
 			return nil
@@ -110,15 +77,12 @@ func workspaceCmd() *cobra.Command {
 		Use:   "list",
 		Short: "List all workspaces",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			resp, err := callDaemon("workspace_list", struct{}{})
+			result, err := protocol.Call("workspace_list", struct{}{})
 			if err != nil {
 				return err
 			}
-			if resp.Error != nil {
-				return fmt.Errorf("%s", resp.Error.Message)
-			}
 			var names []string
-			if err := json.Unmarshal(resp.Result, &names); err != nil {
+			if err := json.Unmarshal(result, &names); err != nil {
 				return fmt.Errorf("parse: %w", err)
 			}
 			if len(names) == 0 {
@@ -139,12 +103,8 @@ func workspaceCmd() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		Short: "Delete a workspace (and its projects)",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			resp, err := callDaemon("workspace_delete", map[string]any{"name": args[0]})
-			if err != nil {
+			if _, err := protocol.Call("workspace_delete", map[string]any{"name": args[0]}); err != nil {
 				return err
-			}
-			if resp.Error != nil {
-				return fmt.Errorf("%s", resp.Error.Message)
 			}
 			fmt.Println("workspace deleted:", args[0])
 			return nil
@@ -167,12 +127,8 @@ func projectCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("resolve path: %w", err)
 			}
-			resp, err := callDaemon("project_add", map[string]any{"workspace": ws, "name": args[0], "path": abs})
-			if err != nil {
+			if _, err := protocol.Call("project_add", map[string]any{"workspace": ws, "name": args[0], "path": abs}); err != nil {
 				return err
-			}
-			if resp.Error != nil {
-				return fmt.Errorf("%s", resp.Error.Message)
 			}
 			fmt.Printf("project added: %s/%s -> %s\n", ws, args[0], abs)
 			return nil
@@ -190,19 +146,16 @@ func projectCmd() *cobra.Command {
 			if listWs != "" {
 				params["workspace"] = listWs
 			}
-			resp, err := callDaemon("project_list", params)
+			result, err := protocol.Call("project_list", params)
 			if err != nil {
 				return err
-			}
-			if resp.Error != nil {
-				return fmt.Errorf("%s", resp.Error.Message)
 			}
 			var items []struct {
 				Workspace string `json:"workspace"`
 				Name      string `json:"name"`
 				Path      string `json:"path"`
 			}
-			if err := json.Unmarshal(resp.Result, &items); err != nil {
+			if err := json.Unmarshal(result, &items); err != nil {
 				return fmt.Errorf("parse: %w", err)
 			}
 			if len(items) == 0 {
@@ -226,12 +179,8 @@ func projectCmd() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		Short: "Delete a project from a workspace",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			resp, err := callDaemon("project_delete", map[string]any{"workspace": delWs, "name": args[0]})
-			if err != nil {
+			if _, err := protocol.Call("project_delete", map[string]any{"workspace": delWs, "name": args[0]}); err != nil {
 				return err
-			}
-			if resp.Error != nil {
-				return fmt.Errorf("%s", resp.Error.Message)
 			}
 			fmt.Printf("project deleted: %s/%s\n", delWs, args[0])
 			return nil
@@ -251,15 +200,12 @@ func statusCmd() *cobra.Command {
 		Use:   "status",
 		Short: "Show daemon status",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			resp, err := callDaemon("status", struct{}{})
+			result, err := protocol.Call("status", struct{}{})
 			if err != nil {
 				return err
 			}
-			if resp.Error != nil {
-				return fmt.Errorf("%s", resp.Error.Message)
-			}
 			var s daemon.StatusResult
-			if err := json.Unmarshal(resp.Result, &s); err != nil {
+			if err := json.Unmarshal(result, &s); err != nil {
 				return fmt.Errorf("parse status: %w", err)
 			}
 			fmt.Printf("running: %v\nworkspaces: %d\nprojects: %d\nsessions: %d\nsock: %s\n",
@@ -363,12 +309,8 @@ func doneCmd() *cobra.Command {
 			if tid := os.Getenv("HMF_TASK_MSG_ID"); tid != "" {
 				params["thread_id"] = atoi64(tid)
 			}
-			resp, err := callDaemon("post_message", params)
-			if err != nil {
+			if _, err := protocol.Call("post_message", params); err != nil {
 				return err
-			}
-			if resp.Error != nil {
-				return fmt.Errorf("%s", resp.Error.Message)
 			}
 			fmt.Println("done")
 			return nil
@@ -380,10 +322,3 @@ func atoi64(s string) int64 {
 	n, _ := strconv.ParseInt(s, 10, 64)
 	return n
 }
-
-// Protection model: global opencode.json has "edit": "ask" (prompts for
-// every edit outside a registered project). Each registered project's own
-// opencode.json sets "edit": "allow" (free editing inside own repo).
-// No hmf-specific guard code needed — opencode's native config layering
-// enforces it. /hmf-setup generates the per-repo opencode.json with
-// "edit": "allow".

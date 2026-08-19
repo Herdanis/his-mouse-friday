@@ -81,39 +81,10 @@ type TaskStatusOutput struct {
 // Daemon client (unix socket)
 // ============================================
 
-func callDaemon(ctx context.Context, method string, params any) (json.RawMessage, error) {
-	conn, err := net.Dial("unix", protocol.SocketPath())
-	if err != nil {
-		return nil, fmt.Errorf("daemon not running (run 'hmf up'): %w", err)
-	}
-	defer conn.Close()
-
-	var raw json.RawMessage
-	if params != nil {
-		b, _ := json.Marshal(params)
-		raw = b
-	}
-	req := protocol.Request{Method: method, Params: raw, ID: 1}
-
-	enc := json.NewEncoder(conn)
-	dec := json.NewDecoder(conn)
-	if err := enc.Encode(&req); err != nil {
-		return nil, err
-	}
-	var resp protocol.Response
-	if err := dec.Decode(&resp); err != nil {
-		return nil, err
-	}
-	if resp.Error != nil {
-		return nil, fmt.Errorf("%s", resp.Error.Message)
-	}
-	return resp.Result, nil
-}
-
 // resolveCaller resolves the caller's workspace/project from a repo path via
 // the daemon. Returns "" if unregistered (open mode — no enforcement).
 func resolveCaller(repoPath string) string {
-	result, err := callDaemon(context.Background(), "resolve_project",
+	result, err := protocol.Call("resolve_project",
 		map[string]string{"path": repoPath})
 	if err != nil {
 		return ""
@@ -167,7 +138,7 @@ func newServer(callerID string) *mcpserver.Server {
 		if in.ThreadID != 0 {
 			params["thread_id"] = in.ThreadID
 		}
-		result, err := callDaemon(ctx, "post_message", params)
+		result, err := protocol.Call("post_message", params)
 		if err != nil {
 			return nil, PostOutput{}, err
 		}
@@ -180,7 +151,7 @@ func newServer(callerID string) *mcpserver.Server {
 		Name:        "task_status",
 		Description: "Check the status of a delegated task: is the agent still working, exited cleanly, failed, or never woke. Plus whether a done reply has landed.",
 	}, func(ctx context.Context, req *mcpserver.CallToolRequest, in TaskStatusInput) (*mcpserver.CallToolResult, TaskStatusOutput, error) {
-		result, err := callDaemon(ctx, "task_status", map[string]any{"thread_id": in.ThreadID})
+		result, err := protocol.Call("task_status", map[string]any{"thread_id": in.ThreadID})
 		if err != nil {
 			return nil, TaskStatusOutput{}, err
 		}
@@ -203,7 +174,7 @@ func newServer(callerID string) *mcpserver.Server {
 		if ch != 0 {
 			params["channel"] = ch
 		}
-		result, err := callDaemon(ctx, "read_channel", params)
+		result, err := protocol.Call("read_channel", params)
 		if err != nil {
 			return nil, MessagesOutput{}, err
 		}
@@ -218,7 +189,7 @@ func newServer(callerID string) *mcpserver.Server {
 		Name:        "read_thread",
 		Description: "Read a message thread",
 	}, func(ctx context.Context, req *mcpserver.CallToolRequest, in ReadThreadInput) (*mcpserver.CallToolResult, MessagesOutput, error) {
-		result, err := callDaemon(ctx, "read_thread", in)
+		result, err := protocol.Call("read_thread", in)
 		if err != nil {
 			return nil, MessagesOutput{}, err
 		}
@@ -233,7 +204,7 @@ func newServer(callerID string) *mcpserver.Server {
 		Name:        "list_project_agents",
 		Description: "List registered project agents",
 	}, func(ctx context.Context, req *mcpserver.CallToolRequest, in ListInput) (*mcpserver.CallToolResult, ProjectAgentsOutput, error) {
-		result, err := callDaemon(ctx, "list_project_agents", in)
+		result, err := protocol.Call("list_project_agents", in)
 		if err != nil {
 			return nil, ProjectAgentsOutput{}, err
 		}

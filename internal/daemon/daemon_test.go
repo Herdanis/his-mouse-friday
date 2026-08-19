@@ -6,12 +6,16 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/herdanis/his-mouse-friday/internal/config"
 	"github.com/herdanis/his-mouse-friday/internal/protocol"
 )
+
+// awaitSockTimeout caps how long TestServe_* waits for the listener to appear.
+const awaitSockTimeout = 2 * time.Second
 
 func setupDaemon(t *testing.T) *Daemon {
 	t.Helper()
@@ -60,6 +64,51 @@ func TestHandle_PostToGeneralWakesAgent(t *testing.T) {
 		  (SELECT id FROM projects WHERE name='user-service')`).Scan(&sessCount)
 	if sessCount == 0 {
 		t.Fatal("post to general did not wake the addressed agent (no session created)")
+	}
+}
+
+// TestHandle_SyntheticBlockedReplyOnSilentExit verifies the daemon-side safety
+// net: when a spawned agent exits without posting a done reply (e.g. hit
+// bash:ask with no TTY), the daemon posts a synthetic BLOCKED reply on its
+// behalf so the orchestrator stops polling. setupDaemon uses /bin/echo as the
+// agent binary, which exits immediately without posting — perfect simulacrum
+// of the silent-exit failure mode.
+func TestHandle_SyntheticBlockedReplyOnSilentExit(t *testing.T) {
+	d := setupDaemon(t)
+	d.Registry.AddWorkspace("companyA")
+	userDir := t.TempDir()
+	os.WriteFile(filepath.Join(userDir, "mouse.yaml"), []byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n"), 0644)
+	d.Registry.AddProject("companyA", "user-service", userDir)
+
+	params, _ := json.Marshal(map[string]any{
+		"from":    "companyA/payment-service",
+		"to":      "companyA/user-service",
+		"content": "do something with bash",
+	})
+	resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: params, ID: 1})
+	if resp.Error != nil {
+		t.Fatalf("post failed: %s", resp.Error.Message)
+	}
+	var pr PostResult
+	json.Unmarshal(resp.Result, &pr)
+
+	// /bin/echo exits near-instantly. Wait for OnExit to fire + the synthetic
+	// reply to land. Poll up to 2s.
+	deadline := time.Now().Add(2 * time.Second)
+	var gotBlocked bool
+	for time.Now().Before(deadline) {
+		var content, status string
+		err := d.Store.db.QueryRow(
+			`SELECT content, status FROM messages WHERE thread_id=? AND status='done'`, pr.MessageID).
+			Scan(&content, &status)
+		if err == nil && strings.HasPrefix(content, "BLOCKED:") {
+			gotBlocked = true
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !gotBlocked {
+		t.Fatal("no synthetic BLOCKED reply posted after silent agent exit")
 	}
 }
 

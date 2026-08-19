@@ -17,9 +17,6 @@ import (
 	"github.com/herdanis/his-mouse-friday/internal/protocol"
 )
 
-// awaitSockTimeout caps how long TestServe_Smoke waits for the listener to appear.
-const awaitSockTimeout = 2 * time.Second
-
 // ============================================
 // Daemon
 // ============================================
@@ -259,6 +256,22 @@ func (d *Daemon) wakeAgent(ctx context.Context, msg Message) error {
 		TaskMsgID: msg.ID,
 		OnExit: func(code int) {
 			d.Sessions.MarkExited(tmpSess.ID, code)
+			// Safety net: if the agent exited without posting a done reply,
+			// post a synthetic BLOCKED reply on its behalf so the orchestrator
+			// stops polling and surfaces the failure instead of waiting
+			// forever. Covers crashes, kills, and the common "agent hit
+			// bash:ask, no TTY, exited silently" case the launcher prompt
+			// can't fully solve (the spawned model may not follow the
+			// MUST-REPLY rule).
+			var doneCount int
+			d.Store.db.QueryRow(
+				`SELECT count(*) FROM messages WHERE thread_id=? AND status='done'`, msg.ID).Scan(&doneCount)
+			if doneCount == 0 {
+				content := fmt.Sprintf("BLOCKED: agent exited (code=%d) without posting a done reply", code)
+				if _, err := d.Comms.PostMessage(msg.ChannelID, msg.ID, msg.ToProject, msg.FromProject, content, "done"); err != nil {
+					log.Printf("synthetic done reply for thread %d: %v", msg.ID, err)
+				}
+			}
 		},
 	})
 	if err != nil {
@@ -300,12 +313,10 @@ func (d *Daemon) handleTaskStatus(req protocol.Request) protocol.Response {
 		}
 		return errResp(req.ID, err.Error())
 	}
-	agentStatus := "working"
-	switch status {
-	case "exited":
-		agentStatus = "exited"
-	case "failed":
-		agentStatus = "failed"
+	// "active" → "working"; other statuses pass through.
+	agentStatus := status
+	if status == "active" {
+		agentStatus = "working"
 	}
 	result, _ := json.Marshal(TaskStatusResult{
 		HasDone:     doneCount > 0,
@@ -348,24 +359,6 @@ func (d *Daemon) handleReadThread(req protocol.Request) protocol.Response {
 		return errResp(req.ID, err.Error())
 	}
 	result, _ := json.Marshal(msgs)
-	return protocol.Response{ID: req.ID, Result: result}
-}
-
-func (d *Daemon) handleList(req protocol.Request) protocol.Response {
-	var p ListParams
-	if err := json.Unmarshal(req.Params, &p); err != nil {
-		return errResp(req.ID, "bad params: "+err.Error())
-	}
-	projs, err := d.Registry.ListProjects(p.Workspace)
-	if err != nil {
-		return errResp(req.ID, err.Error())
-	}
-	type item struct{ Workspace, Name, Path string }
-	out := make([]item, 0, len(projs))
-	for _, pr := range projs {
-		out = append(out, item{Workspace: p.Workspace, Name: pr.Name, Path: pr.Path})
-	}
-	result, _ := json.Marshal(out)
 	return protocol.Response{ID: req.ID, Result: result}
 }
 
@@ -412,21 +405,9 @@ func (d *Daemon) handleProjectAdd(req protocol.Request) protocol.Response {
 }
 
 func (d *Daemon) handleWorkspaceList(req protocol.Request) protocol.Response {
-	rows, err := d.Store.db.Query(`SELECT name FROM workspaces ORDER BY name`)
+	names, err := d.Registry.ListWorkspaces()
 	if err != nil {
 		return errResp(req.ID, err.Error())
-	}
-	defer rows.Close()
-	var names []string
-	for rows.Next() {
-		var n string
-		if err := rows.Scan(&n); err != nil {
-			return errResp(req.ID, err.Error())
-		}
-		names = append(names, n)
-	}
-	if names == nil {
-		names = []string{}
 	}
 	result, _ := json.Marshal(names)
 	return protocol.Response{ID: req.ID, Result: result}
@@ -439,37 +420,24 @@ func (d *Daemon) handleProjectList(req protocol.Request) protocol.Response {
 			return errResp(req.ID, "bad params: "+err.Error())
 		}
 	}
-	type item struct {
-		Workspace string `json:"workspace"`
-		Name      string `json:"name"`
-		Path      string `json:"path"`
-	}
-	var out []item
+	var out []ProjectListItem
 	if p.Workspace != "" {
 		projs, err := d.Registry.ListProjects(p.Workspace)
 		if err != nil {
 			return errResp(req.ID, err.Error())
 		}
 		for _, pr := range projs {
-			out = append(out, item{Workspace: p.Workspace, Name: pr.Name, Path: pr.Path})
+			out = append(out, ProjectListItem{Workspace: p.Workspace, Name: pr.Name, Path: pr.Path})
 		}
 	} else {
-		rows, err := d.Store.db.Query(
-			`SELECT w.name, p.name, p.path FROM projects p JOIN workspaces w ON p.workspace_id=w.id ORDER BY w.name, p.name`)
+		var err error
+		out, err = d.Registry.ListAllProjects()
 		if err != nil {
 			return errResp(req.ID, err.Error())
 		}
-		defer rows.Close()
-		for rows.Next() {
-			var it item
-			if err := rows.Scan(&it.Workspace, &it.Name, &it.Path); err != nil {
-				return errResp(req.ID, err.Error())
-			}
-			out = append(out, it)
-		}
 	}
 	if out == nil {
-		out = []item{}
+		out = []ProjectListItem{}
 	}
 	result, _ := json.Marshal(out)
 	return protocol.Response{ID: req.ID, Result: result}

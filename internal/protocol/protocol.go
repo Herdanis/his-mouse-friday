@@ -2,6 +2,8 @@ package protocol
 
 import (
 	"encoding/json"
+	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 )
@@ -40,3 +42,35 @@ func SocketPath() string { return filepath.Join(StateDir(), "daemon.sock") }
 
 // DBPath returns the daemon's SQLite database path.
 func DBPath() string { return filepath.Join(StateDir(), "hmf.db") }
+
+// Call dials the daemon, sends one request, returns the decoded Result.
+// Folds the resp.Error check into the returned error so callers don't repeat
+// the `if resp.Error != nil` dance. Shared by the CLI and the MCP shim.
+func Call(method string, params any) (json.RawMessage, error) {
+	var raw json.RawMessage
+	if params != nil {
+		b, err := json.Marshal(params)
+		if err != nil {
+			return nil, fmt.Errorf("marshal params: %w", err)
+		}
+		raw = b
+	}
+	conn, err := net.Dial("unix", SocketPath())
+	if err != nil {
+		return nil, fmt.Errorf("daemon not running (run 'hmf up'): %w", err)
+	}
+	defer conn.Close()
+	enc := json.NewEncoder(conn)
+	dec := json.NewDecoder(conn)
+	if err := enc.Encode(&Request{Method: method, Params: raw, ID: 1}); err != nil {
+		return nil, err
+	}
+	var resp Response
+	if err := dec.Decode(&resp); err != nil {
+		return nil, err
+	}
+	if resp.Error != nil {
+		return nil, fmt.Errorf("%s", resp.Error.Message)
+	}
+	return resp.Result, nil
+}

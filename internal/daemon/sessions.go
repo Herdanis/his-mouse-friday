@@ -24,19 +24,12 @@ func (s *SessionStore) Create(projectID int64, binary, model string, pid int, ta
 	res, err := s.Store.db.Exec(
 		`INSERT INTO sessions(project_id, agent_binary, model, status, pid, created_at, task_msg_id)
 		 VALUES(?,?,?,?,?,?,?)`,
-		projectID, binary, model, "active", pid, now, nullIfZeroInt(taskMsgID))
+		projectID, binary, model, "active", pid, now, nullIfZero(taskMsgID))
 	if err != nil {
 		return Session{}, err
 	}
 	id, _ := res.LastInsertId()
 	return Session{ID: id, ProjectID: projectID, AgentBinary: binary, Model: model, Status: "active", PID: pid, CreatedAt: now}, nil
-}
-
-func nullIfZeroInt(i int64) any {
-	if i == 0 {
-		return nil
-	}
-	return i
 }
 
 func (s *SessionStore) Get(id int64) (Session, error) {

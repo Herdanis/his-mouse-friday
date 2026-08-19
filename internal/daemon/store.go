@@ -57,6 +57,13 @@ func OpenStore(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
+	// busy_timeout: concurrent writers (e.g. wakeAgent's OnExit goroutine
+	// posting a synthetic BLOCKED reply while a read_channel request runs)
+	// wait up to 5s instead of failing immediately with SQLITE_BUSY.
+	if _, err := db.Exec(`PRAGMA busy_timeout=5000`); err != nil {
+		db.Close()
+		return nil, err
+	}
 	if _, err := db.Exec(`PRAGMA foreign_keys=ON`); err != nil {
 		db.Close()
 		return nil, err
@@ -81,6 +88,15 @@ func OpenStore(path string) (*Store, error) {
 }
 
 func (s *Store) Close() error { return s.db.Close() }
+
+// nullIfZero returns nil for 0 so a sql.Exec inserts NULL for FK columns
+// (thread_id, task_msg_id) that are optional. Used by Comms + SessionStore.
+func nullIfZero(i int64) any {
+	if i == 0 {
+		return nil
+	}
+	return i
+}
 
 // RunRetention deletes messages older than 90 days.
 func (s *Store) RunRetention() error {

@@ -12,6 +12,7 @@ import (
 
 	"github.com/herdanis/his-mouse-friday/internal/config"
 	"github.com/herdanis/his-mouse-friday/internal/daemon"
+	"github.com/herdanis/his-mouse-friday/internal/protocol"
 )
 
 // These tests guard the MCP shim's CONTRACT with the daemon: the param shapes
@@ -88,13 +89,13 @@ func spinDaemon(t *testing.T) (*daemon.Daemon, func()) {
 	return d, cleanup
 }
 
-// mustCallDaemon is a test helper that calls the shim's callDaemon + fatals on error.
-// callDaemon returns (result, error) — it folds daemon errors into the error.
+// mustCallDaemon is a test helper that calls protocol.Call + fatals on error.
+// protocol.Call returns (result, error) — it folds daemon errors into the error.
 func mustCallDaemon(t *testing.T, method string, params any) json.RawMessage {
 	t.Helper()
-	result, err := callDaemon(context.Background(), method, params)
+	result, err := protocol.Call(method, params)
 	if err != nil {
-		t.Fatalf("callDaemon %s: %v", method, err)
+		t.Fatalf("Call %s: %v", method, err)
 	}
 	return result
 }

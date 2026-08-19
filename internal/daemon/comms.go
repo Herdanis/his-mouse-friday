@@ -27,31 +27,6 @@ type Comms struct {
 	Store *Store
 }
 
-func (c *Comms) CreateDMChannel(wsID int64, projA, projB string) (Channel, error) {
-	// Normalize: order the pair so A→B and B→A share one channel.
-	name := dmChannelName(projA, projB)
-	res, err := c.Store.db.Exec(
-		`INSERT INTO channels(workspace_id, name, type) VALUES(?,?,?)
-		 ON CONFLICT(workspace_id, name) DO NOTHING`,
-		wsID, name, "dm")
-	if err != nil {
-		return Channel{}, err
-	}
-	// Detect existing-channel case via RowsAffected, NOT LastInsertId:
-	// modernc/sqlite returns the stale last-insert rowid (not 0) on
-	// ON CONFLICT DO NOTHING, which yields a bogus channel id and trips the
-	// messages FK on the very next PostMessage.
-	affected, _ := res.RowsAffected()
-	if affected == 0 {
-		var ch Channel
-		err = c.Store.db.QueryRow(`SELECT id, workspace_id, name, type FROM channels WHERE workspace_id=? AND name=?`, wsID, name).
-			Scan(&ch.ID, &ch.WorkspaceID, &ch.Name, &ch.Type)
-		return ch, err
-	}
-	id, _ := res.LastInsertId()
-	return Channel{ID: id, WorkspaceID: wsID, Name: name, Type: "dm"}, nil
-}
-
 func (c *Comms) PostMessage(channelID, threadID int64, from, to, content, status string) (Message, error) {
 	if status == "" {
 		status = "message"
@@ -66,13 +41,6 @@ func (c *Comms) PostMessage(channelID, threadID int64, from, to, content, status
 	}
 	id, _ := res.LastInsertId()
 	return Message{ID: id, ChannelID: channelID, ThreadID: threadID, FromProject: from, ToProject: to, Content: content, Status: status, TS: now}, nil
-}
-
-func nullIfZero(i int64) any {
-	if i == 0 {
-		return nil
-	}
-	return i
 }
 
 func (c *Comms) ReadChannel(channelID int64, since time.Time) ([]Message, error) {
@@ -107,15 +75,6 @@ func scanMessages(rows *sql.Rows) ([]Message, error) {
 		out = append(out, m)
 	}
 	return out, rows.Err()
-}
-
-// dmChannelName returns a deterministic channel name for a project pair,
-// so A→B and B→A resolve to the same channel.
-func dmChannelName(projA, projB string) string {
-	if projA <= projB {
-		return projA + "::" + projB
-	}
-	return projB + "::" + projA
 }
 
 // GetOrCreateGeneralChannel returns the single global "general" channel where

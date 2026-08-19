@@ -12,6 +12,7 @@ import (
 
 	"github.com/herdanis/his-mouse-friday/internal/config"
 	"github.com/herdanis/his-mouse-friday/internal/daemon"
+	"github.com/herdanis/his-mouse-friday/internal/protocol"
 )
 
 // spinCLIDaemon sets up a short temp HMF_STATE_DIR (macOS socket-path limit),
@@ -98,14 +99,11 @@ func spinCLIDaemon(t *testing.T) (threadRootID int64, generalChannelID int64, cl
 
 func mustCLICall(t *testing.T, method string, params any) json.RawMessage {
 	t.Helper()
-	resp, err := callDaemon(method, params)
+	result, err := protocol.Call(method, params)
 	if err != nil {
-		t.Fatalf("callDaemon %s: %v", method, err)
+		t.Fatalf("Call %s: %v", method, err)
 	}
-	if resp.Error != nil {
-		t.Fatalf("%s error: %s", method, resp.Error.Message)
-	}
-	return resp.Result
+	return result
 }
 
 // hmf done posts a threaded done reply using the spawned-agent env vars.

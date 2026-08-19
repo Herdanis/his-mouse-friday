@@ -5,20 +5,28 @@ import (
 	"time"
 )
 
-func TestComms_CreateDMAndPost(t *testing.T) {
-	store := newTestStore(t)
-	store.db.Exec(`INSERT INTO workspaces(id, name) VALUES(1, 'companyA')`)
-	c := &Comms{Store: store}
-
-	ch, err := c.CreateDMChannel(1, "companyA/payment", "companyA/user")
+// insertTestChannel inserts a channel row and returns its id, for tests that
+// need a channel to post into but don't care about DM semantics (which
+// production no longer exercises — wakeAgent posts to the general channel).
+func insertTestChannel(t *testing.T, s *Store, wsID int64, name string) int64 {
+	t.Helper()
+	res, err := s.db.Exec(
+		`INSERT INTO channels(workspace_id, name, type) VALUES(?,?,?)`,
+		wsID, name, "dm")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ch.Type != "dm" {
-		t.Errorf("type: got %q want dm", ch.Type)
-	}
+	id, _ := res.LastInsertId()
+	return id
+}
 
-	msg, err := c.PostMessage(ch.ID, 0, "companyA/payment", "companyA/user", "add field X", "delivered")
+func TestComms_PostAndRead(t *testing.T) {
+	store := newTestStore(t)
+	store.db.Exec(`INSERT INTO workspaces(id, name) VALUES(1, 'companyA')`)
+	c := &Comms{Store: store}
+	chID := insertTestChannel(t, store, 1, "test")
+
+	msg, err := c.PostMessage(chID, 0, "companyA/payment", "companyA/user", "add field X", "delivered")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -31,11 +39,11 @@ func TestComms_ReadChannel(t *testing.T) {
 	store := newTestStore(t)
 	store.db.Exec(`INSERT INTO workspaces(id, name) VALUES(1, 'companyA')`)
 	c := &Comms{Store: store}
-	ch, _ := c.CreateDMChannel(1, "a/b", "a/c")
-	c.PostMessage(ch.ID, 0, "a/b", "a/c", "first", "message")
-	c.PostMessage(ch.ID, 0, "a/b", "a/c", "second", "message")
+	chID := insertTestChannel(t, store, 1, "test")
+	c.PostMessage(chID, 0, "a/b", "a/c", "first", "message")
+	c.PostMessage(chID, 0, "a/b", "a/c", "second", "message")
 
-	msgs, err := c.ReadChannel(ch.ID, time.Time{})
+	msgs, err := c.ReadChannel(chID, time.Time{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,9 +59,9 @@ func TestComms_Threading(t *testing.T) {
 	store := newTestStore(t)
 	store.db.Exec(`INSERT INTO workspaces(id, name) VALUES(1, 'companyA')`)
 	c := &Comms{Store: store}
-	ch, _ := c.CreateDMChannel(1, "a/b", "a/c")
-	parent, _ := c.PostMessage(ch.ID, 0, "a/b", "a/c", "parent", "message")
-	reply, _ := c.PostMessage(ch.ID, parent.ID, "a/c", "a/b", "reply", "message")
+	chID := insertTestChannel(t, store, 1, "test")
+	parent, _ := c.PostMessage(chID, 0, "a/b", "a/c", "parent", "message")
+	reply, _ := c.PostMessage(chID, parent.ID, "a/c", "a/b", "reply", "message")
 
 	thread, err := c.ReadThread(parent.ID)
 	if err != nil {
@@ -65,21 +73,6 @@ func TestComms_Threading(t *testing.T) {
 	}
 	if thread[0].ID != parent.ID || thread[1].ID != reply.ID {
 		t.Errorf("order wrong")
-	}
-}
-
-func TestComms_DMChannelNormalized(t *testing.T) {
-	store := newTestStore(t)
-	store.db.Exec(`INSERT INTO workspaces(id, name) VALUES(1, 'companyA')`)
-	c := &Comms{Store: store}
-
-	ch1, _ := c.CreateDMChannel(1, "companyA/payment", "companyA/user")
-	ch2, _ := c.CreateDMChannel(1, "companyA/user", "companyA/payment")
-	if ch1.ID != ch2.ID {
-		t.Errorf("A→B and B→A must share one channel: got %d vs %d", ch1.ID, ch2.ID)
-	}
-	if ch1.Name != ch2.Name {
-		t.Errorf("channel name not normalized: %q vs %q", ch1.Name, ch2.Name)
 	}
 }
 
@@ -111,34 +104,5 @@ func TestComms_GeneralChannel(t *testing.T) {
 	msgs, _ := c.ReadChannel(ch.ID, time.Time{})
 	if len(msgs) != 1 || msgs[0].Content != "lobby msg" {
 		t.Errorf("got %+v", msgs)
-	}
-}
-// modernc/sqlite quirk: ON CONFLICT DO NOTHING leaves LastInsertId() holding
-// the rowid of the most recent successful INSERT on the connection (not 0).
-// CreateDMChannel must detect the existing-channel case via RowsAffected and
-// return the real channel id, else PostMessage targets a non-existent channel.
-func TestComms_CreateDMChannelExistingAfterUnrelatedInsert(t *testing.T) {
-	store := newTestStore(t)
-	store.db.Exec(`INSERT INTO workspaces(id, name) VALUES(1, 'companyA')`)
-	c := &Comms{Store: store}
-
-	ch1, err := c.CreateDMChannel(1, "companyA/payment", "companyA/user")
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Unrelated INSERT on the same connection bumps LastInsertId() to a rowid
-	// that is NOT ch1.ID — this is what tripped the original bug.
-	if _, err := c.CreateDMChannel(1, "companyA/billing", "companyA/user"); err != nil {
-		t.Fatal(err)
-	}
-	// Now re-create the original pair: channel already exists, so the INSERT
-	// hits ON CONFLICT DO NOTHING. The returned id MUST be ch1.ID, not the
-	// stale LastInsertId() left by the billing channel insert.
-	ch2, err := c.CreateDMChannel(1, "companyA/payment", "companyA/user")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if ch2.ID != ch1.ID {
-		t.Fatalf("existing channel id drifted: got %d want %d (stale LastInsertId bug)", ch2.ID, ch1.ID)
 	}
 }
