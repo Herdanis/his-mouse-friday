@@ -76,6 +76,7 @@ func TestHandle_PostToGeneralWakesAgent(t *testing.T) {
 // of the silent-exit failure mode.
 func TestHandle_SyntheticBlockedReplyOnSilentExit(t *testing.T) {
 	d := setupDaemon(t)
+	d.SafetyNetEnabled = true
 	d.Registry.AddWorkspace("companyA")
 	userDir := t.TempDir()
 	os.WriteFile(filepath.Join(userDir, "mouse.yaml"), []byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n"), 0644)

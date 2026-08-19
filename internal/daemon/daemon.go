@@ -31,8 +31,14 @@ type Daemon struct {
 	Comms       *Comms
 	Launcher    *Launcher
 	MouseLoader func(string) (*config.MouseConfig, error)
-	Sock        string
-	shutdownCh  chan struct{}
+	// SafetyNetEnabled controls the OnExit synthetic BLOCKED reply. Default
+	// true (production). Tests that use /bin/echo as the agent binary set
+	// this false — /bin/echo exits immediately and would spuriously fire the
+	// safety net, polluting threads the test then manually populates with
+	// done replies.
+	SafetyNetEnabled bool
+	Sock             string
+	shutdownCh       chan struct{}
 }
 
 // NewDaemon wires a Daemon with default components for the given socket + db.
@@ -42,14 +48,15 @@ func NewDaemon(sock, dbPath string) (*Daemon, error) {
 		return nil, err
 	}
 	return &Daemon{
-		Store:       store,
-		Registry:    &Registry{Store: store},
-		Sessions:    &SessionStore{Store: store},
-		Comms:       &Comms{Store: store},
-		Launcher:    &Launcher{},
-		MouseLoader: config.LoadMouse,
-		Sock:        sock,
-		shutdownCh:  make(chan struct{}),
+		Store:            store,
+		Registry:         &Registry{Store: store},
+		Sessions:         &SessionStore{Store: store},
+		Comms:            &Comms{Store: store},
+		Launcher:         &Launcher{},
+		MouseLoader:      config.LoadMouse,
+		SafetyNetEnabled: true,
+		Sock:             sock,
+		shutdownCh:       make(chan struct{}),
 	}, nil
 }
 
@@ -307,6 +314,9 @@ func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error
 		TaskMsgID: msg.ID,
 		OnExit: func(code int) {
 			d.Sessions.MarkExited(tmpSess.ID, code)
+			if !d.SafetyNetEnabled {
+				return
+			}
 			// Safety net: if the agent exited without posting a done reply,
 			// post a synthetic BLOCKED reply on its behalf so the orchestrator
 			// stops polling and surfaces the failure instead of waiting

@@ -137,6 +137,10 @@ func TestVerticalSlice_OverSocket(t *testing.T) {
 	}
 	defer d2.Store.Close()
 	d2.Launcher = &daemon.Launcher{Binary: "/bin/echo"}
+	// Disable the safety net: /bin/echo exits immediately and would spuriously
+	// post a synthetic BLOCKED reply, polluting threads this test manually
+	// populates with done replies.
+	d2.SafetyNetEnabled = false
 	d = d2
 
 	ctx, cancel := context.WithCancel(context.Background())
