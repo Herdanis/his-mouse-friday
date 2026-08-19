@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"net"
 	"os"
@@ -399,5 +400,34 @@ func TestServe_Shutdown(t *testing.T) {
 	_, err = net.Dial("unix", sock)
 	if err == nil {
 		t.Error("dial succeeded after shutdown; listener should be closed")
+	}
+}
+
+
+// ============================================
+// Session resume schema migrations
+// ============================================
+func TestStore_SessionsSchemaMigrations(t *testing.T) {
+	store := newTestStore(t)
+	rows, err := store.db.Query(`PRAGMA table_info(sessions)`)
+	if err != nil {
+		t.Fatalf("table_info: %v", err)
+	}
+	defer rows.Close()
+	got := map[string]bool{}
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		got[name] = true
+	}
+	for _, col := range []string{"opencode_session_id", "name", "root_thread_id", "prefix"} {
+		if !got[col] {
+			t.Errorf("sessions.%s missing after migration", col)
+		}
 	}
 }

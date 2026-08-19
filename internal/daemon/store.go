@@ -78,6 +78,12 @@ func OpenStore(path string) (*Store, error) {
 	// exit code so task_status can tell "still working" from "agent died".
 	db.Exec(`ALTER TABLE sessions ADD COLUMN task_msg_id INTEGER`)
 	db.Exec(`ALTER TABLE sessions ADD COLUMN exit_code INTEGER`)
+	// Migrate: session resume feature — bind spawned opencode sessions to thread
+	// roots for resume, plus a human-friendly name + random prefix for tracing.
+	db.Exec(`ALTER TABLE sessions ADD COLUMN opencode_session_id TEXT`)
+	db.Exec(`ALTER TABLE sessions ADD COLUMN name TEXT`)
+	db.Exec(`ALTER TABLE sessions ADD COLUMN root_thread_id INTEGER`)
+	db.Exec(`ALTER TABLE sessions ADD COLUMN prefix TEXT`)
 	// Ensure the global "general" channel exists — the single lobby where all
 	// agents live. Uses a sentinel __global__ workspace so the channels.workspace_id
 	// FK is satisfied without a schema migration.
