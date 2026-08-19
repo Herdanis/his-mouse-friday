@@ -18,12 +18,11 @@ type AgentConfig struct {
 	Secondary AgentTarget `yaml:"secondary"`
 }
 
-// AgentTarget identifies a coding agent runtime + model + optional extra CLI args.
+// AgentTarget identifies a coding agent runtime + model.
 // Empty provider = unset (secondary optional).
 type AgentTarget struct {
-	Provider string   `yaml:"provider"`
-	Model    string   `yaml:"model"`
-	Args     []string `yaml:"args"` // extra CLI args passed to the agent binary (platform-specific, e.g. ["--agent", "cavecrew-builder"])
+	Provider string `yaml:"provider"`
+	Model    string `yaml:"model"`
 }
 
 type PermissionsConfig struct {

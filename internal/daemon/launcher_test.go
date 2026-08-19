@@ -190,7 +190,7 @@ func TestLauncher_ResumeArgUsesSessionFlag(t *testing.T) {
 	if bin != "opencode" {
 		t.Fatalf("bin: got %q want opencode", bin)
 	}
-	want := []string{"run", "--auto", "-s", "ses_abc123", "do thing"}
+	want := []string{"run", "-s", "ses_abc123", "do thing"}
 	if !reflect.DeepEqual(args, want) {
 		t.Fatalf("args: got %v want %v", args, want)
 	}
@@ -198,7 +198,7 @@ func TestLauncher_ResumeArgUsesSessionFlag(t *testing.T) {
 	// Fresh spawn (no AgentSessionID): no -s flag.
 	cfg.AgentSessionID = ""
 	_, args = buildArgs(cfg)
-	want = []string{"run", "--auto", "do thing"}
+	want = []string{"run", "do thing"}
 	if !reflect.DeepEqual(args, want) {
 		t.Fatalf("fresh args: got %v want %v", args, want)
 	}
