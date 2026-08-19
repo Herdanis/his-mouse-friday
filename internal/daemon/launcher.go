@@ -28,7 +28,8 @@ type SpawnConfig struct {
 	SessionID      int64  // hmf session id
 	TaskMsgID      int64  // hmf task message id; spawned agent threads its done reply to this
 	OnExit         func(exitCode int)
-	AgentSessionID string // non-empty = resume this agent session via runtime-specific resume flag
+	AgentSessionID string // non-empty = resume this agent session (currently unused — resume disabled)
+	SessionName    string // hmf session name (<prefix>-<project>) — passed as --title to opencode run for later lookup
 }
 
 // Spawn starts the agent binary in dir with the task as initial prompt.
@@ -45,9 +46,9 @@ func buildArgs(cfg SpawnConfig) (bin string, args []string) {
 	switch {
 	case isOpencode(bin):
 		if cfg.AgentSessionID != "" {
-			args = opencodeResumeArgs(cfg.AgentSessionID, task, cfg.Model)
+			args = opencodeResumeArgs(cfg.AgentSessionID, task, cfg.Model, cfg.SessionName)
 		} else {
-			args = opencodeFreshArgs(task, cfg.Model)
+			args = opencodeFreshArgs(task, cfg.Model, cfg.SessionName)
 		}
 	default:
 		// Unknown runtime: no resume support. Run <bin> <task> directly.
@@ -118,16 +119,15 @@ func (l *Launcher) Spawn(ctx context.Context, cfg SpawnConfig) (int, error) {
 // ============================================
 
 // captureAgentSessionID queries the agent runtime for the session ID of the
-// just-spawned process. Currently delegates to opencode's session list. When
-// other runtimes land, switch on cfg.Binary and call <runtime>ListSessions +
-// <runtime>ParseSessionID.
+// just-spawned process. Finds the session by its unique title (the hmf session
+// name = <prefix>-<project>) so it doesn't race with the user's TUI session.
 func captureAgentSessionID(cfg SpawnConfig) (string, error) {
 	if !isOpencode(cfg.Binary) {
-		return "", nil // unknown runtime: no capture, no resume
+		return "", nil
 	}
 	out, err := opencodeListSessions(context.Background(), cfg.Binary, cfg.Dir)
 	if err != nil {
 		return "", fmt.Errorf("opencode session list: %w", err)
 	}
-	return opencodeParseSessionID(out), nil
+	return opencodeFindSessionByTitle(out, cfg.SessionName), nil
 }

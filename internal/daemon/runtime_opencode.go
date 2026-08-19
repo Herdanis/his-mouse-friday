@@ -18,18 +18,24 @@ func isOpencode(binary string) bool {
 	return strings.Contains(binary, "opencode")
 }
 
-// opencodeResumeArgs returns args for `opencode run -s <session_id> [-m <model>] <task>`.
-func opencodeResumeArgs(sessionID, task, model string) []string {
+// opencodeResumeArgs returns args for `opencode run -s <session_id> [--title <name>] [-m <model>] <task>`.
+func opencodeResumeArgs(sessionID, task, model, title string) []string {
 	args := []string{"run", "-s", sessionID}
+	if title != "" {
+		args = append(args, "--title", title)
+	}
 	if model != "" && model != "default" {
 		args = append(args, "-m", model)
 	}
 	return append(args, task)
 }
 
-// opencodeFreshArgs returns args for `opencode run [-m <model>] <task>`.
-func opencodeFreshArgs(task, model string) []string {
+// opencodeFreshArgs returns args for `opencode run [--title <name>] [-m <model>] <task>`.
+func opencodeFreshArgs(task, model, title string) []string {
 	args := []string{"run"}
+	if title != "" {
+		args = append(args, "--title", title)
+	}
 	if model != "" && model != "default" {
 		args = append(args, "-m", model)
 	}
@@ -48,6 +54,7 @@ func opencodeListSessions(ctx context.Context, binary, dir string) (string, erro
 }
 
 // opencodeParseSessionID extracts the first `ses_` ID from session list output.
+// Used as fallback when no title filter is provided.
 func opencodeParseSessionID(output string) string {
 	for _, line := range strings.Split(output, "\n") {
 		line = strings.TrimSpace(line)
@@ -55,6 +62,26 @@ func opencodeParseSessionID(output string) string {
 			fields := strings.Fields(line)
 			if len(fields) > 0 && fields[0] != "" {
 				return fields[0]
+			}
+		}
+	}
+	return ""
+}
+
+// opencodeFindSessionByTitle finds the session ID whose title line contains
+// the given title substring. Used to reliably capture the just-spawned session
+// — the title is unique per hmf session (random prefix), so no race with the
+// user's TUI session.
+func opencodeFindSessionByTitle(output, title string) string {
+	if title == "" {
+		return opencodeParseSessionID(output)
+	}
+	for _, line := range strings.Split(output, "\n") {
+		if strings.Contains(line, title) {
+			for _, field := range strings.Fields(line) {
+				if strings.HasPrefix(field, "ses_") {
+					return field
+				}
 			}
 		}
 	}

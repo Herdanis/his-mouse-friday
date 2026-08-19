@@ -348,6 +348,7 @@ func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error
 		ChannelID:      msg.ChannelID,
 		SessionID:      tmpSess.ID,
 		TaskMsgID:      msg.ID,
+		SessionName:    name,
 		OnExit: func(code int) {
 			d.Sessions.MarkExited(tmpSess.ID, code)
 			if !d.SafetyNetEnabled {
@@ -378,6 +379,15 @@ func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error
 	}
 	d.Sessions.SetPID(tmpSess.ID, pid)
 	d.Sessions.SetStatus(tmpSess.ID, "active")
+	// Capture opencode session ID by title (unique per hmf session) for
+	// display in hmf session list + future hmf session attach.
+	if ocID, err := d.CaptureAgentSessionID(spawnCfg); err != nil {
+		log.Printf("capture session id for session %d: %v", tmpSess.ID, err)
+	} else if ocID != "" {
+		if err := d.Sessions.SetAgentSessionID(tmpSess.ID, ocID); err != nil {
+			log.Printf("set session id for session %d: %v", tmpSess.ID, err)
+		}
+	}
 	return nil
 }
 
