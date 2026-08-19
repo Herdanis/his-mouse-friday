@@ -140,6 +140,16 @@ type StatusResult struct {
 	Sock       string `json:"sock"`
 }
 
+// SessionListItem is a row for the session_list RPC.
+type SessionListItem struct {
+	Name              string `json:"name"`
+	Project           string `json:"project"`
+	Status            string `json:"status"`
+	OpencodeSessionID string `json:"opencode_session_id,omitempty"`
+	RootThreadID      int64  `json:"root_thread_id,omitempty"`
+	CreatedAt         string `json:"created_at"`
+}
+
 // ============================================
 // Method dispatch
 // ============================================
@@ -173,6 +183,8 @@ func (d *Daemon) Handle(ctx context.Context, req protocol.Request) protocol.Resp
 		return d.handleProjectDelete(req)
 	case "status":
 		return d.handleStatus(req)
+	case "session_list":
+		return d.handleSessionList(req)
 	case "shutdown":
 		select {
 		case <-d.shutdownCh:
@@ -604,6 +616,33 @@ func (d *Daemon) handleStatus(req protocol.Request) protocol.Response {
 		return errResp(req.ID, "status: "+err.Error())
 	}
 	result, _ := json.Marshal(StatusResult{Running: true, Workspaces: wsCount, Projects: projCount, Sessions: sessCount, Sock: d.Sock})
+	return protocol.Response{ID: req.ID, Result: result}
+}
+
+// handleSessionList returns all hmf sessions joined to their project, newest
+// first. Powers `hmf session list`. IFNULL coerces NULL OC-ID/root (older rows
+// or fresh spawns pre-capture) to "" / 0 so the CLI renders clean dashes.
+func (d *Daemon) handleSessionList(req protocol.Request) protocol.Response {
+	rows, err := d.Store.db.Query(
+		`SELECT s.name, p.name, s.status, IFNULL(s.opencode_session_id,''), IFNULL(s.root_thread_id,0), s.created_at
+		 FROM sessions s JOIN projects p ON s.project_id=p.id
+		 ORDER BY s.id DESC`)
+	if err != nil {
+		return errResp(req.ID, err.Error())
+	}
+	defer rows.Close()
+	var out []SessionListItem
+	for rows.Next() {
+		var it SessionListItem
+		if err := rows.Scan(&it.Name, &it.Project, &it.Status, &it.OpencodeSessionID, &it.RootThreadID, &it.CreatedAt); err != nil {
+			return errResp(req.ID, err.Error())
+		}
+		out = append(out, it)
+	}
+	if out == nil {
+		out = []SessionListItem{}
+	}
+	result, _ := json.Marshal(out)
 	return protocol.Response{ID: req.ID, Result: result}
 }
 

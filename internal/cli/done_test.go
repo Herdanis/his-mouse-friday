@@ -197,4 +197,27 @@ func TestCLI_DoneWithoutTaskMsgID(t *testing.T) {
 	}
 }
 
+// TestCLI_SessionList verifies the session_list daemon RPC returns at least
+// one session row (spinCLIDaemon already posted a wake task → 1 session)
+// with Name/Project/Status populated (prefix + name set by Task 10).
+func TestCLI_SessionList(t *testing.T) {
+	threadRootID, generalChannelID, cleanup := spinCLIDaemon(t)
+	defer cleanup()
+
+	result := mustCLICall(t, "session_list", map[string]any{})
+	var items []daemon.SessionListItem
+	if err := json.Unmarshal(result, &items); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(items) == 0 {
+		t.Fatal("expected at least 1 session, got 0")
+	}
+	first := items[0]
+	if first.Name == "" || first.Status == "" || first.Project == "" {
+		t.Errorf("missing fields: %+v", first)
+	}
+	_ = threadRootID
+	_ = generalChannelID
+}
+
 func itoa(n int64) string { return strconv.FormatInt(n, 10) }

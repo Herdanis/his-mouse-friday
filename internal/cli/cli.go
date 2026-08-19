@@ -27,6 +27,7 @@ func NewRootCmd() *cobra.Command {
 	root.AddCommand(initCmd())
 	root.AddCommand(configCmd())
 	root.AddCommand(doneCmd())
+	root.AddCommand(sessionCmd())
 	return root
 }
 
@@ -321,4 +322,43 @@ func doneCmd() *cobra.Command {
 func atoi64(s string) int64 {
 	n, _ := strconv.ParseInt(s, 10, 64)
 	return n
+}
+
+// sessionCmd groups subcommands for inspecting hmf sessions (currently just
+// list). `hmf session list` calls the daemon's session_list RPC and renders
+// a tab-aligned table of name, project, status, opencode session id, root
+// thread id, and created_at.
+func sessionCmd() *cobra.Command {
+	c := &cobra.Command{Use: "session", Short: "Manage hmf sessions"}
+	list := &cobra.Command{
+		Use:   "list",
+		Short: "List all hmf sessions (name, project, status, opencode session id, root)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			result, err := protocol.Call("session_list", struct{}{})
+			if err != nil {
+				return err
+			}
+			var items []daemon.SessionListItem
+			if err := json.Unmarshal(result, &items); err != nil {
+				return fmt.Errorf("parse: %w", err)
+			}
+			if len(items) == 0 {
+				fmt.Println("(no sessions)")
+				return nil
+			}
+			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+			fmt.Fprintln(w, "NAME\tPROJECT\tSTATUS\tOC_SESSION\tROOT\tCREATED")
+			for _, it := range items {
+				oc := it.OpencodeSessionID
+				if oc == "" {
+					oc = "-"
+				}
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\n", it.Name, it.Project, it.Status, oc, it.RootThreadID, it.CreatedAt)
+			}
+			w.Flush()
+			return nil
+		},
+	}
+	c.AddCommand(list)
+	return c
 }
