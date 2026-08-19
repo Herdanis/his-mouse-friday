@@ -18,14 +18,22 @@ func isOpencode(binary string) bool {
 	return strings.Contains(binary, "opencode")
 }
 
-// opencodeResumeArgs returns args for `opencode run -s <session_id> <task>`.
-func opencodeResumeArgs(sessionID, task string) []string {
-	return []string{"run", "-s", sessionID, task}
+// opencodeResumeArgs returns args for `opencode run -s <session_id> [-m <model>] <task>`.
+func opencodeResumeArgs(sessionID, task, model string) []string {
+	args := []string{"run", "-s", sessionID}
+	if model != "" && model != "default" {
+		args = append(args, "-m", model)
+	}
+	return append(args, task)
 }
 
-// opencodeFreshArgs returns args for `opencode run <task>` (no resume).
-func opencodeFreshArgs(task string) []string {
-	return []string{"run", task}
+// opencodeFreshArgs returns args for `opencode run [-m <model>] <task>` (no resume).
+func opencodeFreshArgs(task, model string) []string {
+	args := []string{"run"}
+	if model != "" && model != "default" {
+		args = append(args, "-m", model)
+	}
+	return append(args, task)
 }
 
 // opencodeListSessions runs `<binary> session list` in dir, returns stdout.

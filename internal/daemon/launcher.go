@@ -45,9 +45,9 @@ func buildArgs(cfg SpawnConfig) (bin string, args []string) {
 	switch {
 	case isOpencode(bin):
 		if cfg.AgentSessionID != "" {
-			args = opencodeResumeArgs(cfg.AgentSessionID, task)
+			args = opencodeResumeArgs(cfg.AgentSessionID, task, cfg.Model)
 		} else {
-			args = opencodeFreshArgs(task)
+			args = opencodeFreshArgs(task, cfg.Model)
 		}
 	default:
 		// Unknown runtime: no resume support. Run <bin> <task> directly.
