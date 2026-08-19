@@ -96,7 +96,7 @@ type PostResult struct {
 	MessageID int64 `json:"message_id"`
 }
 type TaskStatusParams struct {
-	ThreadID int64 `json:"thread_id"`
+	MessageID int64 `json:"message_id"`
 }
 type TaskStatusResult struct {
 	HasDone     bool   `json:"has_done"`
@@ -342,7 +342,7 @@ func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error
 			"Call the read_thread MCP tool with thread_id=%d to load the task and any prior context. "+
 			"Handle the request. Reply in the thread using post_message with thread_id=%d, status=\"done\", "+
 			"and a one-line summary of what you did.",
-		msg.ID, msg.ID, msg.ID)
+		msg.ID, parentID, parentID)
 	spawnCfg := SpawnConfig{
 		Dir:            proj.Path,
 		Binary:         binary,
@@ -369,11 +369,11 @@ func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error
 			// MUST-REPLY rule).
 			var doneCount int
 			d.Store.db.QueryRow(
-				`SELECT count(*) FROM messages WHERE thread_id=? AND status='done'`, msg.ID).Scan(&doneCount)
+				`SELECT count(*) FROM messages WHERE thread_id=? AND status='done'`, parentID).Scan(&doneCount)
 			if doneCount == 0 {
 				content := fmt.Sprintf("BLOCKED: agent exited (code=%d) without posting a done reply", code)
-				if _, err := d.Comms.PostMessage(msg.ChannelID, msg.ID, msg.ToProject, msg.FromProject, content, "done"); err != nil {
-					log.Printf("synthetic done reply for thread %d: %v", msg.ID, err)
+				if _, err := d.Comms.PostMessage(msg.ChannelID, parentID, msg.ToProject, msg.FromProject, content, "done"); err != nil {
+					log.Printf("synthetic done reply for thread %d: %v", parentID, err)
 				}
 			}
 		},
@@ -407,25 +407,45 @@ func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error
 // is it still working, exited cleanly, failed, or never woke. Plus whether a
 // done reply has landed. Lets the orchestrator poll "still working vs died"
 // instead of guessing from channel reads.
+//
+// The passed thread_id can be ANY message on the thread (root or reply).
+// The handler resolves it to the thread root, then finds the latest session
+// for that thread. Done check is scoped to replies at or after the passed
+// message — so a prior task's done reply doesn't falsely mark a follow-up
+// as complete.
 func (d *Daemon) handleTaskStatus(req protocol.Request) protocol.Response {
 	var p TaskStatusParams
 	if err := json.Unmarshal(req.Params, &p); err != nil {
 		return errResp(req.ID, "bad params: "+err.Error())
 	}
-	if p.ThreadID == 0 {
-		return errResp(req.ID, "thread_id is required")
+	if p.MessageID == 0 {
+		return errResp(req.ID, "message_id is required")
 	}
+	// Resolve the passed message to its thread root: if it's a reply
+	// (thread_id set), use that; if it's a root (thread_id NULL), use id.
+	var parentID int64
+	err := d.Store.db.QueryRow(
+		`SELECT IFNULL(thread_id, id) FROM messages WHERE id=?`, p.MessageID).Scan(&parentID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			result, _ := json.Marshal(TaskStatusResult{HasDone: false, AgentStatus: "no_agent"})
+			return protocol.Response{ID: req.ID, Result: result}
+		}
+		return errResp(req.ID, err.Error())
+	}
+	// Done check: done replies on this thread at or after the passed message.
 	var doneCount int
 	d.Store.db.QueryRow(
-		`SELECT count(*) FROM messages WHERE thread_id=? AND status='done'`, p.ThreadID).Scan(&doneCount)
+		`SELECT count(*) FROM messages WHERE thread_id=? AND status='done' AND id >= ?`,
+		parentID, p.MessageID).Scan(&doneCount)
 
 	var sessID int64
 	var status string
 	var pid sql.NullInt64
 	var exitCode sql.NullInt64
-	err := d.Store.db.QueryRow(
-		`SELECT id, status, pid, exit_code FROM sessions WHERE task_msg_id=? ORDER BY id DESC LIMIT 1`,
-		p.ThreadID).Scan(&sessID, &status, &pid, &exitCode)
+	err = d.Store.db.QueryRow(
+		`SELECT id, status, pid, exit_code FROM sessions WHERE root_thread_id=? ORDER BY id DESC LIMIT 1`,
+		parentID).Scan(&sessID, &status, &pid, &exitCode)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			result, _ := json.Marshal(TaskStatusResult{HasDone: doneCount > 0, AgentStatus: "no_agent"})

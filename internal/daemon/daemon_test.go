@@ -196,9 +196,9 @@ func postTask(t *testing.T, d *Daemon, sessionStatus string, exitCode int, withD
 
 	if sessionStatus != "" {
 		d.Store.db.Exec(
-			`INSERT INTO sessions(project_id, agent_binary, model, status, pid, created_at, task_msg_id, exit_code)
-			 VALUES(1, 'opencode', 'default', ?, 12345, datetime('now'), ?, ?)`,
-			sessionStatus, parentID, exitCode)
+			`INSERT INTO sessions(project_id, agent_binary, model, status, pid, created_at, task_msg_id, root_thread_id, exit_code)
+			 VALUES(1, 'opencode', 'default', ?, 12345, datetime('now'), ?, ?, ?)`,
+			sessionStatus, parentID, parentID, exitCode)
 	}
 	if withDone {
 		d.Store.db.Exec(
@@ -214,7 +214,7 @@ func TestHandle_TaskStatus_Working(t *testing.T) {
 	parentID := postTask(t, d, "active", 0, false)
 	resp := d.Handle(context.Background(), protocol.Request{
 		Method: "task_status",
-		Params: mustJSON(t, map[string]any{"thread_id": parentID}),
+		Params: mustJSON(t, map[string]any{"message_id": parentID}),
 		ID:     1,
 	})
 	if resp.Error != nil {
@@ -232,7 +232,7 @@ func TestHandle_TaskStatus_ExitedWithDone(t *testing.T) {
 	parentID := postTask(t, d, "exited", 0, true)
 	resp := d.Handle(context.Background(), protocol.Request{
 		Method: "task_status",
-		Params: mustJSON(t, map[string]any{"thread_id": parentID}),
+		Params: mustJSON(t, map[string]any{"message_id": parentID}),
 		ID:     1,
 	})
 	var ts TaskStatusResult
@@ -247,7 +247,7 @@ func TestHandle_TaskStatus_FailedNoDone(t *testing.T) {
 	parentID := postTask(t, d, "failed", 1, false)
 	resp := d.Handle(context.Background(), protocol.Request{
 		Method: "task_status",
-		Params: mustJSON(t, map[string]any{"thread_id": parentID}),
+		Params: mustJSON(t, map[string]any{"message_id": parentID}),
 		ID:     1,
 	})
 	var ts TaskStatusResult
@@ -263,7 +263,7 @@ func TestHandle_TaskStatus_NoAgent(t *testing.T) {
 	parentID := postTask(t, d, "", 0, false)
 	resp := d.Handle(context.Background(), protocol.Request{
 		Method: "task_status",
-		Params: mustJSON(t, map[string]any{"thread_id": parentID}),
+		Params: mustJSON(t, map[string]any{"message_id": parentID}),
 		ID:     1,
 	})
 	var ts TaskStatusResult

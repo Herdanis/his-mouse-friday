@@ -140,7 +140,7 @@ func TestShim_TaskStatusShape(t *testing.T) {
 	threadID := pr.MessageID
 
 	// Poll task_status — must unmarshal into TaskStatusOutput cleanly.
-	result := mustCallDaemon(t, "task_status", map[string]any{"thread_id": threadID})
+	result := mustCallDaemon(t, "task_status", map[string]any{"message_id": threadID})
 	var ts TaskStatusOutput
 	if err := json.Unmarshal(result, &ts); err != nil {
 		t.Fatalf("unmarshal TaskStatusOutput: %v", err)

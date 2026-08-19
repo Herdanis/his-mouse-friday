@@ -68,7 +68,7 @@ type PostOutput struct {
 	MessageID int64 `json:"message_id" jsonschema:"the id of the posted message (use as thread_id for replies / task_status)"`
 }
 type TaskStatusInput struct {
-	ThreadID int64 `json:"thread_id" jsonschema:"the task message id (thread root) to check status of"`
+	MessageID int64 `json:"message_id" jsonschema:"any message id on the thread (root or reply) — the handler resolves it to the thread root"`
 }
 type TaskStatusOutput struct {
 	HasDone     bool   `json:"has_done"`
@@ -184,9 +184,9 @@ func newServer(callerID string) *mcpserver.Server {
 
 	mcpserver.AddTool(srv, &mcpserver.Tool{
 		Name:        "task_status",
-		Description: "Check the status of a delegated task: is the agent still working, exited cleanly, failed, or never woke. Plus whether a done reply has landed.",
+		Description: "Check the status of a delegated task: is the agent still working, exited cleanly, failed, or never woke. Plus whether a done reply has landed. Pass any message_id from the thread (root or reply) — the handler resolves it to the thread root.",
 	}, func(ctx context.Context, req *mcpserver.CallToolRequest, in TaskStatusInput) (*mcpserver.CallToolResult, TaskStatusOutput, error) {
-		result, err := protocol.Call("task_status", map[string]any{"thread_id": in.ThreadID})
+		result, err := protocol.Call("task_status", map[string]any{"message_id": in.MessageID})
 		if err != nil {
 			return nil, TaskStatusOutput{}, err
 		}
