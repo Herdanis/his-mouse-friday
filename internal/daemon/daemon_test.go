@@ -431,3 +431,56 @@ func TestStore_SessionsSchemaMigrations(t *testing.T) {
 		}
 	}
 }
+
+
+// ============================================
+// Session resume fields — Create stores root_thread_id, prefix, name
+// ============================================
+
+func TestSessions_CreateStoresResumeFields(t *testing.T) {
+	store := newTestStore(t)
+	store.db.Exec(`INSERT INTO workspaces(id, name) VALUES(1, 'ws')`)
+	store.db.Exec(`INSERT INTO projects(id, workspace_id, name, path) VALUES(1, 1, 'p', '/tmp/p')`)
+	s := &SessionStore{Store: store}
+	sess, err := s.Create(
+		/* projectID */ 1,
+		/* binary */ "opencode",
+		/* model */ "default",
+		/* pid */ 0,
+		/* taskMsgID */ 42,
+		/* rootThreadID */ 42,
+		/* prefix */ "abc12",
+		/* name */ "abc12-dotfiles",
+	)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	var gotOC sql.NullString
+	var gotName, gotPrefix string
+	var gotRoot int64
+	err = store.db.QueryRow(
+		`SELECT opencode_session_id, name, prefix, root_thread_id FROM sessions WHERE id=?`,
+		sess.ID).Scan(&gotOC, &gotName, &gotPrefix, &gotRoot)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if gotOC.Valid || gotName != "abc12-dotfiles" || gotPrefix != "abc12" || gotRoot != 42 {
+		t.Errorf("row: oc=%v name=%q prefix=%q root=%d", gotOC, gotName, gotPrefix, gotRoot)
+	}
+}
+
+func TestSessions_SetOCSessionID(t *testing.T) {
+	store := newTestStore(t)
+	store.db.Exec(`INSERT INTO workspaces(id, name) VALUES(1, 'ws')`)
+	store.db.Exec(`INSERT INTO projects(id, workspace_id, name, path) VALUES(1, 1, 'p', '/tmp/p')`)
+	s := &SessionStore{Store: store}
+	sess, _ := s.Create(1, "opencode", "default", 0, 42, 42, "abc12", "abc12-dotfiles")
+	if err := s.SetOCSessionID(sess.ID, "ses_xyz789"); err != nil {
+		t.Fatalf("SetOCSessionID: %v", err)
+	}
+	var got string
+	store.db.QueryRow(`SELECT opencode_session_id FROM sessions WHERE id=?`, sess.ID).Scan(&got)
+	if got != "ses_xyz789" {
+		t.Errorf("got %q want ses_xyz789", got)
+	}
+}

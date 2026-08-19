@@ -13,23 +13,33 @@ type Session struct {
 	Status      string
 	PID         int
 	CreatedAt   time.Time
+	// Resume feature: bind spawned opencode session to a thread root for resume,
+	// plus human-friendly name + random prefix for tracing sibling sessions.
+	OpencodeSessionID string
+	Name              string
+	RootThreadID      int64
+	Prefix            string
 }
 
 type SessionStore struct {
 	Store *Store
 }
 
-func (s *SessionStore) Create(projectID int64, binary, model string, pid int, taskMsgID int64) (Session, error) {
+func (s *SessionStore) Create(projectID int64, binary, model string, pid int, taskMsgID, rootThreadID int64, prefix, name string) (Session, error) {
 	now := time.Now().UTC()
 	res, err := s.Store.db.Exec(
-		`INSERT INTO sessions(project_id, agent_binary, model, status, pid, created_at, task_msg_id)
-		 VALUES(?,?,?,?,?,?,?)`,
-		projectID, binary, model, "active", pid, now, nullIfZero(taskMsgID))
+		`INSERT INTO sessions(project_id, agent_binary, model, status, pid, created_at, task_msg_id, root_thread_id, prefix, name)
+		 VALUES(?,?,?,?,?,?,?,?,?,?)`,
+		projectID, binary, model, "active", pid, now, nullIfZero(taskMsgID), nullIfZero(rootThreadID), nullIfEmpty(prefix), nullIfEmpty(name))
 	if err != nil {
 		return Session{}, err
 	}
 	id, _ := res.LastInsertId()
-	return Session{ID: id, ProjectID: projectID, AgentBinary: binary, Model: model, Status: "active", PID: pid, CreatedAt: now}, nil
+	return Session{
+		ID: id, ProjectID: projectID, AgentBinary: binary, Model: model,
+		Status: "active", PID: pid, CreatedAt: now,
+		RootThreadID: rootThreadID, Prefix: prefix, Name: name,
+	}, nil
 }
 
 func (s *SessionStore) Get(id int64) (Session, error) {
@@ -61,6 +71,22 @@ func (s *SessionStore) SetPID(id int64, pid int) error {
 // MarkExited records that the spawned agent's process exited. Exit code 0 =>
 // status "exited" (clean); non-zero => "failed". Lets task_status distinguish
 // "still working" from "agent died without replying".
+// nullIfEmpty returns nil for "" so sql.Exec inserts NULL for optional text
+// fields (prefix, name). Mirrors nullIfZero for int64 FK columns.
+func nullIfEmpty(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
+// SetOCSessionID binds the opencode session id (captured post-spawn via
+// `opencode session list`) to a hmf session row so later wakes can resume it.
+func (s *SessionStore) SetOCSessionID(id int64, ocID string) error {
+	_, err := s.Store.db.Exec(`UPDATE sessions SET opencode_session_id=? WHERE id=?`, ocID, id)
+	return err
+}
+
 func (s *SessionStore) MarkExited(id int64, exitCode int) error {
 	status := "exited"
 	if exitCode != 0 {

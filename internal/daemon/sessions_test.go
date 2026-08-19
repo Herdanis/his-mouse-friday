@@ -11,7 +11,7 @@ func TestSessionStore_CreateAndGet(t *testing.T) {
 	r.AddProject("companyA", "payment-service", "/tmp/payment")
 
 	ss := &SessionStore{Store: r.Store}
-	s, err := ss.Create(1, "opencode", "default", 12345, 100)
+	s, err := ss.Create(1, "opencode", "default", 12345, 100, 0, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,7 +32,7 @@ func TestSessionStore_SetStatus(t *testing.T) {
 	store.db.Exec(`INSERT INTO workspaces(id, name) VALUES(1, 'ws')`)
 	store.db.Exec(`INSERT INTO projects(id, workspace_id, name, path) VALUES(1, 1, 'p', '/tmp/p')`)
 	ss := &SessionStore{Store: store}
-	s, _ := ss.Create(1, "opencode", "default", 99, 200)
+	s, _ := ss.Create(1, "opencode", "default", 99, 200, 0, "", "")
 	if err := ss.SetStatus(s.ID, "failed"); err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +48,7 @@ func TestSessionStore_CreateStoresTaskMsgID(t *testing.T) {
 	store.db.Exec(`INSERT INTO workspaces(id, name) VALUES(1, 'ws')`)
 	store.db.Exec(`INSERT INTO projects(id, workspace_id, name, path) VALUES(1, 1, 'p', '/tmp/p')`)
 	ss := &SessionStore{Store: store}
-	s, _ := ss.Create(1, "opencode", "default", 0, 4242)
+	s, _ := ss.Create(1, "opencode", "default", 0, 4242, 0, "", "")
 	var taskMsgID int64
 	store.db.QueryRow(`SELECT task_msg_id FROM sessions WHERE id=?`, s.ID).Scan(&taskMsgID)
 	if taskMsgID != 4242 {
@@ -62,7 +62,7 @@ func TestSessionStore_CreateZeroTaskMsgIDStoresNull(t *testing.T) {
 	store.db.Exec(`INSERT INTO workspaces(id, name) VALUES(1, 'ws')`)
 	store.db.Exec(`INSERT INTO projects(id, workspace_id, name, path) VALUES(1, 1, 'p', '/tmp/p')`)
 	ss := &SessionStore{Store: store}
-	s, _ := ss.Create(1, "opencode", "default", 0, 0)
+	s, _ := ss.Create(1, "opencode", "default", 0, 0, 0, "", "")
 	var nullable sql.NullInt64
 	store.db.QueryRow(`SELECT task_msg_id FROM sessions WHERE id=?`, s.ID).Scan(&nullable)
 	if nullable.Valid {
@@ -79,7 +79,7 @@ func TestSessionStore_MarkExited_CleanVsFailed(t *testing.T) {
 	ss := &SessionStore{Store: store}
 
 	// Clean exit.
-	sClean, _ := ss.Create(1, "opencode", "default", 100, 1)
+	sClean, _ := ss.Create(1, "opencode", "default", 100, 1, 0, "", "")
 	if err := ss.MarkExited(sClean.ID, 0); err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +89,7 @@ func TestSessionStore_MarkExited_CleanVsFailed(t *testing.T) {
 	}
 
 	// Failed (non-zero exit code).
-	sFail, _ := ss.Create(1, "opencode", "default", 101, 2)
+	sFail, _ := ss.Create(1, "opencode", "default", 101, 2, 0, "", "")
 	ss.MarkExited(sFail.ID, 2)
 	got, _ = ss.Get(sFail.ID)
 	if got.Status != "failed" {

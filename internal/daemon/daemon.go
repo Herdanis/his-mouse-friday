@@ -233,7 +233,7 @@ func (d *Daemon) wakeAgent(ctx context.Context, msg Message) error {
 		}
 	}
 	runbook, _ := os.ReadFile(filepath.Join(proj.Path, "MOUSE.md"))
-	tmpSess, err := d.Sessions.Create(proj.ID, binary, model, 0, msg.ID)
+	tmpSess, err := d.Sessions.Create(proj.ID, binary, model, 0, msg.ID, 0, "", "")
 	if err != nil {
 		return fmt.Errorf("session: %w", err)
 	}
