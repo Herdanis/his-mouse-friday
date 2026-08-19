@@ -187,10 +187,10 @@ func (d *Daemon) handlePost(ctx context.Context, req protocol.Request) protocol.
 	if err != nil {
 		return errResp(req.ID, err.Error())
 	}
-	// Wake the addressed agent when this is a thread root (a new task) with a
-	// recipient. Replies (thread_id set) don't wake — they're part of an
-	// ongoing thread the recipient will read on its next turn.
-	if p.ThreadID == 0 && p.To != "" {
+	// Wake any to-addressed message — thread root OR reply. Reply wakes
+	// enable session resume (follow-up in an existing thread re-spawns the
+	// agent). Guards in Task 7 suppress done threads / active sessions.
+	if p.To != "" {
 		if err := d.wakeAgent(ctx, p, msg); err != nil {
 			return errResp(req.ID, "wake: "+err.Error())
 		}

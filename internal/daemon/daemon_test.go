@@ -547,3 +547,36 @@ func TestHandle_CrossProjectDelegationInheritsRoot(t *testing.T) {
 		t.Fatalf("cross-project: root_thread_id=%d want 500", rootTID)
 	}
 }
+
+func TestHandle_ReplyWithToWakesAgent(t *testing.T) {
+	d := setupDaemon(t)
+	d.Registry.AddWorkspace("companyA")
+	userDir := t.TempDir()
+	os.WriteFile(filepath.Join(userDir, "mouse.yaml"),
+		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n"), 0644)
+	d.Registry.AddProject("companyA", "user-service", userDir)
+
+	// Seed: thread root 500, agent already exited (no done reply yet).
+	d.Store.db.Exec(`INSERT INTO messages(id, channel_id, thread_id, from_project, to_project, content, status, ts)
+		VALUES(500, 1, NULL, 'companyA/payment', 'companyA/user-service', 'task', 'message', datetime('now'))`)
+	d.Store.db.Exec(`INSERT INTO sessions(project_id, agent_binary, model, status, pid, created_at, task_msg_id, root_thread_id)
+		VALUES((SELECT id FROM projects WHERE name='user-service'), 'opencode', 'default', 'exited', 0, datetime('now'), 500, 500)`)
+
+	// Follow-up reply with to= — should wake the agent.
+	params, _ := json.Marshal(map[string]any{
+		"channel": 1, "thread_id": 500, "from": "companyA/payment",
+		"to": "companyA/user-service", "content": "now do follow-up",
+	})
+	resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: params, ID: 1})
+	if resp.Error != nil {
+		t.Fatalf("post: %s", resp.Error.Message)
+	}
+	// A new session was created for the thread (root_thread_id=500).
+	// task_msg_id on the new session is the reply's msg.ID, not 500 — so
+	// query root_thread_id, which both sessions share.
+	var sessCount int
+	d.Store.db.QueryRow(`SELECT count(*) FROM sessions WHERE root_thread_id=500`).Scan(&sessCount)
+	if sessCount != 2 { // 1 pre-existing + 1 new wake
+		t.Fatalf("expected wake on reply-with-to, got %d sessions for thread 500", sessCount)
+	}
+}
