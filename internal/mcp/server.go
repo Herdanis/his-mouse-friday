@@ -27,7 +27,7 @@ type PostInput struct {
 	To       string `json:"to,omitempty" jsonschema:"recipient workspace/project — a thread root with a to wakes that agent"`
 	Content  string `json:"content" jsonschema:"message content"`
 	Status   string `json:"status,omitempty" jsonschema:"delivered | in_progress | done | message (default)"`
-	RootID   int64  `json:"root_id,omitempty" jsonschema:"set by hmf-mcp from HMF_TASK_MSG_ID when caller is a spawned agent — leave empty in user-initiated sessions"`
+	ParentID   int64  `json:"root_id,omitempty" jsonschema:"set by hmf-mcp from HMF_TASK_MSG_ID when caller is a spawned agent — leave empty in user-initiated sessions"`
 }
 type ReadChanInput struct {
 	Channel int64 `json:"channel,omitempty" jsonschema:"channel id (defaults to the global general channel)"`
@@ -163,10 +163,10 @@ func newServer(callerID string) *mcpserver.Server {
 		// If caller is a spawned agent, propagate the caller's root so cross-
 		// project delegations bind to the original thread root.
 		if tid := os.Getenv("HMF_TASK_MSG_ID"); tid != "" {
-			var rootID int64
-			fmt.Sscanf(tid, "%d", &rootID)
-			if rootID != 0 {
-				params["root_id"] = rootID
+			var parentID int64
+			fmt.Sscanf(tid, "%d", &parentID)
+			if parentID != 0 {
+				params["parent_id"] = parentID
 			}
 		}
 		result, err := protocol.Call("post_message", params)

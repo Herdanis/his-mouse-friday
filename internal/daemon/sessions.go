@@ -17,7 +17,7 @@ type Session struct {
 	// resume, plus human-friendly name + random prefix for tracing siblings.
 	AgentSessionID string
 	Name           string
-	RootThreadID   int64
+	ParentID   int64
 	Prefix         string
 }
 
@@ -25,12 +25,12 @@ type SessionStore struct {
 	Store *Store
 }
 
-func (s *SessionStore) Create(projectID int64, binary, model string, pid int, taskMsgID, rootThreadID int64, prefix, name string) (Session, error) {
+func (s *SessionStore) Create(projectID int64, binary, model string, pid int, taskMsgID, parentID int64, prefix, name string) (Session, error) {
 	now := time.Now().UTC()
 	res, err := s.Store.db.Exec(
 		`INSERT INTO sessions(project_id, agent_binary, model, status, pid, created_at, task_msg_id, root_thread_id, prefix, name)
 		 VALUES(?,?,?,?,?,?,?,?,?,?)`,
-		projectID, binary, model, "active", pid, now, nullIfZero(taskMsgID), nullIfZero(rootThreadID), nullIfEmpty(prefix), nullIfEmpty(name))
+		projectID, binary, model, "active", pid, now, nullIfZero(taskMsgID), nullIfZero(parentID), nullIfEmpty(prefix), nullIfEmpty(name))
 	if err != nil {
 		return Session{}, err
 	}
@@ -38,7 +38,7 @@ func (s *SessionStore) Create(projectID int64, binary, model string, pid int, ta
 	return Session{
 		ID: id, ProjectID: projectID, AgentBinary: binary, Model: model,
 		Status: "active", PID: pid, CreatedAt: now,
-		RootThreadID: rootThreadID, Prefix: prefix, Name: name,
+		ParentID: parentID, Prefix: prefix, Name: name,
 	}, nil
 }
 

@@ -192,29 +192,29 @@ func postTask(t *testing.T, d *Daemon, sessionStatus string, exitCode int, withD
 	if err != nil {
 		t.Fatal(err)
 	}
-	rootID, _ := res.LastInsertId()
+	parentID, _ := res.LastInsertId()
 
 	if sessionStatus != "" {
 		d.Store.db.Exec(
 			`INSERT INTO sessions(project_id, agent_binary, model, status, pid, created_at, task_msg_id, exit_code)
 			 VALUES(1, 'opencode', 'default', ?, 12345, datetime('now'), ?, ?)`,
-			sessionStatus, rootID, exitCode)
+			sessionStatus, parentID, exitCode)
 	}
 	if withDone {
 		d.Store.db.Exec(
 			`INSERT INTO messages(channel_id, thread_id, from_project, to_project, content, status, ts)
 			 VALUES(1, ?, 'companyA/user-service', 'companyA/payment', 'done', 'done', datetime('now'))`,
-			rootID)
+			parentID)
 	}
-	return rootID
+	return parentID
 }
 
 func TestHandle_TaskStatus_Working(t *testing.T) {
 	d := setupDaemon(t)
-	rootID := postTask(t, d, "active", 0, false)
+	parentID := postTask(t, d, "active", 0, false)
 	resp := d.Handle(context.Background(), protocol.Request{
 		Method: "task_status",
-		Params: mustJSON(t, map[string]any{"thread_id": rootID}),
+		Params: mustJSON(t, map[string]any{"thread_id": parentID}),
 		ID:     1,
 	})
 	if resp.Error != nil {
@@ -229,10 +229,10 @@ func TestHandle_TaskStatus_Working(t *testing.T) {
 
 func TestHandle_TaskStatus_ExitedWithDone(t *testing.T) {
 	d := setupDaemon(t)
-	rootID := postTask(t, d, "exited", 0, true)
+	parentID := postTask(t, d, "exited", 0, true)
 	resp := d.Handle(context.Background(), protocol.Request{
 		Method: "task_status",
-		Params: mustJSON(t, map[string]any{"thread_id": rootID}),
+		Params: mustJSON(t, map[string]any{"thread_id": parentID}),
 		ID:     1,
 	})
 	var ts TaskStatusResult
@@ -244,10 +244,10 @@ func TestHandle_TaskStatus_ExitedWithDone(t *testing.T) {
 
 func TestHandle_TaskStatus_FailedNoDone(t *testing.T) {
 	d := setupDaemon(t)
-	rootID := postTask(t, d, "failed", 1, false)
+	parentID := postTask(t, d, "failed", 1, false)
 	resp := d.Handle(context.Background(), protocol.Request{
 		Method: "task_status",
-		Params: mustJSON(t, map[string]any{"thread_id": rootID}),
+		Params: mustJSON(t, map[string]any{"thread_id": parentID}),
 		ID:     1,
 	})
 	var ts TaskStatusResult
@@ -260,10 +260,10 @@ func TestHandle_TaskStatus_FailedNoDone(t *testing.T) {
 func TestHandle_TaskStatus_NoAgent(t *testing.T) {
 	d := setupDaemon(t)
 	// No session linked to the thread root — wake never fired.
-	rootID := postTask(t, d, "", 0, false)
+	parentID := postTask(t, d, "", 0, false)
 	resp := d.Handle(context.Background(), protocol.Request{
 		Method: "task_status",
-		Params: mustJSON(t, map[string]any{"thread_id": rootID}),
+		Params: mustJSON(t, map[string]any{"thread_id": parentID}),
 		ID:     1,
 	})
 	var ts TaskStatusResult
@@ -450,7 +450,7 @@ func TestSessions_CreateStoresResumeFields(t *testing.T) {
 		/* model */ "default",
 		/* pid */ 0,
 		/* taskMsgID */ 42,
-		/* rootThreadID */ 42,
+		/* parentID */ 42,
 		/* prefix */ "abc12",
 		/* name */ "abc12-dotfiles",
 	)
@@ -487,7 +487,7 @@ func TestSessions_SetAgentSessionID(t *testing.T) {
 	}
 }
 
-func TestWakeAgent_StoresRootThreadID(t *testing.T) {
+func TestWakeAgent_StoresParentID(t *testing.T) {
 	d := setupDaemon(t)
 	d.Registry.AddWorkspace("companyA")
 	userDir := t.TempDir()
@@ -530,10 +530,10 @@ func TestHandle_CrossProjectDelegationInheritsRoot(t *testing.T) {
 		VALUES((SELECT id FROM projects WHERE name='service-a'), 'opencode', 'default', 'exited', 0, datetime('now'), 500, 500)`)
 
 	// service-a (in its spawned session) calls service-b as a new thread root.
-	// RootID=500 passed in params → service-b's session binds to root 500.
+	// ParentID=500 passed in params → service-b's session binds to root 500.
 	params, _ := json.Marshal(map[string]any{
 		"from": "companyA/service-a", "to": "companyA/service-b",
-		"content": "sub-task", "root_id": 500,
+		"content": "sub-task", "parent_id": 500,
 	})
 	resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: params, ID: 1})
 	if resp.Error != nil {

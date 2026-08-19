@@ -20,7 +20,7 @@ import (
 // posts a task thread-root, returns the thread root id + general channel id +
 // cleanup. The CLI's callDaemon + doneCmd both reach this temp daemon via
 // protocol.SocketPath() (which respects HMF_STATE_DIR).
-func spinCLIDaemon(t *testing.T) (threadRootID int64, generalChannelID int64, cleanup func()) {
+func spinCLIDaemon(t *testing.T) (threadParentID int64, generalChannelID int64, cleanup func()) {
 	t.Helper()
 	stateDir := filepath.Join("/tmp", "hmf-cli-"+t.Name())
 	os.RemoveAll(stateDir)
@@ -109,12 +109,12 @@ func mustCLICall(t *testing.T, method string, params any) json.RawMessage {
 // hmf done posts a threaded done reply using the spawned-agent env vars.
 // Guards the agent's reply path (the alternative to the post_message MCP tool).
 func TestCLI_DonePostsThreadedReply(t *testing.T) {
-	threadRootID, generalChannelID, cleanup := spinCLIDaemon(t)
+	threadParentID, generalChannelID, cleanup := spinCLIDaemon(t)
 	defer cleanup()
 
 	// Simulate the spawned agent's env (set by the launcher).
 	t.Setenv("HMF_CHANNEL_ID", itoa(generalChannelID))
-	t.Setenv("HMF_TASK_MSG_ID", itoa(threadRootID))
+	t.Setenv("HMF_TASK_MSG_ID", itoa(threadParentID))
 	t.Setenv("HMF_PROJECT", "companyA/user-service")
 	t.Setenv("HMF_FROM", "companyA/payment")
 
@@ -125,9 +125,9 @@ func TestCLI_DonePostsThreadedReply(t *testing.T) {
 		t.Fatalf("done cmd: %v", err)
 	}
 
-	// Verify the done reply landed: status=done, thread_id=threadRootID,
+	// Verify the done reply landed: status=done, thread_id=threadParentID,
 	// content="all done", from=HMF_PROJECT, to=HMF_FROM.
-	result := mustCLICall(t, "read_thread", map[string]any{"thread_id": threadRootID})
+	result := mustCLICall(t, "read_thread", map[string]any{"thread_id": threadParentID})
 	var msgs []daemon.Message
 	json.Unmarshal(result, &msgs)
 	// root (task) + done reply.
@@ -141,8 +141,8 @@ func TestCLI_DonePostsThreadedReply(t *testing.T) {
 	if done.Content != "all done" {
 		t.Errorf("content: got %q want 'all done'", done.Content)
 	}
-	if done.ThreadID != threadRootID {
-		t.Errorf("thread_id: got %d want %d", done.ThreadID, threadRootID)
+	if done.ThreadID != threadParentID {
+		t.Errorf("thread_id: got %d want %d", done.ThreadID, threadParentID)
 	}
 	if done.FromProject != "companyA/user-service" || done.ToProject != "companyA/payment" {
 		t.Errorf("from/to: got %q/%q want user-service/payment", done.FromProject, done.ToProject)
@@ -201,7 +201,7 @@ func TestCLI_DoneWithoutTaskMsgID(t *testing.T) {
 // one session row (spinCLIDaemon already posted a wake task → 1 session)
 // with Name/Project/Status populated (prefix + name set by Task 10).
 func TestCLI_SessionList(t *testing.T) {
-	threadRootID, generalChannelID, cleanup := spinCLIDaemon(t)
+	threadParentID, generalChannelID, cleanup := spinCLIDaemon(t)
 	defer cleanup()
 
 	result := mustCLICall(t, "session_list", map[string]any{})
@@ -216,7 +216,7 @@ func TestCLI_SessionList(t *testing.T) {
 	if first.Name == "" || first.Status == "" || first.Project == "" {
 		t.Errorf("missing fields: %+v", first)
 	}
-	_ = threadRootID
+	_ = threadParentID
 	_ = generalChannelID
 }
 

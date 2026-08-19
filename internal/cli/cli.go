@@ -347,13 +347,13 @@ func sessionCmd() *cobra.Command {
 				return nil
 			}
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, "NAME\tPROJECT\tSTATUS\tSESSION\tROOT\tCREATED")
+			fmt.Fprintln(w, "NAME\tPROJECT\tSTATUS\tSESSION\tPARENT\tCREATED")
 			for _, it := range items {
 				oc := it.AgentSessionID
 				if oc == "" {
 					oc = "-"
 				}
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\n", it.Name, it.Project, it.Status, oc, it.RootThreadID, it.CreatedAt)
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\n", it.Name, it.Project, it.Status, oc, it.ParentID, it.CreatedAt)
 			}
 			w.Flush()
 			return nil

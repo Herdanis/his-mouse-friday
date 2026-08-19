@@ -90,7 +90,7 @@ type PostParams struct {
 	To       string `json:"to"`
 	Content  string `json:"content"`
 	Status   string `json:"status,omitempty"` // delivered | in_progress | done | message (default)
-	RootID   int64  `json:"root_id,omitempty"`
+	ParentID   int64  `json:"parent_id,omitempty"`
 }
 type PostResult struct {
 	MessageID int64 `json:"message_id"`
@@ -146,7 +146,7 @@ type SessionListItem struct {
 	Project        string `json:"project"`
 	Status         string `json:"status"`
 	AgentSessionID string `json:"session_id,omitempty"`
-	RootThreadID   int64  `json:"root_thread_id,omitempty"`
+	ParentID   int64  `json:"parent_id,omitempty"`
 	CreatedAt      string `json:"created_at"`
 }
 
@@ -300,21 +300,21 @@ func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error
 		}
 	}
 	runbook, _ := os.ReadFile(filepath.Join(proj.Path, "MOUSE.md"))
-	// rootID: explicitly passed (cross-project delegation from a child agent
+	// parentID: explicitly passed (cross-project delegation from a child agent
 	// — root_id sourced from caller's HMF_TASK_MSG_ID). For a thread root,
 	// fall back to msg.ID. For a reply wake, walk up to msg.ThreadID.
-	rootID := msg.ID
-	if p.RootID != 0 {
-		rootID = p.RootID
+	parentID := msg.ID
+	if p.ParentID != 0 {
+		parentID = p.ParentID
 	} else if msg.ThreadID != 0 {
-		rootID = msg.ThreadID
+		parentID = msg.ThreadID
 	}
 	// Prefix: lookup an existing one for this root (inherit), else generate.
 	var prefix string
 	var existingName sql.NullString
 	err = d.Store.db.QueryRow(
 		`SELECT prefix, name FROM sessions WHERE root_thread_id=? AND prefix IS NOT NULL ORDER BY id ASC LIMIT 1`,
-		rootID).Scan(&prefix, &existingName)
+		parentID).Scan(&prefix, &existingName)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("prefix lookup: %w", err)
 	}
@@ -322,18 +322,18 @@ func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error
 		prefix = generatePrefix()
 	}
 	name := prefix + "-" + proj.Name
-	tmpSess, err := d.Sessions.Create(proj.ID, binary, model, 0, msg.ID, rootID, prefix, name)
+	tmpSess, err := d.Sessions.Create(proj.ID, binary, model, 0, msg.ID, parentID, prefix, name)
 	if err != nil {
 		return fmt.Errorf("session: %w", err)
 	}
-	// Resume lookup: is there a canonical opencode session for (rootID, proj.ID)?
+	// Resume lookup: is there a canonical opencode session for (parentID, proj.ID)?
 	// Empty result => fresh spawn; non-empty => resume via `opencode run -s <id>`.
 	var canonicalSessionID string
 	err = d.Store.db.QueryRow(
 		`SELECT opencode_session_id FROM sessions
 		  WHERE root_thread_id=? AND project_id=? AND opencode_session_id IS NOT NULL
 		  ORDER BY id ASC LIMIT 1`,
-		rootID, proj.ID).Scan(&canonicalSessionID)
+		parentID, proj.ID).Scan(&canonicalSessionID)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("canonical lookup: %w", err)
 	}
@@ -611,7 +611,7 @@ func (d *Daemon) handleStatus(req protocol.Request) protocol.Response {
 // or fresh spawns pre-capture) to "" / 0 so the CLI renders clean dashes.
 func (d *Daemon) handleSessionList(req protocol.Request) protocol.Response {
 	rows, err := d.Store.db.Query(
-		`SELECT IFNULL(s.name,'-'), p.name, s.status, IFNULL(s.opencode_session_id,'') AS session_id, IFNULL(s.root_thread_id,0), IFNULL(s.created_at,'')
+		`SELECT IFNULL(s.name,'-'), p.name, s.status, IFNULL(s.opencode_session_id,'') AS session_id, IFNULL(s.root_thread_id,0) AS parent_id, IFNULL(s.created_at,'')
 		 FROM sessions s JOIN projects p ON s.project_id=p.id
 		 ORDER BY s.id DESC`)
 	if err != nil {
@@ -621,7 +621,7 @@ func (d *Daemon) handleSessionList(req protocol.Request) protocol.Response {
 	var out []SessionListItem
 	for rows.Next() {
 		var it SessionListItem
-		if err := rows.Scan(&it.Name, &it.Project, &it.Status, &it.AgentSessionID, &it.RootThreadID, &it.CreatedAt); err != nil {
+		if err := rows.Scan(&it.Name, &it.Project, &it.Status, &it.AgentSessionID, &it.ParentID, &it.CreatedAt); err != nil {
 			return errResp(req.ID, err.Error())
 		}
 		out = append(out, it)
