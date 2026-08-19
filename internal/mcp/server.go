@@ -27,6 +27,7 @@ type PostInput struct {
 	To       string `json:"to,omitempty" jsonschema:"recipient workspace/project — a thread root with a to wakes that agent"`
 	Content  string `json:"content" jsonschema:"message content"`
 	Status   string `json:"status,omitempty" jsonschema:"delivered | in_progress | done | message (default)"`
+	RootID   int64  `json:"root_id,omitempty" jsonschema:"set by hmf-mcp from HMF_TASK_MSG_ID when caller is a spawned agent — leave empty in user-initiated sessions"`
 }
 type ReadChanInput struct {
 	Channel int64 `json:"channel,omitempty" jsonschema:"channel id (defaults to the global general channel)"`
@@ -137,6 +138,17 @@ func newServer(callerID string) *mcpserver.Server {
 		}
 		if in.ThreadID != 0 {
 			params["thread_id"] = in.ThreadID
+		}
+		// If caller is a spawned agent, propagate the caller's root so cross-
+		// project delegations bind to the original thread root, not the
+		// caller's session. HMF_TASK_MSG_ID is set by the launcher; absent
+		// for user-initiated orchestrator sessions.
+		if tid := os.Getenv("HMF_TASK_MSG_ID"); tid != "" {
+			var rootID int64
+			fmt.Sscanf(tid, "%d", &rootID)
+			if rootID != 0 {
+				params["root_id"] = rootID
+			}
 		}
 		result, err := protocol.Call("post_message", params)
 		if err != nil {

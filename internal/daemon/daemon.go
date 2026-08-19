@@ -64,6 +64,7 @@ type PostParams struct {
 	To       string `json:"to"`
 	Content  string `json:"content"`
 	Status   string `json:"status,omitempty"` // delivered | in_progress | done | message (default)
+	RootID   int64  `json:"root_id,omitempty"`
 }
 type PostResult struct {
 	MessageID int64 `json:"message_id"`
@@ -190,7 +191,7 @@ func (d *Daemon) handlePost(ctx context.Context, req protocol.Request) protocol.
 	// recipient. Replies (thread_id set) don't wake — they're part of an
 	// ongoing thread the recipient will read on its next turn.
 	if p.ThreadID == 0 && p.To != "" {
-		if err := d.wakeAgent(ctx, msg); err != nil {
+		if err := d.wakeAgent(ctx, p, msg); err != nil {
 			return errResp(req.ID, "wake: "+err.Error())
 		}
 	}
@@ -201,7 +202,7 @@ func (d *Daemon) handlePost(ctx context.Context, req protocol.Request) protocol.
 // wakeAgent spawns the project agent addressed by msg.ToProject so it can read
 // the thread rooted at msg.ID and reply. Serverless: boot per mention, handle,
 // reply in-thread, exit.
-func (d *Daemon) wakeAgent(ctx context.Context, msg Message) error {
+func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error {
 	parts := strings.SplitN(msg.ToProject, "/", 2)
 	if len(parts) != 2 {
 		return fmt.Errorf("to must be workspace/project, got %q", msg.ToProject)
@@ -233,12 +234,13 @@ func (d *Daemon) wakeAgent(ctx context.Context, msg Message) error {
 		}
 	}
 	runbook, _ := os.ReadFile(filepath.Join(proj.Path, "MOUSE.md"))
-	// rootID: for a thread root, the message is itself the root. For a reply
-	// wake (msg.ThreadID != 0), walk up to the topmost message — currently
-	// threads nest only one level deep, so msg.ThreadID already points at
-	// the root.
+	// rootID: explicitly passed (cross-project delegation from a child agent
+	// — root_id sourced from caller's HMF_TASK_MSG_ID). For a thread root,
+	// fall back to msg.ID. For a reply wake, walk up to msg.ThreadID.
 	rootID := msg.ID
-	if msg.ThreadID != 0 {
+	if p.RootID != 0 {
+		rootID = p.RootID
+	} else if msg.ThreadID != 0 {
 		rootID = msg.ThreadID
 	}
 	tmpSess, err := d.Sessions.Create(proj.ID, binary, model, 0, msg.ID, rootID, "", "")

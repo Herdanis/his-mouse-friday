@@ -507,3 +507,43 @@ func TestWakeAgent_StoresRootThreadID(t *testing.T) {
 		t.Errorf("thread root: root_thread_id=%d want %d", rootTID, pr.MessageID)
 	}
 }
+
+
+func TestHandle_CrossProjectDelegationInheritsRoot(t *testing.T) {
+	d := setupDaemon(t)
+	d.Registry.AddWorkspace("companyA")
+	// Project A (caller) — already woken, has task_msg_id=500.
+	aDir := t.TempDir()
+	os.WriteFile(filepath.Join(aDir, "mouse.yaml"),
+		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n"), 0644)
+	d.Registry.AddProject("companyA", "service-a", aDir)
+	// Project B (callee) — inbound allowed.
+	bDir := t.TempDir()
+	os.WriteFile(filepath.Join(bDir, "mouse.yaml"),
+		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n"), 0644)
+	d.Registry.AddProject("companyA", "service-b", bDir)
+	// Seed: root thread 500 already exists, with service-a's session bound.
+	d.Store.db.Exec(`INSERT INTO messages(id, channel_id, thread_id, from_project, to_project, content, status, ts)
+		VALUES(500, 1, NULL, 'companyA/orchestrator', 'companyA/service-a', 'do X', 'message', datetime('now'))`)
+	d.Store.db.Exec(`INSERT INTO sessions(project_id, agent_binary, model, status, pid, created_at, task_msg_id, root_thread_id)
+		VALUES((SELECT id FROM projects WHERE name='service-a'), 'opencode', 'default', 'exited', 0, datetime('now'), 500, 500)`)
+
+	// service-a (in its spawned session) calls service-b as a new thread root.
+	// RootID=500 passed in params → service-b's session binds to root 500.
+	params, _ := json.Marshal(map[string]any{
+		"from": "companyA/service-a", "to": "companyA/service-b",
+		"content": "sub-task", "root_id": 500,
+	})
+	resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: params, ID: 1})
+	if resp.Error != nil {
+		t.Fatalf("post: %s", resp.Error.Message)
+	}
+	var pr PostResult
+	json.Unmarshal(resp.Result, &pr)
+
+	var rootTID int64
+	d.Store.db.QueryRow(`SELECT root_thread_id FROM sessions WHERE task_msg_id=?`, pr.MessageID).Scan(&rootTID)
+	if rootTID != 500 {
+		t.Fatalf("cross-project: root_thread_id=%d want 500", rootTID)
+	}
+}
