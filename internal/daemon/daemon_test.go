@@ -484,3 +484,26 @@ func TestSessions_SetOCSessionID(t *testing.T) {
 		t.Errorf("got %q want ses_xyz789", got)
 	}
 }
+
+func TestWakeAgent_StoresRootThreadID(t *testing.T) {
+	d := setupDaemon(t)
+	d.Registry.AddWorkspace("companyA")
+	userDir := t.TempDir()
+	os.WriteFile(filepath.Join(userDir, "mouse.yaml"),
+		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n"), 0644)
+	d.Registry.AddProject("companyA", "user-service", userDir)
+
+	// Thread root wake: root_thread_id = msg.ID.
+	params, _ := json.Marshal(map[string]any{
+		"from": "companyA/payment", "to": "companyA/user-service", "content": "task 1",
+	})
+	resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: params, ID: 1})
+	var pr PostResult
+	json.Unmarshal(resp.Result, &pr)
+
+	var rootTID int64
+	d.Store.db.QueryRow(`SELECT root_thread_id FROM sessions WHERE task_msg_id=?`, pr.MessageID).Scan(&rootTID)
+	if rootTID != pr.MessageID {
+		t.Errorf("thread root: root_thread_id=%d want %d", rootTID, pr.MessageID)
+	}
+}

@@ -233,7 +233,15 @@ func (d *Daemon) wakeAgent(ctx context.Context, msg Message) error {
 		}
 	}
 	runbook, _ := os.ReadFile(filepath.Join(proj.Path, "MOUSE.md"))
-	tmpSess, err := d.Sessions.Create(proj.ID, binary, model, 0, msg.ID, 0, "", "")
+	// rootID: for a thread root, the message is itself the root. For a reply
+	// wake (msg.ThreadID != 0), walk up to the topmost message — currently
+	// threads nest only one level deep, so msg.ThreadID already points at
+	// the root.
+	rootID := msg.ID
+	if msg.ThreadID != 0 {
+		rootID = msg.ThreadID
+	}
+	tmpSess, err := d.Sessions.Create(proj.ID, binary, model, 0, msg.ID, rootID, "", "")
 	if err != nil {
 		return fmt.Errorf("session: %w", err)
 	}
