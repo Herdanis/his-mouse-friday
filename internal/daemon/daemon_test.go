@@ -743,3 +743,71 @@ func TestWakeAgent_PrefixGeneratedOnceAndInherited(t *testing.T) {
 		t.Errorf("second wake prefix: got %q want %q (inherited)", latestPrefix, prefix1)
 	}
 }
+
+func TestDaemon_ResolveToProject(t *testing.T) {
+	d := setupDaemon(t)
+	d.Registry.AddWorkspace("companyA")
+	d.Registry.AddWorkspace("companyB")
+	if _, err := d.Registry.AddProject("companyA", "payment", "/tmp/payA"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Registry.AddProject("companyB", "payment", "/tmp/payB"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Registry.AddProject("companyA", "checkout", "/tmp/checkout"); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name    string
+		to      string
+		want    string
+		wantErr string
+	}{
+		{"full path passthrough", "companyA/payment", "companyA/payment", ""},
+		{"bare unambiguous resolves", "checkout", "companyA/checkout", ""},
+		{"bare ambiguous errors with candidates", "payment", "", "ambiguous"},
+		{"bare not found errors", "nope", "", "no project named"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := d.resolveToProject(tt.to)
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatalf("want error containing %q, got nil (resolved to %q)", tt.wantErr, got)
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("want error containing %q, got %q", tt.wantErr, err.Error())
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("got %q want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHandlePost_AmbiguousBareToErrors(t *testing.T) {
+	d := setupDaemon(t)
+	d.Registry.AddWorkspace("companyA")
+	d.Registry.AddWorkspace("companyB")
+	if _, err := d.Registry.AddProject("companyA", "payment", "/tmp/payA"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Registry.AddProject("companyB", "payment", "/tmp/payB"); err != nil {
+		t.Fatal(err)
+	}
+
+	params, _ := json.Marshal(PostParams{From: "me", To: "payment", Content: "hi"})
+	resp := d.handlePost(context.Background(), protocol.Request{Method: "post_message", Params: params, ID: 1})
+	if resp.Error == nil {
+		t.Fatal("expected error for ambiguous bare `to`")
+	}
+	if !strings.Contains(resp.Error.Message, "ambiguous") {
+		t.Fatalf("want error containing 'ambiguous', got %q", resp.Error.Message)
+	}
+}

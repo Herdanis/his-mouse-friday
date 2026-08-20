@@ -198,6 +198,39 @@ func (d *Daemon) findProject(ws, name string) (Project, error) {
 	return p, err
 }
 
+// resolveToProject canonicalizes a `to` field. A full "workspace/project"
+// passes through. A bare name resolves against the registry: 0 rows →
+// not-found, 1 row → auto-resolved, 2+ rows → ambiguous error listing the
+// candidates so the caller can ask the user to disambiguate.
+func (d *Daemon) resolveToProject(to string) (string, error) {
+	if strings.Contains(to, "/") {
+		return to, nil
+	}
+	rows, err := d.Store.db.Query(
+		`SELECT w.name, p.name FROM projects p JOIN workspaces w ON p.workspace_id=w.id
+		 WHERE p.name=?`, to)
+	if err != nil {
+		return "", fmt.Errorf("resolve %q: %w", to, err)
+	}
+	defer rows.Close()
+	var cands []string
+	for rows.Next() {
+		var ws, name string
+		if err := rows.Scan(&ws, &name); err != nil {
+			return "", fmt.Errorf("resolve %q: %w", to, err)
+		}
+		cands = append(cands, ws+"/"+name)
+	}
+	switch len(cands) {
+	case 0:
+		return "", fmt.Errorf("no project named %q; call list_project_agents", to)
+	case 1:
+		return cands[0], nil
+	default:
+		return "", fmt.Errorf("ambiguous %q: exists in %s — specify workspace/project", to, strings.Join(cands, ", "))
+	}
+}
+
 // threadSessionActive reports whether the thread's latest session is still
 // running. Queries root_thread_id (not task_msg_id) to catch reply-wakes too.
 func (d *Daemon) threadSessionActive(threadID int64) bool {
@@ -227,6 +260,15 @@ func (d *Daemon) handlePost(ctx context.Context, req protocol.Request) protocol.
 			return errResp(req.ID, "general channel: "+err.Error())
 		}
 		chID = gen.ID
+	}
+	// Canonicalize `to` before save: bare names resolve against the registry
+	// (1 → auto, 2+ → ambiguous error listing candidates). Stored msg stays canonical.
+	if p.To != "" {
+		resolved, err := d.resolveToProject(p.To)
+		if err != nil {
+			return errResp(req.ID, err.Error())
+		}
+		p.To = resolved
 	}
 	msg, err := d.Comms.PostMessage(chID, p.ThreadID, p.From, p.To, p.Content, p.Status)
 	if err != nil {
