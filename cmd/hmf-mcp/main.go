@@ -1,5 +1,4 @@
-// Command hmf-mcp is the per-session MCP server shim. It is spawned by opencode
-// over stdio and forwards tool calls to the hmf daemon.
+// Command hmf-mcp is the per-session MCP shim (stdio) forwarding to the daemon.
 package main
 
 import (

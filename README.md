@@ -5,26 +5,79 @@ agent "engineer" that owns it. When work crosses a dependency boundary, an
 agent engages the other repo's agent via a shared comms layer instead of
 editing foreign code directly.
 
-## Install (dev)
+## Prerequisites
 
-    go install ./cmd/hmf
-    go install ./cmd/hmf-mcp
+- **Go 1.26+** — the installer fetches it for you if missing
+- **opencode** — the agent runtime (spawned per task)
+- **python3** — used by the protection plugin for daemon socket calls
+
+Verify:
+
+    opencode --version
+    python3 --version
+
+## Install
+
+One-liner (macOS / Linux) — fetches Go if missing, `go install`s `hmf` +
+`hmf-mcp`, drops the opencode plugin + `/hmf-setup` + `/hmf-register` slash
+commands into `~/.config/opencode/`:
+
+    curl -fsSL https://raw.githubusercontent.com/Herdanis/his-mouse-friday/main/install.sh | bash
+
+Restart your shell after (Go bin dir on `PATH`), then wire the MCP server into
+`~/.config/opencode/opencode.json`:
+
+    {
+      "$schema": "https://opencode.ai/config.json",
+      "mcp": {
+        "hmf": {
+          "type": "local",
+          "command": ["hmf-mcp"],
+          "enabled": true
+        }
+      }
+    }
+
+Start the daemon:
+
+    hmf up
+
+`OPENCODE_CONFIG` overrides the config dir (default `~/.config/opencode`).
+
+**Dev build** (from a clone):
+
+    git clone git@github.com:Herdanis/his-mouse-friday.git
+    cd his-mouse-friday
+    make build
+    go install ./cmd/...
+
+## Uninstall
+
+    curl -fsSL https://raw.githubusercontent.com/Herdanis/his-mouse-friday/main/uninstall.sh | bash
+
+Removes the plugin, slash commands, and the `hmf` / `hmf-mcp` binaries. Prints
+a reminder to drop the `hmf` block from `opencode.json` (the installer won't
+edit your config file).
+
+## Wire the MCP server into opencode
+
+`hmf-mcp` exposes the 5 orchestration tools to opencode agents. The install
+step prints the snippet above; add it to `~/.config/opencode/opencode.json`
+(global) or a repo's `opencode.json`. See `examples/opencode.json` for a
+version with bash permission rules too.
 
 ## Setup
 
 **Option A — Slash command (recommended):**
 
-Copy the commands to your opencode config:
+After `make install`, in any opencode session:
 
-    cp examples/commands/hmf-*.md ~/.config/opencode/commands/
-
-Then in any opencode session:
 - `/hmf-setup` — full guided setup (workspace, project, config files, tailored MOUSE.md)
 - `/hmf-register` — fast registration (one question, minimal config)
 
 **Option B — Manual:**
 
-1. Start the daemon:
+1. Start the daemon (foreground, separate terminal):
 
        hmf up
 
@@ -35,26 +88,14 @@ Then in any opencode session:
        hmf project add user-service ~/code/user-service --workspace companyA
        hmf status
 
-3. Wire `hmf-mcp` into opencode. Either globally in `~/.config/opencode/opencode.json`:
-
-       "mcp": {
-         "hmf": {
-           "type": "local",
-           "command": ["hmf-mcp"],
-           "enabled": true
-         }
-       }
-
-   Or per-repo in `opencode.json` at the repo root (see `examples/opencode.json`).
-
-4. Add `mouse.yaml` + `MOUSE.md` to each repo (see `examples/`).
+3. Add `mouse.yaml` + `MOUSE.md` to each repo (see `examples/`).
    Set `a2a.allow_inbound: true` on repos other agents may engage.
    `mouse.yaml` declares command + filesystem permissions (gitignore-style:
    deny / ask / allow). `/hmf-setup` auto-generates `opencode.json` from it,
    so opencode enforces the policy natively — agents physically cannot run
    denied commands (e.g. `kubectl delete`, `gcloud * delete`).
 
-5. Open opencode in a registered repo. The agent now has 5 tools:
+4. Open opencode in a registered repo. The agent now has 5 tools:
    `engage_project_agent`, `post_message`, `read_channel`, `read_thread`,
    `list_project_agents`. The `from` field is auto-detected from cwd.
 
