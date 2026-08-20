@@ -68,9 +68,6 @@ func (s *SessionStore) SetPID(id int64, pid int) error {
 	return err
 }
 
-// MarkExited records that the spawned agent's process exited. Exit code 0 =>
-// status "exited" (clean); non-zero => "failed". Lets task_status distinguish
-// "still working" from "agent died without replying".
 // nullIfEmpty returns nil for "" so sql.Exec inserts NULL for optional text
 // fields (prefix, name). Mirrors nullIfZero for int64 FK columns.
 func nullIfEmpty(s string) any {
@@ -80,14 +77,14 @@ func nullIfEmpty(s string) any {
 	return s
 }
 
-// SetAgentSessionID binds the agent runtime session id (captured post-spawn)
-// to a hmf session row so later wakes can resume it. DB column stays
-// opencode_session_id — migration cost > benefit.
+// SetAgentSessionID binds the captured opencode session id to a hmf session
+// row so later wakes can resume it. Column name stays opencode_session_id.
 func (s *SessionStore) SetAgentSessionID(id int64, ocID string) error {
 	_, err := s.Store.db.Exec(`UPDATE sessions SET opencode_session_id=? WHERE id=?`, ocID, id)
 	return err
 }
 
+// MarkExited: exit code 0 → "exited", non-zero → "failed".
 func (s *SessionStore) MarkExited(id int64, exitCode int) error {
 	status := "exited"
 	if exitCode != 0 {

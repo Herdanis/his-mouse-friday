@@ -19,13 +19,11 @@ import (
 	"github.com/herdanis/his-mouse-friday/internal/protocol"
 )
 
-// generatePrefix returns 5 hex chars from crypto/rand for a root session's
-// human-friendly name. Used once per thread root; inherited by siblings.
+// generatePrefix returns 5 hex chars for a root session's name.
 func generatePrefix() string {
 	b := make([]byte, 3) // 3 bytes = 6 hex chars; truncate to 5.
 	if _, err := rand.Read(b); err != nil {
-		// crypto/rand should not fail; if it does, the prefix is just less
-		// collision-resistant. Don't crash the wake path.
+		// Don't crash the wake path; prefix is just less collision-resistant.
 		return "00000"
 	}
 	return hex.EncodeToString(b)[:5]
@@ -36,8 +34,6 @@ func generatePrefix() string {
 // ============================================
 
 // Daemon owns all state and brokers agent-to-agent communication.
-// Exported fields because Task 9 (CLI) and Task 11 (e2e) construct it directly
-// from a different package.
 type Daemon struct {
 	Store       *Store
 	Registry    *Registry
@@ -45,15 +41,10 @@ type Daemon struct {
 	Comms       *Comms
 	Launcher    *Launcher
 	MouseLoader func(string) (*config.MouseConfig, error)
-	// SafetyNetEnabled controls the OnExit synthetic BLOCKED reply. Default
-	// true (production). Tests that use /bin/echo as the agent binary set
-	// this false — /bin/echo exits immediately and would spuriously fire the
-	// safety net, polluting threads the test then manually populates with
-	// done replies.
+	// SafetyNetEnabled: OnExit posts synthetic BLOCKED reply if agent exits
+	// without one. Tests with /bin/echo set this false (echo exits too fast).
 	SafetyNetEnabled bool
-	// CaptureAgentSessionID is injectable for tests so wakeAgent's post-spawn
-	// capture step doesn't depend on real opencode. Default in NewDaemon is
-	// the real captureAgentSessionID.
+	// CaptureAgentSessionID injectable for tests; default is the real capture.
 	CaptureAgentSessionID func(cfg SpawnConfig) (string, error)
 	Sock                  string
 	shutdownCh            chan struct{}
@@ -207,13 +198,8 @@ func (d *Daemon) findProject(ws, name string) (Project, error) {
 	return p, err
 }
 
-// threadSessionActive reports whether the latest session bound to the thread
-// is still active (process still running). Used to suppress a second wake
-// while the first is still working.
-//
-// ponytail: queries root_thread_id (not task_msg_id) so it catches the
-// reply-wake session too — Task 8's reply-wake stores task_msg_id=<reply-msg-id>,
-// not the thread root, so a task_msg_id=? filter would miss it.
+// threadSessionActive reports whether the thread's latest session is still
+// running. Queries root_thread_id (not task_msg_id) to catch reply-wakes too.
 func (d *Daemon) threadSessionActive(threadID int64) bool {
 	if threadID == 0 {
 		return false
@@ -246,12 +232,8 @@ func (d *Daemon) handlePost(ctx context.Context, req protocol.Request) protocol.
 	if err != nil {
 		return errResp(req.ID, err.Error())
 	}
-	// Wake any to-addressed message — thread root OR reply. One guard
-	// suppresses the wake: the thread's latest session is still active
-	// (agent running — let it pick up the new message on its next turn).
-	// A thread with a prior done reply IS re-wakeable: a follow-up task in
-	// the same conversation resumes the agent's prior opencode session so it
-	// keeps context from the prior task.
+	// Wake to-addressed messages unless the thread's agent is still running.
+	// A prior done reply IS re-wakeable — follow-up resumes the prior session.
 	if p.To != "" {
 		if d.threadSessionActive(p.ThreadID) {
 			// Agent still running — no new wake.
@@ -265,9 +247,8 @@ func (d *Daemon) handlePost(ctx context.Context, req protocol.Request) protocol.
 	return protocol.Response{ID: req.ID, Result: result}
 }
 
-// wakeAgent spawns the project agent addressed by msg.ToProject so it can read
-// the thread rooted at msg.ID and reply. Serverless: boot per mention, handle,
-// reply in-thread, exit.
+// wakeAgent spawns the addressed project agent so it can read the thread and
+// reply. Serverless: boot per mention, handle, reply in-thread, exit.
 func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error {
 	parts := strings.SplitN(msg.ToProject, "/", 2)
 	if len(parts) != 2 {
@@ -275,10 +256,7 @@ func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error
 	}
 	proj, err := d.findProject(parts[0], parts[1])
 	if err != nil {
-		// Not a registered agent — post the message but don't wake. Mailbox
-		// semantics: you can address anyone; delivery happens only for
-		// registered agents. Lets post_message stay a plain insert when the
-		// recipient isn't registered (backward compat + graceful addressing).
+		// Unregistered recipient — post but don't wake (mailbox semantics).
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil
 		}
@@ -300,9 +278,8 @@ func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error
 		}
 	}
 	runbook, _ := os.ReadFile(filepath.Join(proj.Path, "MOUSE.md"))
-	// parentID: explicitly passed (cross-project delegation from a child agent
-	// — root_id sourced from caller's HMF_TASK_MSG_ID). For a thread root,
-	// fall back to msg.ID. For a reply wake, walk up to msg.ThreadID.
+	// parentID: explicit (cross-project delegation), else msg.ID (root) or
+	// msg.ThreadID (reply wake).
 	parentID := msg.ID
 	if p.ParentID != 0 {
 		parentID = p.ParentID
@@ -326,11 +303,7 @@ func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error
 	if err != nil {
 		return fmt.Errorf("session: %w", err)
 	}
-	// Resume lookup: latest captured opencode session ID for this thread. If
-	// found, resume it (opencode run -s) so the agent keeps native session
-	// memory across wakes on the same thread. Fresh spawn only when no prior
-	// ocID (new thread root, or first capture failed). The launcher watchdog
-	// caps runtime so a resumed session can't hang "active" forever.
+	// Resume prior opencode session on this thread; fresh spawn only if none.
 	var priorOcID sql.NullString
 	err = d.Store.db.QueryRow(
 		`SELECT opencode_session_id FROM sessions WHERE root_thread_id=? AND opencode_session_id IS NOT NULL AND opencode_session_id != '' ORDER BY id DESC LIMIT 1`,
@@ -362,13 +335,8 @@ func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error
 			if !d.SafetyNetEnabled {
 				return
 			}
-			// Safety net: if the agent exited without posting a done reply,
-			// post a synthetic BLOCKED reply on its behalf so the orchestrator
-			// stops polling and surfaces the failure instead of waiting
-			// forever. Covers crashes, kills, and the common "agent hit
-			// bash:ask, no TTY, exited silently" case the launcher prompt
-			// can't fully solve (the spawned model may not follow the
-			// MUST-REPLY rule).
+			// Safety net: post BLOCKED reply if agent exited without one.
+			// Covers crashes, kills, and silent exits from bash:ask walls.
 			var doneCount int
 			d.Store.db.QueryRow(
 				`SELECT count(*) FROM messages WHERE thread_id=? AND status='done'`, parentID).Scan(&doneCount)
@@ -388,20 +356,14 @@ func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error
 	d.Sessions.SetPID(tmpSess.ID, pid)
 	d.Sessions.SetStatus(tmpSess.ID, "active")
 	if spawnCfg.AgentSessionID != "" {
-		// Resume spawn — ocID is the resumed session ID. Set it directly on the
-		// row so the next wake on this thread finds it (and the SESSION column
-		// shows the right value immediately, no capture needed).
+		// Resume: ocID already known, set directly — no capture needed.
 		if err := d.Sessions.SetAgentSessionID(tmpSess.ID, spawnCfg.AgentSessionID); err != nil {
 			log.Printf("resume SetAgentSessionID session %d: %v", tmpSess.ID, err)
 		}
 		return nil
 	}
-	// Fresh spawn — capture opencode session ID by title (unique per hmf
-	// session) for display in hmf session list + future hmf session attach.
-	// Polls opencode session list until the titled session appears (up to 10s)
-	// — opencode registers the session asynchronously after cmd.Start(), and a
-	// fixed 2s delay was too short on some systems (session ended up with NULL
-	// opencode_session_id → SESSION column showed "-").
+	// Fresh spawn: opencode registers the session async after cmd.Start(), so
+	// poll for it by title up to 10s (fixed 2s was too short → empty SESSION).
 	go func() {
 		const (
 			pollEvery = 500 * time.Millisecond
@@ -438,16 +400,9 @@ func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error
 	return nil
 }
 
-// handleTaskStatus reports the state of the agent spawned for a task thread:
-// is it still working, exited cleanly, failed, or never woke. Plus whether a
-// done reply has landed. Lets the orchestrator poll "still working vs died"
-// instead of guessing from channel reads.
-//
-// The passed thread_id can be ANY message on the thread (root or reply).
-// The handler resolves it to the thread root, then finds the latest session
-// for that thread. Done check is scoped to replies at or after the passed
-// message — so a prior task's done reply doesn't falsely mark a follow-up
-// as complete.
+// handleTaskStatus reports agent state (working/exited/failed/no_agent) + done
+// reply presence. message_id resolves to thread root; done check scoped to
+// replies at or after the passed message so prior tasks don't false-complete.
 func (d *Daemon) handleTaskStatus(req protocol.Request) protocol.Response {
 	var p TaskStatusParams
 	if err := json.Unmarshal(req.Params, &p); err != nil {
@@ -456,8 +411,7 @@ func (d *Daemon) handleTaskStatus(req protocol.Request) protocol.Response {
 	if p.MessageID == 0 {
 		return errResp(req.ID, "message_id is required")
 	}
-	// Resolve the passed message to its thread root: if it's a reply
-	// (thread_id set), use that; if it's a root (thread_id NULL), use id.
+	// Resolve message to thread root: reply → thread_id, root → id.
 	var parentID int64
 	err := d.Store.db.QueryRow(
 		`SELECT IFNULL(thread_id, id) FROM messages WHERE id=?`, p.MessageID).Scan(&parentID)
@@ -671,9 +625,8 @@ func (d *Daemon) handleStatus(req protocol.Request) protocol.Response {
 	return protocol.Response{ID: req.ID, Result: result}
 }
 
-// handleSessionList returns all hmf sessions joined to their project, newest
-// first. Powers `hmf session list`. IFNULL coerces NULL OC-ID/root (older rows
-// or fresh spawns pre-capture) to "" / 0 so the CLI renders clean dashes.
+// handleSessionList returns all sessions joined to project, newest first.
+// IFNULL coerces NULL ocID/root to ""/0 so the CLI renders clean dashes.
 func (d *Daemon) handleSessionList(req protocol.Request) protocol.Response {
 	rows, err := d.Store.db.Query(
 		`SELECT IFNULL(s.name,'-'), p.name, s.status, IFNULL(s.opencode_session_id,'') AS session_id, IFNULL(s.root_thread_id,0) AS parent_id, IFNULL(s.created_at,'')
@@ -702,9 +655,8 @@ func (d *Daemon) handleSessionList(req protocol.Request) protocol.Response {
 // Unix socket server
 // ============================================
 
-// Serve listens on the unix socket at d.Sock and dispatches requests.
-// One json.Decoder per connection (addresses Task 1 minor: shared decoder
-// would carry buffered state across requests).
+// Serve listens on d.Sock and dispatches requests. One json.Decoder per
+// connection (shared decoder carries buffered state across requests).
 func (d *Daemon) Serve(ctx context.Context) error {
 	// Refuse to steal a live daemon's socket: if a connection succeeds, another
 	// daemon is running. A stale socket file (no listener) is safe to remove.
