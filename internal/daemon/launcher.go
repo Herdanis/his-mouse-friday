@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"time"
 
 	"github.com/herdanis/his-mouse-friday/internal/protocol"
 )
@@ -86,9 +87,21 @@ func (l *Launcher) Spawn(ctx context.Context, cfg SpawnConfig) (int, error) {
 	if _, err := exec.LookPath(bin); err != nil {
 		return 0, fmt.Errorf("agent binary %q not found: %w", bin, err)
 	}
-	cmd := exec.CommandContext(ctx, bin, args...)
+	// Watchdog: cap agent runtime so a resumed session (opencode run -s) can't
+	// hang forever leaving the hmf session stuck "active". When the deadline
+	// fires, context cancellation kills the process, cmd.Wait returns, and
+	// OnExit fires the safety-net BLOCKED reply. 10min ceiling — enough for
+	// real work, short enough to reap hung agents.
+	spawnCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	cmd := exec.CommandContext(spawnCtx, bin, args...)
 	cmd.Dir = cfg.Dir
+	// Override $PWD to match cmd.Dir. opencode registers new sessions under the
+	// directory it reads from $PWD (not getcwd), so without this the spawned
+	// agent's session lands in the daemon's cwd's project instead of the
+	// target project — and the later capture query (also cmd.Dir=cfg.Dir) can't
+	// find it. Sync $PWD so spawn + capture agree.
 	cmd.Env = append(os.Environ(),
+		"PWD="+cfg.Dir,
 		"HMF_RUNBOOK="+cfg.Runbook,
 		"HMF_TASK="+fullTask,
 		"HMF_FROM="+cfg.FromID,
@@ -99,10 +112,12 @@ func (l *Launcher) Spawn(ctx context.Context, cfg SpawnConfig) (int, error) {
 		"HMF_SOCK="+protocol.SocketPath(),
 	)
 	if err := cmd.Start(); err != nil {
+		cancel()
 		return 0, fmt.Errorf("spawn %q: %w", bin, err)
 	}
 	go func() {
 		_ = cmd.Wait()
+		cancel()
 		if cfg.OnExit != nil {
 			code := -1
 			if cmd.ProcessState != nil {

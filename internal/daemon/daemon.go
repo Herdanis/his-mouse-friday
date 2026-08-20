@@ -326,11 +326,18 @@ func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error
 	if err != nil {
 		return fmt.Errorf("session: %w", err)
 	}
-	// Resume lookup: is there a canonical opencode session for (parentID, proj.ID)?
-	// Fresh spawn always — opencode run -s (resume) doesn't exit after the
-	// task, leaving sessions stuck "active" forever. The agent reads prior
-	// context from the thread via read_thread instead of opencode session
-	// memory. When opencode fixes -s exit behavior, re-enable resume here.
+	// Resume lookup: latest captured opencode session ID for this thread. If
+	// found, resume it (opencode run -s) so the agent keeps native session
+	// memory across wakes on the same thread. Fresh spawn only when no prior
+	// ocID (new thread root, or first capture failed). The launcher watchdog
+	// caps runtime so a resumed session can't hang "active" forever.
+	var priorOcID sql.NullString
+	err = d.Store.db.QueryRow(
+		`SELECT opencode_session_id FROM sessions WHERE root_thread_id=? AND opencode_session_id IS NOT NULL AND opencode_session_id != '' ORDER BY id DESC LIMIT 1`,
+		parentID).Scan(&priorOcID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("resume lookup: %w", err)
+	}
 	entrypoint := fmt.Sprintf(
 		"You were @mentioned in the general channel, message id %d. "+
 			"Call the read_thread MCP tool with message_id=%d to load the task and any prior context. "+
@@ -349,6 +356,7 @@ func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error
 		SessionID:      tmpSess.ID,
 		TaskMsgID:      msg.ID,
 		SessionName:    name,
+		AgentSessionID: priorOcID.String,
 		OnExit: func(code int) {
 			d.Sessions.MarkExited(tmpSess.ID, code)
 			if !d.SafetyNetEnabled {
@@ -379,20 +387,52 @@ func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error
 	}
 	d.Sessions.SetPID(tmpSess.ID, pid)
 	d.Sessions.SetStatus(tmpSess.ID, "active")
-	// Capture opencode session ID by title (unique per hmf session) for
-	// display in hmf session list + future hmf session attach.
-	// ponytail: fixed 2s delay before capture — opencode needs time to
-	// register the session after cmd.Start(). Upgrade path: poll
-	// opencode session list until the title appears (up to 10s).
+	if spawnCfg.AgentSessionID != "" {
+		// Resume spawn — ocID is the resumed session ID. Set it directly on the
+		// row so the next wake on this thread finds it (and the SESSION column
+		// shows the right value immediately, no capture needed).
+		if err := d.Sessions.SetAgentSessionID(tmpSess.ID, spawnCfg.AgentSessionID); err != nil {
+			log.Printf("resume SetAgentSessionID session %d: %v", tmpSess.ID, err)
+		}
+		return nil
+	}
+	// Fresh spawn — capture opencode session ID by title (unique per hmf
+	// session) for display in hmf session list + future hmf session attach.
+	// Polls opencode session list until the titled session appears (up to 10s)
+	// — opencode registers the session asynchronously after cmd.Start(), and a
+	// fixed 2s delay was too short on some systems (session ended up with NULL
+	// opencode_session_id → SESSION column showed "-").
 	go func() {
-		time.Sleep(2 * time.Second)
-		ocID, err := d.CaptureAgentSessionID(spawnCfg)
+		const (
+			pollEvery = 500 * time.Millisecond
+			maxWait   = 10 * time.Second
+		)
+		deadline := time.Now().Add(maxWait)
+		var ocID string
+		var err error
+		for time.Now().Before(deadline) {
+			time.Sleep(pollEvery)
+			ocID, err = d.CaptureAgentSessionID(spawnCfg)
+			if err == nil && ocID != "" {
+				break
+			}
+		}
+		// Debug log to file — daemon stderr may be discarded by ensureDaemon.
+		f, _ := os.OpenFile("/tmp/hmf-capture.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if f != nil {
+			fmt.Fprintf(f, "session %d: name=%q binary=%q dir=%q ocID=%q err=%v\n",
+				tmpSess.ID, spawnCfg.SessionName, spawnCfg.Binary, spawnCfg.Dir, ocID, err)
+			f.Close()
+		}
 		if err != nil || ocID == "" {
-			log.Printf("capture session id for session %d: ocID=%q err=%v", tmpSess.ID, ocID, err)
 			return
 		}
 		if err := d.Sessions.SetAgentSessionID(tmpSess.ID, ocID); err != nil {
-			log.Printf("set session id for session %d: %v", tmpSess.ID, err)
+			f, _ := os.OpenFile("/tmp/hmf-capture.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+			if f != nil {
+				fmt.Fprintf(f, "session %d: SetAgentSessionID error: %v\n", tmpSess.ID, err)
+				f.Close()
+			}
 		}
 	}()
 	return nil
