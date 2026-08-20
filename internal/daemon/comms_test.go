@@ -76,8 +76,7 @@ func TestComms_Threading(t *testing.T) {
 	}
 }
 
-// GetOrCreateGeneralChannel returns the single global lobby where all agents
-// live. It must be auto-created on store init + idempotent on lookup.
+// GetOrCreateGeneralChannel must be auto-created on init + idempotent on lookup.
 func TestComms_GeneralChannel(t *testing.T) {
 	store := newTestStore(t)
 	c := &Comms{Store: store}

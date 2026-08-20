@@ -15,11 +15,8 @@ import (
 	"github.com/herdanis/his-mouse-friday/internal/protocol"
 )
 
-// spinCLIDaemon sets up a short temp HMF_STATE_DIR (macOS socket-path limit),
-// starts a daemon with /bin/echo launcher, registers a workspace + project,
-// posts a task thread-root, returns the thread root id + general channel id +
-// cleanup. The CLI's callDaemon + doneCmd both reach this temp daemon via
-// protocol.SocketPath() (which respects HMF_STATE_DIR).
+// spinCLIDaemon: temp HMF_STATE_DIR + daemon + workspace/project + a task
+// thread-root. Returns thread root id, general channel id, cleanup.
 func spinCLIDaemon(t *testing.T) (threadParentID int64, generalChannelID int64, cleanup func()) {
 	t.Helper()
 	stateDir := filepath.Join("/tmp", "hmf-cli-"+t.Name())

@@ -84,8 +84,7 @@ func TestLauncher_SpawnSetsEnvVars(t *testing.T) {
 	}
 }
 
-// OnExit fires with the process exit code when the spawned agent exits.
-// Guards the launcher → MarkExited → task_status lifecycle chain.
+// OnExit fires with the exit code, guarding the launcher→MarkExited chain.
 func TestLauncher_OnExitFiresWithExitCode(t *testing.T) {
 	dir := t.TempDir()
 	// /bin/echo exits cleanly with code 0.

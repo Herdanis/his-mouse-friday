@@ -53,10 +53,8 @@ CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(thread_id);
 `
 
 func OpenStore(path string) (*Store, error) {
-	// busy_timeout via DSN: applies to EVERY connection in the pool. Per-
-	// connection PRAGMA only sticks to one pooled connection; the rest still
-	// default to 0 → SQLITE_BUSY on concurrent writes (OnExit goroutine vs
-	// request handler). 5s wait is plenty for hmf's low-concurrency workload.
+	// busy_timeout via DSN so every pooled connection gets it (per-connection
+	// PRAGMA only sticks to one). 5s is plenty for hmf's low concurrency.
 	db, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(5000)")
 	if err != nil {
 		return nil, err
@@ -69,21 +67,16 @@ func OpenStore(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
-	// Migrate: add status column if missing (pre-existing DBs).
+	// Migrations (idempotent — ALTERs no-op if column exists).
 	db.Exec(`ALTER TABLE messages ADD COLUMN status TEXT NOT NULL DEFAULT 'message'`)
-	// Migrate: link sessions to the task message they were spawned for, + track
-	// exit code so task_status can tell "still working" from "agent died".
 	db.Exec(`ALTER TABLE sessions ADD COLUMN task_msg_id INTEGER`)
 	db.Exec(`ALTER TABLE sessions ADD COLUMN exit_code INTEGER`)
-	// Migrate: session resume feature — bind spawned opencode sessions to thread
-	// roots for resume, plus a human-friendly name + random prefix for tracing.
 	db.Exec(`ALTER TABLE sessions ADD COLUMN opencode_session_id TEXT`)
 	db.Exec(`ALTER TABLE sessions ADD COLUMN name TEXT`)
 	db.Exec(`ALTER TABLE sessions ADD COLUMN root_thread_id INTEGER`)
 	db.Exec(`ALTER TABLE sessions ADD COLUMN prefix TEXT`)
-	// Ensure the global "general" channel exists — the single lobby where all
-	// agents live. Uses a sentinel __global__ workspace so the channels.workspace_id
-	// FK is satisfied without a schema migration.
+	// Global "general" channel — lobby where all agents live. Sentinel
+	// __global__ workspace satisfies the FK without a schema migration.
 	db.Exec(`INSERT OR IGNORE INTO workspaces(name) VALUES('__global__')`)
 	db.Exec(`INSERT OR IGNORE INTO channels(workspace_id, name, type)
 	         VALUES((SELECT id FROM workspaces WHERE name='__global__'), 'general', 'group')`)

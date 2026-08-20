@@ -286,10 +286,8 @@ func configCmd() *cobra.Command {
 	return c
 }
 
-// doneCmd posts a "done" reply to the engaging agent. Spawned agents run this
-// as a one-line shell command instead of writing python/heredocs to hit the
-// daemon socket (which the bash tool wrapper mangles). Env (set by the
-// launcher): HMF_CHANNEL_ID, HMF_TASK_MSG_ID, HMF_PROJECT, HMF_FROM.
+// doneCmd posts a "done" reply. Spawned agents run it as a one-liner instead
+// of python/heredocs (which the bash tool wrapper mangles). Env from launcher.
 func doneCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "done [summary]",
@@ -324,10 +322,7 @@ func atoi64(s string) int64 {
 	return n
 }
 
-// sessionCmd groups subcommands for inspecting hmf sessions (currently just
-// list). `hmf session list` calls the daemon's session_list RPC and renders
-// a tab-aligned table of name, project, status, opencode session id, root
-// thread id, and created_at.
+// sessionCmd groups session subcommands (currently just `list`).
 func sessionCmd() *cobra.Command {
 	c := &cobra.Command{Use: "session", Short: "Manage hmf sessions"}
 	list := &cobra.Command{

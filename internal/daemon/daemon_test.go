@@ -71,12 +71,8 @@ func TestHandle_PostToGeneralWakesAgent(t *testing.T) {
 	}
 }
 
-// TestHandle_SyntheticBlockedReplyOnSilentExit verifies the daemon-side safety
-// net: when a spawned agent exits without posting a done reply (e.g. hit
-// bash:ask with no TTY), the daemon posts a synthetic BLOCKED reply on its
-// behalf so the orchestrator stops polling. setupDaemon uses /bin/echo as the
-// agent binary, which exits immediately without posting — perfect simulacrum
-// of the silent-exit failure mode.
+// TestHandle_SyntheticBlockedReplyOnSilentExit: /bin/echo exits without a
+// done reply → daemon posts synthetic BLOCKED reply so orchestrator stops polling.
 func TestHandle_SyntheticBlockedReplyOnSilentExit(t *testing.T) {
 	d := setupDaemon(t)
 	d.SafetyNetEnabled = true
@@ -177,9 +173,8 @@ func TestHandle_PostToUnregisteredAgentSkipsWake(t *testing.T) {
 // task_status — guards the orchestrator's "still working vs died vs done" signal
 // ============================================
 
-// postTask sets up a thread-root message + (optionally) a session linked by
-// task_msg_id, returning the thread root id. Decouples task_status logic from
-// spawn timing — we insert rows directly.
+// postTask sets up a thread-root message + optional session linked by
+// task_msg_id, returning the thread root id.
 func postTask(t *testing.T, d *Daemon, sessionStatus string, exitCode int, withDone bool) int64 {
 	t.Helper()
 	d.Store.db.Exec(`INSERT INTO workspaces(id, name) VALUES(1, 'companyA')`)
@@ -291,8 +286,7 @@ func mustJSON(t *testing.T, v any) json.RawMessage {
 	return b
 }
 
-// TestServe_Smoke exercises the unix socket server end-to-end:
-// start Serve, send one status request over the socket, read the response.
+// TestServe_Smoke: start Serve, send one status request over the socket.
 func TestServe_Smoke(t *testing.T) {
 	d := setupDaemon(t)
 	sock := filepath.Join(t.TempDir(), "daemon.sock")
@@ -346,8 +340,7 @@ func TestServe_Smoke(t *testing.T) {
 	}
 }
 
-// TestServe_Shutdown verifies that a "shutdown" request stops the daemon:
-// Serve returns nil and the socket stops accepting new connections.
+// TestServe_Shutdown: a "shutdown" request stops the daemon + socket.
 func TestServe_Shutdown(t *testing.T) {
 	d := setupDaemon(t)
 	sock := filepath.Join(t.TempDir(), "daemon.sock")

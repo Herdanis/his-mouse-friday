@@ -30,19 +30,14 @@ type PermissionsConfig struct {
 	Commands CommandPermissions  `yaml:"commands"`
 }
 
-// FSPermissions uses gitignore-style patterns with three modes:
-//   - deny: blocked outright
-//   - ask:  requires human approval before access
-//   - (default): allowed
-// Deny wins over ask. Empty lists = allow all.
+// FSPermissions: gitignore-style patterns. deny=blocked, ask=approval
+// required, default=allowed. Deny wins over ask. Empty = allow all.
 type FSPermissions struct {
 	Deny []string `yaml:"deny"`
 	Ask  []string `yaml:"ask"`
 }
 
-// CommandPermissions controls CLI commands the agent may run.
-// Patterns match command prefixes (e.g. "kubectl delete" matches
-// "kubectl delete pods foo"). Same three modes as FS; deny wins over ask.
+// CommandPermissions: same three modes as FS, prefix-matched.
 type CommandPermissions struct {
 	Deny []string `yaml:"deny"`
 	Ask  []string `yaml:"ask"`
@@ -78,15 +73,14 @@ func GlobalMousePath() string {
 	return filepath.Join(home, ".hmf", "mouse.yaml")
 }
 
-// LoadGlobalMouse reads the global default mouse.yaml (~/.hmf/mouse.yaml).
-// Missing file → (nil, nil). This is the fallback for unregistered dirs.
+// LoadGlobalMouse reads ~/.hmf/mouse.yaml. Missing → (nil, nil). Fallback for
+// unregistered dirs.
 func LoadGlobalMouse() (*MouseConfig, error) {
 	return LoadMouse(GlobalMousePath())
 }
 
-// ResolveMouse loads project-specific mouse.yaml from repoPath, falling back
-// to the global default (~/.hmf/mouse.yaml) if not found.
-// Returns (nil, nil) if neither exists (truly open mode).
+// ResolveMouse loads repoPath/mouse.yaml, falling back to the global default.
+// (nil, nil) if neither exists.
 func ResolveMouse(repoPath string) (*MouseConfig, error) {
 	cfg, err := LoadMouse(filepath.Join(repoPath, "mouse.yaml"))
 	if err != nil {

@@ -115,18 +115,11 @@ func envChannelID() int64 {
 // MCP server
 // ============================================
 
-// newServer builds the MCP server and registers the 5 orchestration tools.
-// callerID is the resolved "workspace/project" of the repo this shim runs in
-// ("" if unregistered/open mode). It's injected as the `from` field on post
-// calls so the daemon records who sent each message.
-//
-// Thread tracking: the shim auto-binds every post_message to a single thread
-// per session. Orchestrator sessions start with no thread — the first post
-// creates a thread root, and the returned message_id becomes the session's
-// thread. All subsequent posts auto-set thread_id=<that>. Spawned agents
-// inherit HMF_TASK_MSG_ID as their thread (the root's). This means: one
-// thread per root session, all agent-to-agent comms in the same conversation,
-// new thread only when opencode restarts (new shim = new session).
+// newServer builds the MCP server + registers the 5 tools. callerID is the
+// resolved "workspace/project" of this shim's repo ("" = open mode), injected
+// as `from` on posts. Thread tracking: auto-binds every post_message to one
+// thread per session — first post creates the root, subsequent posts inherit
+// it; spawned agents inherit HMF_TASK_MSG_ID as their thread.
 func newServer(callerID string) *mcpserver.Server {
 	srv := mcpserver.NewServer(&mcpserver.Implementation{Name: "hmf-mcp", Version: "v0.1.0"}, nil)
 
@@ -149,10 +142,7 @@ func newServer(callerID string) *mcpserver.Server {
 		if in.Channel != 0 {
 			params["channel"] = in.Channel
 		}
-		// Thread binding: if caller didn't set thread_id, auto-bind to the
-		// session's current thread. First post has no current thread →
-		// creates a thread root; the returned message_id becomes the
-		// session's thread for all future posts.
+		// Auto-bind thread_id to the session's current thread if caller didn't set it.
 		threadID := in.ThreadID
 		if threadID == 0 {
 			threadID = currentThread
@@ -160,8 +150,8 @@ func newServer(callerID string) *mcpserver.Server {
 		if threadID != 0 {
 			params["thread_id"] = threadID
 		}
-		// If caller is a spawned agent, propagate the caller's root so cross-
-		// project delegations bind to the original thread root.
+		// Spawned agent: propagate HMF_TASK_MSG_ID so cross-project delegations
+		// bind to the original thread root.
 		if tid := os.Getenv("HMF_TASK_MSG_ID"); tid != "" {
 			var parentID int64
 			fmt.Sscanf(tid, "%d", &parentID)
@@ -175,7 +165,7 @@ func newServer(callerID string) *mcpserver.Server {
 		}
 		var pr PostOutput
 		json.Unmarshal(result, &pr)
-		// First post (no prior thread) → bind the session to this thread root.
+		// First post (no prior thread) → bind session to this thread root.
 		if currentThread == 0 && pr.MessageID != 0 {
 			currentThread = pr.MessageID
 		}
@@ -253,10 +243,8 @@ func newServer(callerID string) *mcpserver.Server {
 	return srv
 }
 
-// RunServer resolves the caller's identity, then starts the hmf-mcp server.
-// If HMF_CHANNEL_ID is set (spawned by hmf engage), the caller is an engaged
-// agent — its identity comes from HMF_PROJECT env, and post_message auto-fills
-// the channel + from fields.
+// RunServer resolves caller identity then starts the hmf-mcp server. If
+// HMF_CHANNEL_ID is set, caller is a spawned agent (identity from HMF_PROJECT).
 func RunServer(ctx context.Context) error {
 	ensureDaemon(ctx)
 	callerID := os.Getenv("HMF_PROJECT")
@@ -278,9 +266,8 @@ func RunServer(ctx context.Context) error {
 	return newServer(callerID).Run(ctx, &mcpserver.StdioTransport{})
 }
 
-// ensureDaemon checks if the daemon is reachable; if not, starts it in the
-// background and waits for the socket to accept connections. This lets users
-// open opencode without manually running 'hmf up' first.
+// ensureDaemon starts the daemon if the socket isn't reachable, so users
+// can open opencode without running 'hmf up' first.
 func ensureDaemon(ctx context.Context) {
 	if conn, err := net.Dial("unix", protocol.SocketPath()); err == nil {
 		conn.Close()

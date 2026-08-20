@@ -15,17 +15,11 @@ import (
 	"github.com/herdanis/his-mouse-friday/internal/protocol"
 )
 
-// These tests guard the MCP shim's CONTRACT with the daemon: the param shapes
-// each tool sends are accepted by the daemon, and the daemon's responses
-// unmarshal cleanly into the shim's output types (PostOutput.message_id,
-// TaskStatusOutput.agent_status, []MessageOutput). A refactor that breaks the
-// message_id return, task_status shape, or read_thread/read_channel defaults
-// fails here before it ships.
+// These tests guard the shim↔daemon contract: param shapes accepted,
+// responses unmarshal cleanly into shim output types.
 
-// spinDaemon sets up a temp HMF_STATE_DIR, starts a daemon with /bin/echo
-// launcher, registers a workspace + an inbound-allowed project, returns the
-// daemon + a cleanup. The shim's callDaemon dials protocol.SocketPath() which
-// resolves under HMF_STATE_DIR, so the shim reaches this temp daemon.
+// spinDaemon: temp HMF_STATE_DIR + daemon with /bin/echo + registered
+// workspace/project. Shim's callDaemon reaches it via protocol.SocketPath().
 func spinDaemon(t *testing.T) (*daemon.Daemon, func()) {
 	t.Helper()
 	// macOS limits unix socket paths to ~104 chars; t.TempDir() paths are too
