@@ -3,6 +3,7 @@ package daemon
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 )
 
 type Registry struct {
@@ -69,6 +70,19 @@ func (r *Registry) getWorkspaceID(name string) (int64, error) {
 func (r *Registry) AddProject(wsName, projName, path string) (Project, error) {
 	wsID, err := r.getWorkspaceID(wsName)
 	if err != nil {
+		return Project{}, err
+	}
+	// Path may be claimed by only one (workspace, project). Re-adding the
+	// same (workspace, name) is allowed (upsert); a different claim blocks.
+	var conflictWS, conflictName string
+	err = r.Store.db.QueryRow(
+		`SELECT w.name, p.name FROM projects p JOIN workspaces w ON p.workspace_id=w.id
+		 WHERE p.path=? AND NOT (p.workspace_id=? AND p.name=?)`,
+		path, wsID, projName).Scan(&conflictWS, &conflictName)
+	if err == nil {
+		return Project{}, fmt.Errorf("path %q already registered under %s/%s; delete that registration first", path, conflictWS, conflictName)
+	}
+	if err != sql.ErrNoRows {
 		return Project{}, err
 	}
 	res, err := r.Store.db.Exec(

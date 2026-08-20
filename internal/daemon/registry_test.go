@@ -83,3 +83,20 @@ func TestRegistry_NameCollisionAcrossWorkspaces(t *testing.T) {
 		t.Fatalf("same name in different workspace should succeed: %v", err)
 	}
 }
+
+func TestRegistry_AddProject_DuplicatePath(t *testing.T) {
+	r := &Registry{Store: newTestStore(t)}
+	r.AddWorkspace("companyA")
+	r.AddWorkspace("personal")
+	if _, err := r.AddProject("companyA", "payment", "/tmp/payment"); err != nil {
+		t.Fatalf("first add: %v", err)
+	}
+	// Same path under a different (workspace, name) → blocked.
+	if _, err := r.AddProject("personal", "other", "/tmp/payment"); err == nil {
+		t.Fatal("expected error: path already registered under a different project")
+	}
+	// Re-adding the same (workspace, name) with a path change is allowed.
+	if _, err := r.AddProject("companyA", "payment", "/tmp/payment-moved"); err != nil {
+		t.Fatalf("re-add same (ws, name) with new path should succeed: %v", err)
+	}
+}
