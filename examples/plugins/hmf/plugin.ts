@@ -64,27 +64,51 @@ s.close()
 }
 
 // ============================================
-// Registry lookup
+// Registry lookup (init-time load — DB direct, daemon fallback)
 // ============================================
 
-function getRegisteredProjects(): ProjectInfo[] {
-  const result = hmfCall("project_list", {});
-  if (!result) return [];
+function loadProjectsFromDB(): ProjectInfo[] {
+  // Read the hmf SQLite DB directly via the sqlite3 CLI — no daemon socket,
+  // no python one-shot, no contention. Fast + reliable.
+  const dbPath = join(homedir(), ".hmf", "hmf.db");
+  if (!existsSync(dbPath)) return [];
   try {
-    const items = JSON.parse(result as string) as ProjectInfo[];
+    const sql = "SELECT w.name, p.name, p.path FROM projects p JOIN workspaces w ON p.workspace_id=w.id";
+    const out = execSync(`sqlite3 "${dbPath}" "${sql}"`, {
+      timeout: 2000,
+      encoding: "utf8",
+    }).trim();
+    if (!out) return [];
+    const items: ProjectInfo[] = [];
+    for (const line of out.split("\n")) {
+      const parts = line.split("|");
+      if (parts.length === 3) {
+        items.push({ workspace: parts[0], name: parts[1], path: parts[2] });
+      }
+    }
     return items;
   } catch {
     return [];
   }
 }
 
-function findRegisteredProject(filePath: string): ProjectInfo | null {
-  const abs = resolve(filePath);
-  const projects = getRegisteredProjects();
-  for (const p of projects) {
-    if (abs.startsWith(p.path + "/")) return p;
+// Run once at session start (plugin setup). Session-lifetime list.
+// ponytail: no self-heal within session; restart opencode if daemon was down at start.
+function loadProjects(): ProjectInfo[] {
+  // Primary: read the DB directly (no daemon dependency).
+  let items = loadProjectsFromDB();
+  // Fallback: daemon socket call (if sqlite3 CLI missing or DB unreadable).
+  if (items.length === 0) {
+    const result = hmfCall("project_list", {});
+    if (result) {
+      try {
+        items = JSON.parse(result as string) as ProjectInfo[];
+      } catch {
+        items = [];
+      }
+    }
   }
-  return null;
+  return items;
 }
 
 // ============================================
@@ -127,6 +151,7 @@ function commandMatchesPattern(cmd: string, pattern: string): boolean {
 // ============================================
 
 export const HmfProtection: Plugin = async ({ directory }) => {
+  const projects = loadProjects();   // runs once, session-lifetime
   return {
     "tool.execute.before": async (input, output) => {
       // ============================================
@@ -138,18 +163,42 @@ export const HmfProtection: Plugin = async ({ directory }) => {
           ?? "";
         if (!filePath) return;
 
-        const project = findRegisteredProject(filePath);
-        if (!project) return;
+        const abs = resolve(filePath);
+        const cwd = process.cwd();
 
-        const cwd = directory ?? process.cwd();
-        const rel = relative(project.path, cwd);
-        const cwdInside = rel && !rel.startsWith("..");
-        if (cwdInside) return;
-
-        throw new Error(
-          `hmf: blocked edit to ${project.workspace}/${project.name} — ` +
-          `this is a registered project. Use engage_project_agent to delegate.`,
+        // Case 1: am I a project's own agent (cwd inside a registered project)?
+        // Then confine edits to that project. Blocks edits to a sibling clone /
+        // stow-deployed copy / home dir — the agent must edit its registered
+        // repo, not a different clone of the same files.
+        const myProject = projects.find(
+          (p) => cwd === p.path || cwd.startsWith(p.path + "/"),
         );
+        if (myProject) {
+          const inside = abs === myProject.path || abs.startsWith(myProject.path + "/");
+          if (!inside) {
+            throw new Error(
+              `hmf: blocked edit OUTSIDE your project ${myProject.workspace}/${myProject.name}. ` +
+              `You are operating in ${myProject.path}; edit only within it. ` +
+              `Target was ${abs}. (If this is a deployed/stow copy or a different clone, ` +
+              `edit the registered repo path instead.)`,
+            );
+          }
+          return; // inside my own project → allow
+        }
+
+        // Case 2: open mode (cwd not in any registered project). Block edits
+        // INTO registered projects — must delegate via engage_project_agent.
+        const targetProject = projects.find(
+          (p) => abs === p.path || abs.startsWith(p.path + "/"),
+        );
+        if (targetProject) {
+          throw new Error(
+            `hmf: blocked edit to ${targetProject.workspace}/${targetProject.name} — ` +
+            `this is a registered project. Use engage_project_agent to delegate.`,
+          );
+        }
+        // open mode, unregistered target → allow
+        return;
       }
 
       // ============================================
@@ -159,7 +208,7 @@ export const HmfProtection: Plugin = async ({ directory }) => {
         const cmd = (output.args as { command?: string })?.command ?? "";
         if (!cmd) return;
 
-        const cwd = directory ?? process.cwd();
+        const cwd = process.cwd();
         const mouse = loadMouseYaml(cwd);
         if (!mouse) return;
 

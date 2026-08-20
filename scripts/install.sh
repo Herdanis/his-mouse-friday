@@ -96,14 +96,14 @@ gobin="$(go env GOBIN)"
 # ============================================
 # Opencode plugin + slash commands
 # ============================================
-mkdir -p "$OPENCODE_CONFIG/plugins" "$OPENCODE_CONFIG/commands"
+mkdir -p "$OPENCODE_CONFIG/plugins" "$OPENCODE_CONFIG/plugins/hmf" "$OPENCODE_CONFIG/commands"
 
 fetch() { # <remote-path> <local-path>
   info "fetching $1"
   curl -fsSL "${RAW_BASE}/$1" -o "$2" || die "fetch $1 failed"
 }
 
-fetch "examples/plugins/hmf/plugin.ts"        "$OPENCODE_CONFIG/plugins/hmf.ts"
+fetch "examples/plugins/hmf/plugin.ts"        "$OPENCODE_CONFIG/plugins/hmf/plugin.ts"
 fetch "examples/commands/hmf-setup.md"        "$OPENCODE_CONFIG/commands/hmf-setup.md"
 fetch "examples/commands/hmf-register.md"     "$OPENCODE_CONFIG/commands/hmf-register.md"
 
