@@ -28,6 +28,7 @@ func setupDaemon(t *testing.T) *Daemon {
 		Registry: &Registry{Store: store},
 		Sessions: &SessionStore{Store: store},
 		Comms:    &Comms{Store: store},
+		Todos:    &TodoStore{Store: store},
 		Launcher: &Launcher{Binary: "/bin/echo"},
 		MouseLoader: func(path string) (*config.MouseConfig, error) {
 			return config.LoadMouse(path)
@@ -809,5 +810,177 @@ func TestHandlePost_AmbiguousBareToErrors(t *testing.T) {
 	}
 	if !strings.Contains(resp.Error.Message, "ambiguous") {
 		t.Fatalf("want error containing 'ambiguous', got %q", resp.Error.Message)
+	}
+}
+
+// ============================================
+// Todos — RPC handler tests
+// ============================================
+
+func TestHandle_TodoAddUpdateList(t *testing.T) {
+	d := setupDaemon(t)
+	d.Store.db.Exec(`INSERT INTO workspaces(id, name) VALUES(1, 'companyA')`)
+	d.Store.db.Exec(`INSERT INTO channels(id, workspace_id, name, type) VALUES(10, 1, 'dm', 'dm')`)
+	postParams, _ := json.Marshal(map[string]any{
+		"channel": 10, "from": "companyA/payment", "content": "task root",
+	})
+	resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: postParams, ID: 1})
+	if resp.Error != nil {
+		t.Fatal(resp.Error.Message)
+	}
+	var pr PostResult
+	json.Unmarshal(resp.Result, &pr)
+
+	addParams, _ := json.Marshal(map[string]any{"thread_id": pr.MessageID, "content": "step one"})
+	resp = d.Handle(context.Background(), protocol.Request{Method: "todo_add", Params: addParams, ID: 2})
+	if resp.Error != nil {
+		t.Fatal(resp.Error.Message)
+	}
+	var added struct {
+		ID int64 `json:"id"`
+	}
+	json.Unmarshal(resp.Result, &added)
+	if added.ID == 0 {
+		t.Fatalf("todo_add: got %+v", added)
+	}
+
+	updParams, _ := json.Marshal(map[string]any{"id": added.ID, "state": "done"})
+	resp = d.Handle(context.Background(), protocol.Request{Method: "todo_update", Params: updParams, ID: 3})
+	if resp.Error != nil {
+		t.Fatal(resp.Error.Message)
+	}
+
+	listParams, _ := json.Marshal(map[string]any{"thread_id": pr.MessageID})
+	resp = d.Handle(context.Background(), protocol.Request{Method: "todo_list", Params: listParams, ID: 4})
+	if resp.Error != nil {
+		t.Fatal(resp.Error.Message)
+	}
+	var todos []Todo
+	json.Unmarshal(resp.Result, &todos)
+	if len(todos) != 1 || todos[0].State != "done" {
+		t.Fatalf("todo_list: got %+v", todos)
+	}
+}
+
+func TestHandle_TodoAdd_NonexistentThreadErrors(t *testing.T) {
+	d := setupDaemon(t)
+	addParams, _ := json.Marshal(map[string]any{"thread_id": 999, "content": "x"})
+	resp := d.Handle(context.Background(), protocol.Request{Method: "todo_add", Params: addParams, ID: 1})
+	if resp.Error == nil {
+		t.Fatal("expected error for todo_add on nonexistent thread")
+	}
+}
+
+func TestHandle_TodoUpdate_BadStateErrors(t *testing.T) {
+	d := setupDaemon(t)
+	d.Store.db.Exec(`INSERT INTO workspaces(id, name) VALUES(1, 'companyA')`)
+	d.Store.db.Exec(`INSERT INTO channels(id, workspace_id, name, type) VALUES(10, 1, 'dm', 'dm')`)
+	postParams, _ := json.Marshal(map[string]any{"channel": 10, "from": "a", "content": "root"})
+	resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: postParams, ID: 1})
+	var pr PostResult
+	json.Unmarshal(resp.Result, &pr)
+	addParams, _ := json.Marshal(map[string]any{"thread_id": pr.MessageID, "content": "step"})
+	resp = d.Handle(context.Background(), protocol.Request{Method: "todo_add", Params: addParams, ID: 2})
+	var added struct {
+		ID int64 `json:"id"`
+	}
+	json.Unmarshal(resp.Result, &added)
+
+	updParams, _ := json.Marshal(map[string]any{"id": added.ID, "state": "bogus"})
+	resp = d.Handle(context.Background(), protocol.Request{Method: "todo_update", Params: updParams, ID: 3})
+	if resp.Error == nil {
+		t.Fatal("expected error for bad state")
+	}
+}
+
+func TestHandle_TodoThreads(t *testing.T) {
+	d := setupDaemon(t)
+	d.Store.db.Exec(`INSERT INTO workspaces(id, name) VALUES(1, 'companyA')`)
+	d.Store.db.Exec(`INSERT INTO channels(id, workspace_id, name, type) VALUES(10, 1, 'dm', 'dm')`)
+	postParams, _ := json.Marshal(map[string]any{"channel": 10, "from": "a", "content": "add payment_status field to User"})
+	resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: postParams, ID: 1})
+	var pr PostResult
+	json.Unmarshal(resp.Result, &pr)
+	addParams, _ := json.Marshal(map[string]any{"thread_id": pr.MessageID, "content": "step one"})
+	d.Handle(context.Background(), protocol.Request{Method: "todo_add", Params: addParams, ID: 2})
+
+	resp = d.Handle(context.Background(), protocol.Request{Method: "todo_threads", Params: nil, ID: 3})
+	if resp.Error != nil {
+		t.Fatal(resp.Error.Message)
+	}
+	var rows []struct {
+		ThreadID int64  `json:"thread_id"`
+		Preview  string `json:"preview"`
+		Done     int    `json:"done"`
+		Total    int    `json:"total"`
+	}
+	json.Unmarshal(resp.Result, &rows)
+	if len(rows) != 1 || rows[0].ThreadID != pr.MessageID || rows[0].Total != 1 || rows[0].Done != 0 {
+		t.Fatalf("todo_threads: got %+v", rows)
+	}
+}
+
+// TestWakeAgent_ResumeScopedToBinary guards against a fallback runtime switch
+// resuming a foreign runtime's session id (found in final review: the resume
+// lookup used to ignore agent_binary entirely).
+func TestWakeAgent_ResumeScopedToBinary(t *testing.T) {
+	d := setupDaemon(t)
+	d.Registry.AddWorkspace("companyA")
+	userDir := t.TempDir()
+	os.WriteFile(filepath.Join(userDir, "mouse.yaml"),
+		[]byte("agent:\n  primary:\n    provider: opencode\n  secondary:\n    provider: claude\na2a:\n  allow_inbound: true\n"), 0644)
+	d.Registry.AddProject("companyA", "user-service", userDir)
+
+	// First wake: primary (opencode) available, captures a fake opencode session id.
+	d.LookPath = func(string) (string, error) { return "/usr/bin/x", nil }
+	d.CaptureAgentSessionID = func(SpawnConfig) (string, error) { return "ses_opencode123", nil }
+	params, _ := json.Marshal(map[string]any{
+		"from": "companyA/payment", "to": "companyA/user-service", "content": "task 1",
+	})
+	resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: params, ID: 1})
+	var pr PostResult
+	json.Unmarshal(resp.Result, &pr)
+
+	// captureAgentSessionID runs async (goroutine); wait for the opencode
+	// session row to be stamped before the second wake queries it.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		var ocID sql.NullString
+		d.Store.db.QueryRow(`SELECT opencode_session_id FROM sessions WHERE task_msg_id=?`, pr.MessageID).Scan(&ocID)
+		if ocID.String == "ses_opencode123" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for opencode session id to be captured")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Second wake on the same thread: opencode binary now unavailable, forces
+	// fallback to secondary (claude). The resume lookup must NOT hand the
+	// opencode session id to the claude spawn.
+	d.LookPath = func(bin string) (string, error) {
+		if bin == "opencode" {
+			return "", os.ErrNotExist
+		}
+		return "/usr/bin/" + bin, nil
+	}
+	var spawnedSessionID string
+	d.Launcher = &Launcher{SpawnFn: func(cfg SpawnConfig) (int, error) {
+		spawnedSessionID = cfg.AgentSessionID
+		return 1, nil
+	}}
+	params2, _ := json.Marshal(map[string]any{
+		"thread_id": pr.MessageID, "from": "companyA/payment", "to": "companyA/user-service", "content": "follow-up",
+	})
+	resp = d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: params2, ID: 2})
+	if resp.Error != nil {
+		t.Fatal(resp.Error.Message)
+	}
+	if spawnedSessionID == "ses_opencode123" {
+		t.Fatalf("claude spawn resumed opencode's session id %q — resume must be scoped to agent_binary", spawnedSessionID)
+	}
+	if spawnedSessionID != "" {
+		t.Errorf("expected no resume id for claude's first spawn on this thread, got %q", spawnedSessionID)
 	}
 }

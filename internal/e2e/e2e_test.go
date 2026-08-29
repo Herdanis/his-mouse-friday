@@ -34,6 +34,7 @@ func TestVerticalSlice(t *testing.T) {
 		Registry:    &daemon.Registry{Store: store},
 		Sessions:    &daemon.SessionStore{Store: store},
 		Comms:       &daemon.Comms{Store: store},
+		Todos:       &daemon.TodoStore{Store: store},
 		Launcher:    &daemon.Launcher{Binary: "/bin/echo"},
 		MouseLoader: config.LoadMouse,
 		// No-op capturer: this test constructs Daemon directly (not via
@@ -96,6 +97,25 @@ func TestVerticalSlice(t *testing.T) {
 	}
 	if reply.Status != "done" || reply.Content != "done, added payment_status to User model" {
 		t.Errorf("reply: status=%q content=%q", reply.Status, reply.Content)
+	}
+
+	// Todos survive done: child tracks work, marks it done, human can still read.
+	addResp := mustSend(t, d, "todo_add", map[string]any{"thread_id": taskID, "content": "add field to User model"})
+	var added struct {
+		ID int64 `json:"id"`
+	}
+	json.Unmarshal(addResp.Result, &added)
+	if added.ID == 0 {
+		t.Fatalf("todo_add returned no id: %+v", addResp)
+	}
+	mustSend(t, d, "todo_update", map[string]any{"id": added.ID, "state": "done"})
+	mustSend(t, d, "todo_add", map[string]any{"thread_id": taskID, "content": "write migration"})
+
+	listResp := mustSend(t, d, "todo_list", map[string]any{"thread_id": taskID})
+	var todos []daemon.Todo
+	json.Unmarshal(listResp.Result, &todos)
+	if len(todos) != 2 || todos[0].State != "done" || todos[1].State != "pending" {
+		t.Fatalf("todos after done: %+v", todos)
 	}
 }
 

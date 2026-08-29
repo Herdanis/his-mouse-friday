@@ -50,17 +50,22 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 CREATE INDEX IF NOT EXISTS idx_messages_channel_ts ON messages(channel_id, ts);
 CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(thread_id);
+CREATE TABLE IF NOT EXISTS todos (
+  id         INTEGER PRIMARY KEY,
+  thread_id  INTEGER NOT NULL REFERENCES messages(id),
+  content    TEXT NOT NULL,
+  state      TEXT NOT NULL DEFAULT 'pending',
+  updated_at DATETIME NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_todos_thread ON todos(thread_id);
 `
 
 func OpenStore(path string) (*Store, error) {
-	// busy_timeout via DSN so every pooled connection gets it (per-connection
-	// PRAGMA only sticks to one). 5s is plenty for hmf's low concurrency.
-	db, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(5000)")
+	// Pragmas via DSN so every pooled connection gets them (per-connection
+	// PRAGMAs via db.Exec only stick to one conn). 5s busy_timeout is plenty
+	// for hmf's low concurrency.
+	db, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)")
 	if err != nil {
-		return nil, err
-	}
-	if _, err := db.Exec(`PRAGMA foreign_keys=ON`); err != nil {
-		db.Close()
 		return nil, err
 	}
 	if _, err := db.Exec(schema); err != nil {
@@ -94,8 +99,22 @@ func nullIfZero(i int64) any {
 	return i
 }
 
-// RunRetention deletes messages older than 90 days.
+// RunRetention deletes messages older than 90 days. Runs in a transaction:
+// todos.thread_id is a foreign key onto messages.id, and an unscoped DELETE
+// aborts entirely on the first FK violation it hits — so a message's todos
+// are cleared first.
 func (s *Store) RunRetention() error {
-	_, err := s.db.Exec(`DELETE FROM messages WHERE ts < datetime('now', '-90 days')`)
-	return err
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	const cutoff = `ts < datetime('now', '-90 days')`
+	if _, err := tx.Exec(`DELETE FROM todos WHERE thread_id IN (SELECT id FROM messages WHERE ` + cutoff + `)`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM messages WHERE ` + cutoff); err != nil {
+		return err
+	}
+	return tx.Commit()
 }

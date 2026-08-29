@@ -40,3 +40,18 @@ func TestStore_RetentionDelete(t *testing.T) {
 		t.Errorf("retention should delete old msg, got %d", n)
 	}
 }
+
+// TestStore_FKEnforced proves foreign_keys is on for pooled connections, not
+// just the one connection the old standalone PRAGMA landed on.
+func TestStore_FKEnforced(t *testing.T) {
+	s, _ := OpenStore(filepath.Join(t.TempDir(), "test.db"))
+	defer s.Close()
+
+	// Several inserts: pool may hand out different connections per query.
+	for i := 0; i < 5; i++ {
+		_, err := s.db.Exec(`INSERT INTO messages(channel_id, from_project, content, ts) VALUES(999, 'a/b', 'x', datetime('now'))`)
+		if err == nil {
+			t.Fatal("insert with bogus channel_id should violate FK")
+		}
+	}
+}

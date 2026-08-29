@@ -11,6 +11,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -29,6 +30,50 @@ func generatePrefix() string {
 	return hex.EncodeToString(b)[:5]
 }
 
+// resolveAgent picks the runtime for a wake: primary, falling back to
+// secondary when primary's binary is missing or its model is unavailable.
+// Failed/unknown probes mean "assume available" — never block spawn.
+func (d *Daemon) resolveAgent(mouse *config.MouseConfig) (binary, model string) {
+	type agent struct{ bin, model string }
+	cands := []agent{{"opencode", "default"}}
+	if mouse != nil && mouse.Agent.Primary.Provider != "" {
+		cands[0] = agent{mouse.Agent.Primary.Provider, mouse.Agent.Primary.Model}
+		if cands[0].model == "" {
+			cands[0].model = "default"
+		}
+	}
+	if mouse != nil && mouse.Agent.Secondary.Provider != "" {
+		sec := agent{mouse.Agent.Secondary.Provider, mouse.Agent.Secondary.Model}
+		if sec.model == "" {
+			sec.model = "default"
+		}
+		if sec != cands[0] {
+			cands = append(cands, sec)
+		}
+	}
+	// Nil-safe: Daemon literals in tests may not set the injectables.
+	look, probe := d.LookPath, d.ModelProbe
+	if look == nil {
+		look = exec.LookPath
+	}
+	if probe == nil {
+		probe = runtimeModelAvailable
+	}
+	for _, c := range cands {
+		if _, err := look(c.bin); err != nil {
+			continue // binary not installed
+		}
+		if c.model != "default" {
+			if ok, checkable := probe(c.bin, c.model); checkable && !ok {
+				continue // model known missing
+			}
+		}
+		return c.bin, c.model
+	}
+	logCapture(0, "resolveAgent: no candidate available, using primary %s/%s", cands[0].bin, cands[0].model)
+	return cands[0].bin, cands[0].model
+}
+
 // ============================================
 // Daemon
 // ============================================
@@ -39,6 +84,7 @@ type Daemon struct {
 	Registry    *Registry
 	Sessions    *SessionStore
 	Comms       *Comms
+	Todos       *TodoStore
 	Launcher    *Launcher
 	MouseLoader func(string) (*config.MouseConfig, error)
 	// SafetyNetEnabled: OnExit posts synthetic BLOCKED reply if agent exits
@@ -46,7 +92,10 @@ type Daemon struct {
 	SafetyNetEnabled bool
 	// CaptureAgentSessionID injectable for tests; default is the real capture.
 	CaptureAgentSessionID func(cfg SpawnConfig) (string, error)
-	Sock                  string
+	// LookPath + ModelProbe injectable for tests (resolveAgent fallback).
+	LookPath   func(string) (string, error)
+	ModelProbe func(binary, model string) (ok, checkable bool)
+	Sock       string
 	shutdownCh            chan struct{}
 }
 
@@ -61,10 +110,13 @@ func NewDaemon(sock, dbPath string) (*Daemon, error) {
 		Registry:              &Registry{Store: store},
 		Sessions:              &SessionStore{Store: store},
 		Comms:                 &Comms{Store: store},
+		Todos:                 &TodoStore{Store: store},
 		Launcher:              &Launcher{},
 		MouseLoader:           config.LoadMouse,
 		SafetyNetEnabled:      true,
 		CaptureAgentSessionID: captureAgentSessionID,
+		LookPath:              exec.LookPath,
+		ModelProbe:            runtimeModelAvailable,
 		Sock:                  sock,
 		shutdownCh:            make(chan struct{}),
 	}, nil
@@ -176,6 +228,8 @@ func (d *Daemon) Handle(ctx context.Context, req protocol.Request) protocol.Resp
 		return d.handleStatus(req)
 	case "session_list":
 		return d.handleSessionList(req)
+	case "todo_add", "todo_update", "todo_list", "todo_threads":
+		return d.handleTodo(req)
 	case "shutdown":
 		select {
 		case <-d.shutdownCh:
@@ -311,14 +365,8 @@ func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error
 	if mouse != nil && !mouse.A2A.AllowInbound {
 		return fmt.Errorf("project %s does not allow inbound engagement", msg.ToProject)
 	}
-	binary := "opencode"
-	model := "default"
-	if mouse != nil && mouse.Agent.Primary.Provider != "" {
-		binary = mouse.Agent.Primary.Provider
-		if mouse.Agent.Primary.Model != "" {
-			model = mouse.Agent.Primary.Model
-		}
-	}
+	binary, model := d.resolveAgent(mouse)
+	logCapture(0, "wake %s: agent=%s model=%s", msg.ToProject, binary, model)
 	runbook, _ := os.ReadFile(filepath.Join(proj.Path, "MOUSE.md"))
 	// parentID: explicit (cross-project delegation), else msg.ID (root) or
 	// msg.ThreadID (reply wake).
@@ -345,20 +393,23 @@ func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error
 	if err != nil {
 		return fmt.Errorf("session: %w", err)
 	}
-	// Resume prior opencode session on this thread; fresh spawn only if none.
+	// Resume prior session on this thread — scoped to the resolved binary, so
+	// a runtime fallback (e.g. opencode -> claude) never resumes a foreign
+	// runtime's session id.
 	var priorOcID sql.NullString
 	err = d.Store.db.QueryRow(
-		`SELECT opencode_session_id FROM sessions WHERE root_thread_id=? AND opencode_session_id IS NOT NULL AND opencode_session_id != '' ORDER BY id DESC LIMIT 1`,
-		parentID).Scan(&priorOcID)
+		`SELECT opencode_session_id FROM sessions WHERE root_thread_id=? AND agent_binary=? AND opencode_session_id IS NOT NULL AND opencode_session_id != '' ORDER BY id DESC LIMIT 1`,
+		parentID, binary).Scan(&priorOcID)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("resume lookup: %w", err)
 	}
 	entrypoint := fmt.Sprintf(
-		"You were @mentioned in the general channel, message id %d. "+
-			"Call the read_thread MCP tool with message_id=%d to load the task and any prior context. "+
-			"Handle the request. Reply in the thread using post_message with thread_id=%d, status=\"done\", "+
-			"and a one-line summary of what you did.",
-		msg.ID, parentID, parentID)
+		"[DELEGATED TASK] Parent agent %s sent you a message (id %d) in the general channel.\n"+
+			"1. Call the read_thread MCP tool with message_id=%d to load the task and prior context.\n"+
+			"2. Do the work inside this project directory.\n"+
+			"3. Track work items: todo_list with thread_id=%d (see existing), todo_add for new steps, todo_update to mark done.\n"+
+			"4. Reply: post_message with thread_id=%d, status=\"done\", and a one-line summary.",
+		msg.FromProject, msg.ID, parentID, parentID, parentID)
 	spawnCfg := SpawnConfig{
 		Dir:            proj.Path,
 		Binary:         binary,
@@ -422,24 +473,27 @@ func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error
 			}
 		}
 		// Debug log to file — daemon stderr may be discarded by ensureDaemon.
-		f, _ := os.OpenFile("/tmp/hmf-capture.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if f != nil {
-			fmt.Fprintf(f, "session %d: name=%q binary=%q dir=%q ocID=%q err=%v\n",
-				tmpSess.ID, spawnCfg.SessionName, spawnCfg.Binary, spawnCfg.Dir, ocID, err)
-			f.Close()
-		}
+		logCapture(tmpSess.ID, "name=%q binary=%q dir=%q ocID=%q err=%v",
+			spawnCfg.SessionName, spawnCfg.Binary, spawnCfg.Dir, ocID, err)
 		if err != nil || ocID == "" {
 			return
 		}
 		if err := d.Sessions.SetAgentSessionID(tmpSess.ID, ocID); err != nil {
-			f, _ := os.OpenFile("/tmp/hmf-capture.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-			if f != nil {
-				fmt.Fprintf(f, "session %d: SetAgentSessionID error: %v\n", tmpSess.ID, err)
-				f.Close()
-			}
+			logCapture(tmpSess.ID, "SetAgentSessionID error: %v", err)
 		}
 	}()
 	return nil
+}
+
+// logCapture appends a debug line to <state dir>/capture.log. Best-effort.
+func logCapture(sessionID int64, format string, args ...any) {
+	f, err := os.OpenFile(filepath.Join(protocol.StateDir(), "capture.log"),
+		os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0640)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	fmt.Fprintf(f, "session %d: "+format+"\n", append([]any{sessionID}, args...)...)
 }
 
 // handleTaskStatus reports agent state (working/exited/failed/no_agent) + done
@@ -691,6 +745,90 @@ func (d *Daemon) handleSessionList(req protocol.Request) protocol.Response {
 	}
 	result, _ := json.Marshal(out)
 	return protocol.Response{ID: req.ID, Result: result}
+}
+
+// ============================================
+// Todos — RPC handlers
+// ============================================
+
+func (d *Daemon) handleTodo(req protocol.Request) protocol.Response {
+	var p struct {
+		ThreadID int64  `json:"thread_id"`
+		Content  string `json:"content"`
+		ID       int64  `json:"id"`
+		State    string `json:"state"`
+	}
+	// todo_threads takes no params; guard so an empty/nil body doesn't error.
+	if req.Method != "todo_threads" || len(req.Params) > 0 {
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			return errResp(req.ID, "bad params: "+err.Error())
+		}
+	}
+	switch req.Method {
+	case "todo_add":
+		if p.ThreadID == 0 || p.Content == "" {
+			return errResp(req.ID, "todo_add needs thread_id and content")
+		}
+		td, err := d.Todos.Add(p.ThreadID, p.Content)
+		if err != nil {
+			return errResp(req.ID, fmt.Sprintf("no thread %d: %s", p.ThreadID, err))
+		}
+		b, _ := json.Marshal(map[string]int64{"id": td.ID})
+		return protocol.Response{ID: req.ID, Result: b}
+	case "todo_update":
+		if err := d.Todos.Update(p.ID, p.State); err != nil {
+			return errResp(req.ID, err.Error())
+		}
+		b, _ := json.Marshal(map[string]bool{"ok": true})
+		return protocol.Response{ID: req.ID, Result: b}
+	case "todo_threads":
+		return d.handleTodoThreads(req)
+	default: // todo_list
+		todos, err := d.Todos.List(p.ThreadID)
+		if err != nil {
+			return errResp(req.ID, err.Error())
+		}
+		if todos == nil {
+			todos = []Todo{}
+		}
+		b, _ := json.Marshal(todos)
+		return protocol.Response{ID: req.ID, Result: b}
+	}
+}
+
+// handleTodoThreads lists threads that have todos, with preview + counts.
+func (d *Daemon) handleTodoThreads(req protocol.Request) protocol.Response {
+	rows, err := d.Store.db.Query(`
+		SELECT t.thread_id, m.content,
+		       SUM(CASE WHEN t.state='done' THEN 1 ELSE 0 END), COUNT(*)
+		FROM todos t JOIN messages m ON m.id = t.thread_id
+		GROUP BY t.thread_id ORDER BY t.thread_id DESC`)
+	if err != nil {
+		return errResp(req.ID, err.Error())
+	}
+	defer rows.Close()
+	type row struct {
+		ThreadID int64  `json:"thread_id"`
+		Preview  string `json:"preview"`
+		Done     int    `json:"done"`
+		Total    int    `json:"total"`
+	}
+	var out []row
+	for rows.Next() {
+		var r row
+		if err := rows.Scan(&r.ThreadID, &r.Preview, &r.Done, &r.Total); err != nil {
+			return errResp(req.ID, err.Error())
+		}
+		if runes := []rune(r.Preview); len(runes) > 60 {
+			r.Preview = string(runes[:57]) + "..."
+		}
+		out = append(out, r)
+	}
+	if out == nil {
+		out = []row{}
+	}
+	b, _ := json.Marshal(out)
+	return protocol.Response{ID: req.ID, Result: b}
 }
 
 // ============================================
