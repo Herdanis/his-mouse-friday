@@ -126,9 +126,9 @@ agent:
   primary:
     provider: opencode
     model: modelnyaw/glm-5.2
-  secondary:
-    provider: ""
-    model: ""
+  # secondary:              # fallback when primary unavailable
+  #   provider: claude
+  #   model: default
 permissions:
   fs:
     deny:

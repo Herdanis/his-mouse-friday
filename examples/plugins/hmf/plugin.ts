@@ -9,7 +9,7 @@
 
 import type { Plugin } from "@opencode-ai/plugin";
 import { readFileSync, existsSync } from "node:fs";
-import { join, resolve, relative } from "node:path";
+import { join, resolve, relative, dirname } from "node:path";
 import { homedir } from "node:os";
 import { execSync } from "node:child_process";
 
@@ -116,20 +116,45 @@ function loadProjects(): ProjectInfo[] {
 // ============================================
 
 function loadMouseYaml(dir: string): MousePerms | null {
+  // Walk up: a session opened in A/config must still see A/mouse.yaml.
+  let cur = dir;
+  const stop = homedir();
+  for (;;) {
+    const perms = readMouseYaml(cur);
+    if (perms) return perms;
+    if (cur === stop || cur === dirname(cur)) return null;
+    cur = dirname(cur);
+  }
+}
+
+function readMouseYaml(dir: string): MousePerms | null {
   const path = join(dir, "mouse.yaml");
   if (!existsSync(path)) return null;
   try {
     const text = readFileSync(path, "utf8");
+    // Supported shapes (minimal parse — no YAML dep):
+    //   block:  "deny:" + "  - pattern" lines   |   inline:  deny: ["a", "b"]
+    // Unquoted/quoted scalars both accepted; other YAML forms are NOT parsed.
     const deny: string[] = [];
     const ask: string[] = [];
+    const push = (section: "deny" | "ask", raw: string) => {
+      const v = raw.replace(/^["']|["']$/g, "").trim();
+      if (v) (section === "deny" ? deny : ask).push(v);
+    };
     let section: "deny" | "ask" | null = null;
     for (const line of text.split("\n")) {
+      const inline = line.match(/^\s+(deny|ask):\s*\[(.*)\]\s*$/);
+      if (inline) {
+        for (const item of inline[2].split(",")) push(inline[1] as "deny" | "ask", item.trim());
+        section = null;
+        continue;
+      }
       if (line.match(/^\s+deny:\s*$/)) { section = "deny"; continue; }
       if (line.match(/^\s+ask:\s*$/)) { section = "ask"; continue; }
       if (line.match(/^\s+\w/)) { section = null; continue; }
       if (section) {
-        const m = line.match(/^\s+-\s+["']?(.+?)["']?\s*$/);
-        if (m) (section === "deny" ? deny : ask).push(m[1]);
+        const m = line.match(/^\s+-\s+(.+?)\s*$/);
+        if (m) push(section, m[1]);
       }
     }
     return { deny, ask };

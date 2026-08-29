@@ -29,7 +29,7 @@ type SpawnConfig struct {
 	SessionID      int64  // hmf session id
 	TaskMsgID      int64  // hmf task message id; spawned agent threads its done reply to this
 	OnExit         func(exitCode int)
-	AgentSessionID string // non-empty = resume this agent session (currently unused — resume disabled)
+	AgentSessionID string // non-empty = resume this agent session (opencode run -s)
 	SessionName    string // hmf session name (<prefix>-<project>) — passed as --title to opencode run for later lookup
 }
 
@@ -37,7 +37,7 @@ type SpawnConfig struct {
 // Channel/session IDs + runbook passed via env vars so the spawned agent
 // can read_channel, post_message back via hmf-mcp.
 // buildArgs picks binary + args for a spawn. Pure function for testability.
-// ponytail: only opencode supported; add runtime_<name>.go for others.
+// ponytail: runtimes live in runtime_<name>.go (opencode, claude).
 func buildArgs(cfg SpawnConfig) (bin string, args []string) {
 	bin = cfg.Binary
 	task := cfg.Task
@@ -49,6 +49,12 @@ func buildArgs(cfg SpawnConfig) (bin string, args []string) {
 		} else {
 			args = opencodeFreshArgs(task, cfg.Model, cfg.SessionName)
 		}
+	case isClaude(bin):
+		if cfg.AgentSessionID != "" {
+			args = claudeResumeArgs(cfg.AgentSessionID, task, cfg.Model)
+		} else {
+			args = claudeFreshArgs(task, cfg.Model)
+		}
 	default:
 		// Unknown runtime: no resume support. Run <bin> <task> directly.
 	}
@@ -59,13 +65,10 @@ func (l *Launcher) Spawn(ctx context.Context, cfg SpawnConfig) (int, error) {
 	if l.SpawnFn != nil {
 		return l.SpawnFn(cfg)
 	}
-	// Project-scope confinement: pin agent to registered dir so it can't
-	// edit a sibling clone / staw copy. Belt-and-suspenders with the plugin.
-	scope := "\n\n[PROJECT SCOPE] You are operating in the project directory: " + cfg.Dir + ". Edit ONLY files under this directory. If a requested target is outside " + cfg.Dir + " (a different clone, a deployed/stow copy, the home directory, an absolute path elsewhere), do NOT edit it — post a done reply stating the target is outside your project scope and giving the path you were asked to touch. Never edit files outside " + cfg.Dir + "."
-	// Reply protocol + MUST-REPLY rule: spawned agents have no TTY, so they
-	// can't answer bash:ask. Force a done reply on every exit path or the
-	// orchestrator polls forever.
-	replyProtocol := "\n\n[REPLY PROTOCOL] You MUST post a done reply before exiting — whether you completed the task, hit a blocker, or couldn't start. Thread it to your task (thread_id=" + fmt.Sprintf("%d", cfg.TaskMsgID) + "). Use the post_message MCP tool with status=\"done\" and a one-line summary (preferred — needs no shell permission, works under bash:ask). If blocked (permission denied, file not found, missing tool, command requires ask-approval you can't get), prefix the summary with \"BLOCKED: \" and state what stopped you. Alternatively, if you have shell access, run: hmf done \"<summary>\". Do NOT write python or heredocs to hit the daemon socket directly — the bash wrapper mangles multi-line commands. Never exit without posting a done reply."
+	// Scope: agent edits only its registered dir (belt-and-suspenders with the plugin).
+	scope := "\n\n[SCOPE] Only edit files under " + cfg.Dir + ". A target outside it (another clone, a deployed/stow copy, home dir, absolute path elsewhere) → do NOT edit it; reply BLOCKED with the path you were asked to touch."
+	// Reply rule: no TTY (can't answer bash:ask); no reply = parent polls forever.
+	replyProtocol := "\n\n[REPLY RULE] Before exiting, post_message with thread_id=" + fmt.Sprintf("%d", cfg.TaskMsgID) + ", status=\"done\", and a one-line summary. Blocked (permission denied, file missing, ask-approval you can't get) → start the summary with \"BLOCKED: \" and the reason. Shell access → `hmf done \"<summary>\"` also works. No reply = parent waits forever."
 	fullTask := cfg.Task + scope + replyProtocol
 	cfg.Task = fullTask // so buildArgs emits the full task string
 	bin, args := buildArgs(cfg)
@@ -76,8 +79,21 @@ func (l *Launcher) Spawn(ctx context.Context, cfg SpawnConfig) (int, error) {
 		return 0, fmt.Errorf("agent binary %q not found: %w", bin, err)
 	}
 	// Watchdog: kills hung resumed sessions (opencode run -s doesn't exit) so
-	// OnExit fires and the row isn't stuck "active" forever.
-	spawnCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	// OnExit fires and the row isn't stuck "active" forever. 60min default so
+	// legit long tasks survive; HMF_WATCHDOG overrides (Go duration, "0" = off).
+	watchdog := 60 * time.Minute
+	if v := os.Getenv("HMF_WATCHDOG"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			watchdog = d
+		}
+	}
+	var spawnCtx context.Context
+	var cancel context.CancelFunc
+	if watchdog <= 0 {
+		spawnCtx, cancel = context.WithCancel(ctx)
+	} else {
+		spawnCtx, cancel = context.WithTimeout(ctx, watchdog)
+	}
 	cmd := exec.CommandContext(spawnCtx, bin, args...)
 	cmd.Dir = cfg.Dir
 	// opencode reads $PWD (not getcwd) for project scoping — sync to cfg.Dir

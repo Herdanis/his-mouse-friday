@@ -2,9 +2,9 @@ agent:
   primary:
     provider: opencode
     model: default
-  secondary:
-    provider: ""
-    model: ""
+  # secondary:              # fallback when primary unavailable
+  #   provider: claude
+  #   model: default
 permissions:
   fs:
     deny:

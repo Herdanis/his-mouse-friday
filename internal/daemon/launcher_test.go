@@ -204,6 +204,37 @@ func TestLauncher_ResumeArgUsesSessionFlag(t *testing.T) {
 }
 
 // ============================================
+// Claude runtime arg construction
+// ============================================
+
+func TestLauncher_ClaudeArgs(t *testing.T) {
+	cfg := SpawnConfig{
+		Dir:            t.TempDir(),
+		Binary:         "claude",
+		Model:          "claude-sonnet-5",
+		Task:           "do thing",
+		AgentSessionID: "sess_abc123",
+	}
+	bin, args := buildArgs(cfg)
+	if bin != "claude" {
+		t.Fatalf("bin: got %q want claude", bin)
+	}
+	want := []string{"-p", "--resume", "sess_abc123", "--model", "claude-sonnet-5", "do thing"}
+	if !reflect.DeepEqual(args, want) {
+		t.Fatalf("resume args: got %v want %v", args, want)
+	}
+
+	// Fresh spawn: no --resume. Default model: no --model.
+	cfg.AgentSessionID = ""
+	cfg.Model = "default"
+	_, args = buildArgs(cfg)
+	want = []string{"-p", "do thing"}
+	if !reflect.DeepEqual(args, want) {
+		t.Fatalf("fresh args: got %v want %v", args, want)
+	}
+}
+
+// ============================================
 // captureAgentSessionID — post-spawn opencode session list query
 // ============================================
 

@@ -28,6 +28,7 @@ func NewRootCmd() *cobra.Command {
 	root.AddCommand(configCmd())
 	root.AddCommand(doneCmd())
 	root.AddCommand(sessionCmd())
+	root.AddCommand(taskCmd())
 	return root
 }
 
@@ -233,9 +234,9 @@ func initCmd() *cobra.Command {
   primary:
     provider: opencode
     model: default
-  secondary:
-    provider: ""
-    model: ""
+  # secondary:              # fallback when primary unavailable
+  #   provider: claude
+  #   model: default
 permissions:
   fs:
     deny:
@@ -356,4 +357,80 @@ func sessionCmd() *cobra.Command {
 	}
 	c.AddCommand(list)
 	return c
+}
+
+// taskCmd groups task subcommands for viewing shared todos bound to threads.
+func taskCmd() *cobra.Command {
+	c := &cobra.Command{Use: "task", Short: "View shared todos bound to task threads"}
+	list := &cobra.Command{
+		Use:   "list [thread_id]",
+		Short: "List todos (all threads with todos, or one thread)",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 0 {
+				result, err := protocol.Call("todo_threads", struct{}{})
+				if err != nil {
+					return err
+				}
+				var rows []struct {
+					ThreadID int64  `json:"thread_id"`
+					Preview  string `json:"preview"`
+					Done     int    `json:"done"`
+					Total    int    `json:"total"`
+				}
+				if err := json.Unmarshal(result, &rows); err != nil {
+					return fmt.Errorf("parse: %w", err)
+				}
+				if len(rows) == 0 {
+					fmt.Println("(no threads with todos)")
+					return nil
+				}
+				w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+				fmt.Fprintln(w, "THREAD\tDONE/TOTAL\tPREVIEW")
+				for _, r := range rows {
+					fmt.Fprintf(w, "%d\t%d/%d\t%s\n", r.ThreadID, r.Done, r.Total, r.Preview)
+				}
+				w.Flush()
+				return nil
+			}
+			return printThreadTodos(atoi64(args[0]))
+		},
+	}
+	show := &cobra.Command{
+		Use:   "show <thread_id>",
+		Short: "Show todos for a thread",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return printThreadTodos(atoi64(args[0]))
+		},
+	}
+	c.AddCommand(list)
+	c.AddCommand(show)
+	return c
+}
+
+func printThreadTodos(threadID int64) error {
+	result, err := protocol.Call("todo_list", map[string]any{"thread_id": threadID})
+	if err != nil {
+		return err
+	}
+	var todos []struct {
+		ID      int64  `json:"id"`
+		Content string `json:"content"`
+		State   string `json:"state"`
+	}
+	if err := json.Unmarshal(result, &todos); err != nil {
+		return fmt.Errorf("parse: %w", err)
+	}
+	if len(todos) == 0 {
+		fmt.Printf("(no todos for thread %d)\n", threadID)
+		return nil
+	}
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "ID\tSTATE\tCONTENT")
+	for _, t := range todos {
+		fmt.Fprintf(w, "%d\t%s\t%s\n", t.ID, t.State, t.Content)
+	}
+	w.Flush()
+	return nil
 }

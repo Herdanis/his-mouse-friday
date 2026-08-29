@@ -4,6 +4,7 @@ import (
 	"context"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // ============================================
@@ -81,4 +82,22 @@ func opencodeFindSessionByTitle(output, title string) string {
 		}
 	}
 	return ""
+}
+
+// runtimeModelAvailable probes whether a runtime can run a model.
+// checkable=false = no probe for this runtime (caller assumes available).
+// ponytail: opencode probe only; add per-runtime cases in runtime_<name>.go.
+func runtimeModelAvailable(binary, model string) (ok, checkable bool) {
+	if !isOpencode(binary) {
+		return true, false
+	}
+	// Bounded: this runs synchronously on the post_message request path
+	// (resolveAgent), so a hung `<binary> models` must not stall the caller.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, binary, "models").Output()
+	if err != nil {
+		return true, false // probe failed — assume available rather than block
+	}
+	return strings.Contains(string(out), model), true
 }

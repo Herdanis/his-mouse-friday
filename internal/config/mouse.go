@@ -15,7 +15,7 @@ type MouseConfig struct {
 
 type AgentConfig struct {
 	Primary   AgentTarget `yaml:"primary"`
-	Secondary AgentTarget `yaml:"secondary"`
+	Secondary AgentTarget `yaml:"secondary"` // fallback when primary unavailable (missing binary or model)
 }
 
 // AgentTarget identifies a coding agent runtime + model.
