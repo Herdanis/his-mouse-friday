@@ -39,6 +39,18 @@ type ListInput struct {
 	Workspace string `json:"workspace,omitempty" jsonschema:"workspace name filter"`
 }
 
+type TodoAddInput struct {
+	ThreadID int64  `json:"thread_id" jsonschema:"thread root message id — the task this todo belongs to"`
+	Content  string `json:"content" jsonschema:"one concrete work item"`
+}
+type TodoUpdateInput struct {
+	ID    int64  `json:"id" jsonschema:"todo id"`
+	State string `json:"state" jsonschema:"pending | done"`
+}
+type TodoListInput struct {
+	ThreadID int64 `json:"thread_id" jsonschema:"thread root message id"`
+}
+
 type MessageOutput struct {
 	ID          int64  `json:"id"`
 	ChannelID   int64  `json:"channel_id"`
@@ -62,6 +74,20 @@ type ProjectAgentOutput struct {
 
 type ProjectAgentsOutput struct {
 	Agents []ProjectAgentOutput `json:"agents"`
+}
+
+type TodoOutput struct {
+	ID        int64  `json:"id"`
+	ThreadID  int64  `json:"thread_id"`
+	Content   string `json:"content"`
+	State     string `json:"state"`
+	UpdatedAt string `json:"updated_at"`
+}
+type TodoAddOutput struct {
+	ID int64 `json:"id" jsonschema:"the created todo id (use for todo_update)"`
+}
+type TodosOutput struct {
+	Todos []TodoOutput `json:"todos"`
 }
 
 type PostOutput struct {
@@ -240,6 +266,46 @@ func newServer(callerID string) *mcpserver.Server {
 		return nil, ProjectAgentsOutput{Agents: agents}, nil
 	})
 
+	mcpserver.AddTool(srv, &mcpserver.Tool{
+		Name:        "todo_add",
+		Description: "Add a work item (todo) to a task thread. One todo = one concrete step. thread_id is the thread root message_id.",
+	}, func(ctx context.Context, req *mcpserver.CallToolRequest, in TodoAddInput) (*mcpserver.CallToolResult, TodoAddOutput, error) {
+		result, err := protocol.Call("todo_add", in)
+		if err != nil {
+			return nil, TodoAddOutput{}, err
+		}
+		var out TodoAddOutput
+		if err := json.Unmarshal(result, &out); err != nil {
+			return nil, TodoAddOutput{}, fmt.Errorf("decode todo_add: %w", err)
+		}
+		return nil, out, nil
+	})
+
+	mcpserver.AddTool(srv, &mcpserver.Tool{
+		Name:        "todo_update",
+		Description: "Mark a todo pending or done by id.",
+	}, func(ctx context.Context, req *mcpserver.CallToolRequest, in TodoUpdateInput) (*mcpserver.CallToolResult, struct{}, error) {
+		if _, err := protocol.Call("todo_update", in); err != nil {
+			return nil, struct{}{}, err
+		}
+		return nil, struct{}{}, nil
+	})
+
+	mcpserver.AddTool(srv, &mcpserver.Tool{
+		Name:        "todo_list",
+		Description: "List all todos for a thread (pass the thread root message_id).",
+	}, func(ctx context.Context, req *mcpserver.CallToolRequest, in TodoListInput) (*mcpserver.CallToolResult, TodosOutput, error) {
+		result, err := protocol.Call("todo_list", in)
+		if err != nil {
+			return nil, TodosOutput{}, err
+		}
+		var todos []TodoOutput
+		if err := json.Unmarshal(result, &todos); err != nil {
+			return nil, TodosOutput{}, fmt.Errorf("decode todo_list: %w", err)
+		}
+		return nil, TodosOutput{Todos: todos}, nil
+	})
+
 	return srv
 }
 
@@ -279,7 +345,9 @@ func ensureDaemon(ctx context.Context) {
 		return
 	}
 	fmt.Fprintln(os.Stderr, "hmf: daemon down, starting...")
-	cmd := exec.CommandContext(ctx, bin, "up")
+	// Plain Command (not CommandContext): the daemon must outlive this shim —
+	// other opencode sessions may share it. Release: shim never Waits the child.
+	cmd := exec.Command(bin, "up")
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	cmd.Stdin = nil
@@ -287,6 +355,7 @@ func ensureDaemon(ctx context.Context) {
 		fmt.Fprintf(os.Stderr, "hmf: failed to start daemon: %v\n", err)
 		return
 	}
+	_ = cmd.Process.Release()
 	// Wait up to 5s for the socket to accept.
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {

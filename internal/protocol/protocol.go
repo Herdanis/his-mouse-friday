@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 type Request struct {
@@ -60,6 +61,11 @@ func Call(method string, params any) (json.RawMessage, error) {
 		return nil, fmt.Errorf("daemon not running (run 'hmf up'): %w", err)
 	}
 	defer conn.Close()
+	// 30s cap: every current RPC is fast (spawn is async); a hung daemon must
+	// not block the CLI forever.
+	if err := conn.SetDeadline(time.Now().Add(30 * time.Second)); err != nil {
+		return nil, fmt.Errorf("set deadline: %w", err)
+	}
 	enc := json.NewEncoder(conn)
 	dec := json.NewDecoder(conn)
 	if err := enc.Encode(&Request{Method: method, Params: raw, ID: 1}); err != nil {
