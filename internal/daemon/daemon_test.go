@@ -609,6 +609,45 @@ func TestWakeAgent_TaskMsgIDMatchesRootForTaskStatus(t *testing.T) {
 	}
 }
 
+// A second task_status call for the same message_id, fired right after the
+// first, must not block again — it should return instantly. Otherwise two
+// back-to-back calls cost 2x the wait for no new information.
+func TestHandle_TaskStatusThrottlesRepeatCalls(t *testing.T) {
+	d := setupDaemon(t)
+	d.Registry.AddWorkspace("companyA")
+	userDir := t.TempDir()
+	os.WriteFile(filepath.Join(userDir, "mouse.yaml"),
+		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n"), 0644)
+	d.Registry.AddProject("companyA", "user-service", userDir)
+
+	d.Store.db.Exec(`INSERT INTO messages(id, channel_id, thread_id, from_project, to_project, content, status, ts)
+		VALUES(500, 1, NULL, 'companyA/payment', 'companyA/user-service', 'task', 'message', datetime('now'))`)
+	d.Store.db.Exec(`INSERT INTO sessions(project_id, agent_binary, model, status, pid, created_at, task_msg_id, root_thread_id)
+		VALUES((SELECT id FROM projects WHERE name='user-service'), 'opencode', 'default', 'active', 0, datetime('now'), 500, 500)`)
+
+	params, _ := json.Marshal(map[string]any{"message_id": 500, "wait_seconds": 3})
+
+	start1 := time.Now()
+	resp1 := d.Handle(context.Background(), protocol.Request{Method: "task_status", Params: params, ID: 1})
+	elapsed1 := time.Since(start1)
+	if resp1.Error != nil {
+		t.Fatalf("first call: %s", resp1.Error.Message)
+	}
+	if elapsed1 < 3*time.Second {
+		t.Fatalf("first call returned in %v, expected it to block out wait_seconds=3 (nothing terminal)", elapsed1)
+	}
+
+	start2 := time.Now()
+	resp2 := d.Handle(context.Background(), protocol.Request{Method: "task_status", Params: params, ID: 2})
+	elapsed2 := time.Since(start2)
+	if resp2.Error != nil {
+		t.Fatalf("second call: %s", resp2.Error.Message)
+	}
+	if elapsed2 > 500*time.Millisecond {
+		t.Fatalf("second call (immediately after first) blocked for %v, expected instant (throttled)", elapsed2)
+	}
+}
+
 // task_status with wait_seconds must return as soon as has_done flips, not
 // sleep out the full wait.
 func TestHandle_TaskStatusBlocksUntilDone(t *testing.T) {

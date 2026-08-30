@@ -10,11 +10,22 @@ editing foreign code directly.
 - **Go 1.26+** — the installer fetches it for you if missing
 - **opencode** — the agent runtime (spawned per task)
 - **python3** — used by the protection plugin for daemon socket calls
+- **sqlite3 CLI** — used by the protection plugin to read the project
+  registry directly (faster than a daemon round-trip). Optional: falls back
+  to a daemon socket call if missing, just slower.
+- **curl** — used by `scripts/install.sh` to fetch Go and the plugin/command
+  files. Install-time only, not needed at runtime.
+- **macOS**, optional — `hmf watch` fires a desktop notification via
+  `osascript` (built into macOS, nothing extra to install) when a watched
+  task finishes. On other platforms `hmf watch` still works, it just skips
+  the notification.
 
 Verify:
 
     opencode --version
     python3 --version
+    sqlite3 --version
+    curl --version
 
 ## Install
 
@@ -106,6 +117,21 @@ After `make install`, in any opencode session:
 - `AGENTS.md` — OpenCode instruction file (references MOUSE.md)
 
 See `examples/`.
+
+## Waiting on a task without polling
+
+An AI orchestrator polling `task_status` in a loop costs tokens on every
+check. If a human is the one actually waiting, skip that entirely:
+
+```bash
+hmf watch <message_id>
+```
+
+Blocks in its own terminal (zero LLM cost — it's a plain CLI loop, not an
+agent), checks the daemon every ~2min, and fires a macOS desktop
+notification the moment the task's `done` reply lands (or if it ends
+without one). Get the `message_id` from whatever posted the task
+(`post_message`'s return value, or `hmf task list` / `hmf session list`).
 
 ## Troubleshooting
 

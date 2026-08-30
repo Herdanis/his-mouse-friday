@@ -95,7 +95,7 @@ type PostOutput struct {
 }
 type TaskStatusInput struct {
 	MessageID   int64 `json:"message_id" jsonschema:"any message id on the thread (root or reply) — the handler resolves it to the thread root"`
-	WaitSeconds int64 `json:"wait_seconds,omitempty" jsonschema:"optional: block server-side up to this many seconds (capped at 120) until has_done or a terminal agent_status, instead of an instant snapshot. If has_done is still false, call again — that's the normal poll loop, no sleep needed."`
+	WaitSeconds int64 `json:"wait_seconds,omitempty" jsonschema:"optional: block server-side up to this many seconds (capped at 120) until has_done or a terminal agent_status, instead of an instant snapshot. If has_done is still false, wait roughly 5 minutes before calling again for the same message_id — calling sooner returns instantly with no new information (server-side throttle), so nothing is gained by retrying faster."`
 }
 type TaskStatusOutput struct {
 	HasDone     bool   `json:"has_done"`

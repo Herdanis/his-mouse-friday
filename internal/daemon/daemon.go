@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -98,6 +99,10 @@ type Daemon struct {
 	ModelProbe func(binary, model string) (ok, checkable bool)
 	Sock       string
 	shutdownCh chan struct{}
+	// lastPollAt throttles task_status: a repeat call for the same message_id
+	// within minTaskStatusPollInterval skips blocking and returns instantly.
+	pollMu     sync.Mutex
+	lastPollAt map[int64]time.Time
 }
 
 // NewDaemon wires a Daemon with default components for the given socket + db.
@@ -529,6 +534,13 @@ const maxTaskStatusWait = 2 * time.Minute
 // taskStatusPollInterval is how often a blocking task_status re-checks the DB.
 const taskStatusPollInterval = 2 * time.Second
 
+// minTaskStatusPollInterval: a repeat call for the same message_id sooner
+// than this since the last call skips blocking and returns instantly. Can't
+// stop a caller from calling again immediately, but can make doing so
+// pointless — no reason to hammer a call that returns the same snapshot with
+// zero wait each time.
+const minTaskStatusPollInterval = 5 * time.Minute
+
 // handleTaskStatus reports agent state (working/exited/failed/no_agent) +
 // done reply presence. wait_seconds > 0 blocks server-side (capped at
 // maxTaskStatusWait) until has_done or a terminal agent_status.
@@ -540,8 +552,20 @@ func (d *Daemon) handleTaskStatus(ctx context.Context, req protocol.Request) pro
 	if p.MessageID == 0 {
 		return errResp(req.ID, "message_id is required")
 	}
-	deadline := time.Now()
-	if p.WaitSeconds > 0 {
+	now := time.Now()
+	d.pollMu.Lock()
+	last, seen := d.lastPollAt[p.MessageID]
+	throttled := seen && now.Sub(last) < minTaskStatusPollInterval
+	if !throttled {
+		if d.lastPollAt == nil {
+			d.lastPollAt = make(map[int64]time.Time)
+		}
+		d.lastPollAt[p.MessageID] = now
+	}
+	d.pollMu.Unlock()
+
+	deadline := now
+	if p.WaitSeconds > 0 && !throttled {
 		wait := min(time.Duration(p.WaitSeconds)*time.Second, maxTaskStatusWait)
 		deadline = deadline.Add(wait)
 	}

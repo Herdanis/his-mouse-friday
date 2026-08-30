@@ -5,10 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/herdanis/his-mouse-friday/internal/config"
 	"github.com/herdanis/his-mouse-friday/internal/daemon"
@@ -29,6 +32,7 @@ func NewRootCmd() *cobra.Command {
 	root.AddCommand(doneCmd())
 	root.AddCommand(sessionCmd())
 	root.AddCommand(taskCmd())
+	root.AddCommand(watchCmd())
 	return root
 }
 
@@ -333,6 +337,61 @@ func doneCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// watchCmd blocks in a terminal (human-run, zero LLM cost) until a task's
+// done reply lands, then fires a desktop notification. Alternative to an
+// orchestrator polling task_status itself.
+func watchCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "watch <message_id>",
+		Short: "Block until a delegated task finishes, then fire a desktop notification",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			msgID, err := strconv.ParseInt(args[0], 10, 64)
+			if err != nil {
+				return fmt.Errorf("invalid message_id %q: %w", args[0], err)
+			}
+			fmt.Printf("watching message %d — Ctrl-C to stop\n", msgID)
+			for {
+				result, err := protocol.CallWithTimeout("task_status",
+					map[string]any{"message_id": msgID, "wait_seconds": 120}, 130*time.Second)
+				if err != nil {
+					return fmt.Errorf("task_status: %w", err)
+				}
+				var ts struct {
+					HasDone     bool   `json:"has_done"`
+					AgentStatus string `json:"agent_status"`
+				}
+				if err := json.Unmarshal(result, &ts); err != nil {
+					return fmt.Errorf("decode task_status: %w", err)
+				}
+				now := time.Now().Format("15:04:05")
+				switch {
+				case ts.HasDone:
+					fmt.Printf("[%s] done (agent_status=%s)\n", now, ts.AgentStatus)
+					notify("hmf: task done", fmt.Sprintf("message %d finished (%s)", msgID, ts.AgentStatus))
+					return nil
+				case ts.AgentStatus == "exited" || ts.AgentStatus == "failed" || ts.AgentStatus == "no_agent":
+					fmt.Printf("[%s] ended without a done reply (agent_status=%s)\n", now, ts.AgentStatus)
+					notify("hmf: task ended without reply", fmt.Sprintf("message %d — agent_status=%s", msgID, ts.AgentStatus))
+					return nil
+				default:
+					fmt.Printf("[%s] still working...\n", now)
+				}
+			}
+		},
+	}
+}
+
+// notify fires a best-effort OS desktop notification. No-op if the platform
+// isn't supported — this is a convenience, never load-bearing.
+func notify(title, message string) {
+	if runtime.GOOS != "darwin" {
+		return
+	}
+	script := fmt.Sprintf("display notification %q with title %q sound name \"Glass\"", message, title)
+	_ = exec.Command("osascript", "-e", script).Run()
 }
 
 func atoi64(s string) int64 {
