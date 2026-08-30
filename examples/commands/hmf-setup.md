@@ -16,7 +16,36 @@ Run: `hmf status`
 - If it fails: respond "Daemon not running. Run `hmf up` in a separate terminal, then run /hmf-setup again." and STOP.
 - If running: say "Daemon running." and continue.
 
-## Step 2: Workspace
+## Step 2: Check hmf plugin
+
+The hmf plugin (`plugins/hmf/plugin.ts`) is what actually enforces edit/bash
+protection and mouse.yaml's deny/ask lists at the code level. Without it,
+registering a project in Step 3 only *claims* to be guarded — nothing
+blocks anything. Check both that it's installed and that it's wired in.
+
+Run:
+
+```
+OPENCODE_CONFIG="${OPENCODE_CONFIG:-$HOME/.config/opencode}"
+test -f "$OPENCODE_CONFIG/plugins/hmf/plugin.ts" && echo "FILE: ok" || echo "FILE: missing"
+CFG="$OPENCODE_CONFIG/opencode.jsonc"; [ -f "$CFG" ] || CFG="$OPENCODE_CONFIG/opencode.json"
+echo "CFG: $CFG"
+grep -Fq "plugins/hmf/plugin.ts" "$CFG" 2>/dev/null && echo "WIRED: ok" || echo "WIRED: missing"
+```
+
+- `FILE: missing` → respond "hmf plugin not installed. Run `./scripts/install.sh`
+  from the his-mouse-friday repo (or re-run it if already installed once),
+  then run /hmf-setup again." and STOP.
+- `FILE: ok` and `WIRED: missing` → respond exactly:
+  ```
+  hmf plugin installed but not wired in. Add "./plugins/hmf/plugin.ts" to the
+  plugin[] array in <CFG path from above>, then run /hmf-setup again.
+  ```
+  and STOP. Do NOT edit `<CFG>` yourself — it may be JSONC (comments/trailing
+  commas) and a naive rewrite can corrupt it.
+- `FILE: ok` and `WIRED: ok` → say "hmf plugin active." and continue.
+
+## Step 3: Workspace
 
 Run: `hmf workspace list`
 
@@ -35,7 +64,7 @@ Pick a number:
 
 Wait for the user's answer.
 
-## Step 3: Project name
+## Step 4: Project name
 
 Run: `basename "$(pwd)"`
 
@@ -55,10 +84,13 @@ Pick a number:
 Then run: `hmf project add <name> "$(pwd)" --workspace <ws>`
 
 - Error → show it, ask for a different name.
-- Success → continue. The project is now auto-guarded (direct edits from
-  outside blocked via global opencode.json). No need to run 'hmf guard'.
+- Success → continue. The project is now auto-guarded (direct edits/commands
+  from outside blocked by the hmf plugin, `plugins/hmf/plugin.ts`, reading
+  the registry) — provided that plugin is installed and wired into
+  `~/.config/opencode/opencode.jsonc`'s `plugin[]` array (`install.sh` does
+  this; not verified by this wizard). No need to run 'hmf guard'.
 
-## Step 4: Permissions
+## Step 5: Permissions
 
 Before writing config files, ask the user what this project's agent should NOT do. Three questions. Each question: user types patterns (comma-separated), enters for defaults, or types "allow" to allow all (no restrictions).
 
@@ -69,7 +101,9 @@ Show the user:
 ```
 Commands to DENY (agent cannot run these):
 Type patterns separated by commas, or:
-  - press enter for defaults: kubectl delete, kubectl apply, gcloud * delete, aws * delete
+  - press enter for defaults: kubectl delete, kubectl apply, gcloud * delete, aws * delete,
+    rm -rf /, rm -rf ~, git push --force, git push -f, git reset --hard, git clean -fd,
+    git clean -xfd, sudo, chmod -R 777, dd if=, mkfs, shutdown, reboot
   - type "allow" to deny nothing (allow all commands)
 ```
 
@@ -84,7 +118,7 @@ Show the user:
 ```
 Commands to ASK before running (agent needs approval):
 Type patterns separated by commas, or:
-  - press enter for default: kubectl scale
+  - press enter for defaults: kubectl scale, rm -rf, git push, npm publish, docker system prune
   - type "allow" to ask for nothing (no approval needed)
 ```
 
@@ -107,9 +141,9 @@ Type patterns separated by commas, or:
 - Enter (empty) → use defaults shown.
 - "allow" → empty deny list (no files blocked).
 
-Store the three answers. Use them when writing mouse.yaml + opencode.json in Step 5.
+Store the three answers. Use them when writing mouse.yaml + opencode.json in Step 6.
 
-## Step 5: Write config files
+## Step 6: Write config files
 
 Run: `ls mouse.yaml MOUSE.md AGENTS.md opencode.json 2>/dev/null`
 
@@ -117,7 +151,7 @@ Write all missing files immediately. Do NOT ask which ones. Do NOT show file con
 
 For each file that ALREADY exists, skip it.
 
-### If mouse.yaml is missing, write it using the user's answers from Step 4.
+### If mouse.yaml is missing, write it using the user's answers from Step 5.
 
 Use this structure, filling in the deny/ask lists from what the user answered:
 
@@ -210,9 +244,9 @@ If still unclear, write a best guess based on project name + "(review needed)".>
 - If none found, write "No external service dependencies detected.">
 
 ## Guardrails
-<Commands the agent CANNOT run (from Step 4 deny list)
-- Commands requiring approval (from Step 4 ask list)
-- Files the agent CANNOT access (from Step 4 file deny list)
+<Commands the agent CANNOT run (from Step 5 deny list)
+- Commands requiring approval (from Step 5 ask list)
+- Files the agent CANNOT access (from Step 5 file deny list)
 - A2A policy: inbound=<allow_inbound>, outbound=<allow_outbound>
 - Rule: do NOT modify other services directly — engage their agent via hmf
 - Rule: if unsure, ask the user before making changes outside src/
@@ -239,33 +273,32 @@ Rules:
 See ./MOUSE.md for this project's agent guide and ownership scope.
 ```
 
-### Generate opencode.json (command enforcement)
-
-Use the command deny/ask lists from Step 4 (the same answers used for mouse.yaml). Do NOT re-read mouse.yaml — use the stored answers.
+### Generate opencode.json (stays permissive — mouse.yaml is the real gate)
 
 If `opencode.json` already exists in the repo root, skip this step (don't overwrite user's config). Note it was skipped.
 
-If it does NOT exist, write `opencode.json` with this structure (use the actual patterns from Step 4):
+If it does NOT exist, write `opencode.json` with this exact structure:
 
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
   "permission": {
     "bash": {
-      "<deny-pattern-1>": "deny",
-      "<deny-pattern-2>": "deny",
-      "<ask-pattern-1>": "ask",
-      "*": "ask"
-    }
+      "*": "allow"
+    },
+    "edit": "allow"
   }
 }
 ```
 
-Rules:
-- Every pattern from `commands.deny` → value `"deny"`.
-- Every pattern from `commands.ask` → value `"ask"`.
-- Add `"*": "ask"` as the last entry (default: ask for anything not explicitly allowed).
-- If both deny and ask lists are empty, still write `"*": "ask"` so the agent asks before running unknown commands.
+Do NOT put the Step 5 deny/ask patterns here as `"deny"`/`"ask"` values. hmf-spawned
+agents run headless (`opencode run`, no TTY) — an opencode-native `ask` on any
+pattern hangs/stalls exactly like a blanket `"*": "ask"` would, since there's
+nobody to answer the prompt. The Step 5 patterns are already enforced at the
+code level by the hmf plugin (`plugins/hmf/plugin.ts`) reading `mouse.yaml`'s
+`commands.deny`/`ask` — that's the actual gate, and it fails with a clean
+error back to the agent instead of hanging. `opencode.json` here only needs
+to stay out of the way.
 
 After writing, report ONLY this line (listing only files you wrote):
 
@@ -273,7 +306,7 @@ After writing, report ONLY this line (listing only files you wrote):
 Wrote: mouse.yaml, MOUSE.md, AGENTS.md, opencode.json
 ```
 
-## Step 6: Done
+## Step 7: Done
 
 Print exactly:
 

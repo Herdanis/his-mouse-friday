@@ -172,6 +172,37 @@ function commandMatchesPattern(cmd: string, pattern: string): boolean {
 }
 
 // ============================================
+// Cross-project path detection (shared by edit + bash)
+// ============================================
+
+function findProjectFor(abs: string, projects: ProjectInfo[]): ProjectInfo | undefined {
+  return projects.find((p) => abs === p.path || abs.startsWith(p.path + "/"));
+}
+
+// Pulls path-looking args out of a shell command: terraform -chdir=X, docker
+// compose -f X, bash X, ./script.sh, etc. Only tokens that exist on disk are
+// treated as paths — filters out flags, URLs, and image refs like "a/b:tag".
+// ponytail: whitespace/quote split, not a real shell parser — good enough for
+// the common `-flag=path` / `-flag path` / bare-path shapes.
+function extractPathCandidates(cmd: string, cwd: string): string[] {
+  const tokens = cmd.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) ?? [];
+  const out: string[] = [];
+  for (let raw of tokens) {
+    let t = raw.replace(/^["']|["']$/g, "");
+    if (t.startsWith("-")) {
+      const eq = t.indexOf("=");
+      if (eq === -1) continue; // bare flag, e.g. "-f" — value is the next token
+      t = t.slice(eq + 1);
+    }
+    if (t.startsWith("@")) t = t.slice(1); // curl -d @path, etc.
+    if (!t || !(t.includes("/") || t === "." || t.startsWith("."))) continue;
+    const abs = resolve(cwd, t);
+    if (existsSync(abs)) out.push(abs);
+  }
+  return out;
+}
+
+// ============================================
 // Plugin
 // ============================================
 
@@ -191,39 +222,26 @@ export const HmfProtection: Plugin = async ({ directory }) => {
         const abs = resolve(filePath);
         const cwd = process.cwd();
 
-        // Case 1: am I a project's own agent (cwd inside a registered project)?
-        // Then confine edits to that project. Blocks edits to a sibling clone /
-        // stow-deployed copy / home dir — the agent must edit its registered
-        // repo, not a different clone of the same files.
-        const myProject = projects.find(
-          (p) => cwd === p.path || cwd.startsWith(p.path + "/"),
-        );
-        if (myProject) {
-          const inside = abs === myProject.path || abs.startsWith(myProject.path + "/");
-          if (!inside) {
-            throw new Error(
-              `hmf: blocked edit OUTSIDE your project ${myProject.workspace}/${myProject.name}. ` +
-              `You are operating in ${myProject.path}; edit only within it. ` +
-              `Target was ${abs}. (If this is a deployed/stow copy or a different clone, ` +
-              `edit the registered repo path instead.)`,
-            );
-          }
-          return; // inside my own project → allow
-        }
+        // Guard applies ONLY when the edit target falls inside a registered
+        // project. Unregistered targets (scratch files, dotfiles, /tmp, a
+        // different clone outside the registry) are never blocked — hmf has
+        // no opinion on paths it doesn't own.
+        const targetProject = findProjectFor(abs, projects);
+        if (!targetProject) return; // not a registered project → allow
 
-        // Case 2: open mode (cwd not in any registered project). Block edits
-        // INTO registered projects — must delegate via engage_project_agent.
-        const targetProject = projects.find(
-          (p) => abs === p.path || abs.startsWith(p.path + "/"),
+        const myProject = findProjectFor(cwd, projects);
+
+        // Case 1: editing my own registered project → allow.
+        if (myProject && myProject.path === targetProject.path) return;
+
+        // Case 2: cwd outside targetProject (either a different registered
+        // project, or open/unregistered mode) → block, delegate instead.
+        throw new Error(
+          `hmf: blocked edit to ${targetProject.workspace}/${targetProject.name} — ` +
+          `this is a registered project` +
+          (myProject ? ` (you are ${myProject.workspace}/${myProject.name})` : "") +
+          `. Use engage_project_agent to delegate. Target was ${abs}.`,
         );
-        if (targetProject) {
-          throw new Error(
-            `hmf: blocked edit to ${targetProject.workspace}/${targetProject.name} — ` +
-            `this is a registered project. Use engage_project_agent to delegate.`,
-          );
-        }
-        // open mode, unregistered target → allow
-        return;
       }
 
       // ============================================
@@ -234,6 +252,24 @@ export const HmfProtection: Plugin = async ({ directory }) => {
         if (!cmd) return;
 
         const cwd = process.cwd();
+
+        // Cross-project path guard — same rule as edit: a command that
+        // touches a path inside a registered project other than my own
+        // (terraform -chdir, docker compose -f, `bash script.sh`, ...) is
+        // blocked. Delegate to that project's agent instead.
+        const myProject = findProjectFor(cwd, projects);
+        for (const abs of extractPathCandidates(cmd, cwd)) {
+          const targetProject = findProjectFor(abs, projects);
+          if (!targetProject) continue;
+          if (myProject && myProject.path === targetProject.path) continue;
+          throw new Error(
+            `hmf: blocked command touching ${targetProject.workspace}/${targetProject.name} — ` +
+            `this is a registered project` +
+            (myProject ? ` (you are ${myProject.workspace}/${myProject.name})` : "") +
+            `. Use engage_project_agent to delegate. Command: "${cmd}", path: ${abs}.`,
+          );
+        }
+
         const mouse = loadMouseYaml(cwd);
         if (!mouse) return;
 

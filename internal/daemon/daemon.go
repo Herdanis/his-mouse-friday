@@ -315,6 +315,23 @@ func (d *Daemon) handlePost(ctx context.Context, req protocol.Request) protocol.
 		}
 		chID = gen.ID
 	}
+	// Auto-fill `to` on thread replies that omitted it: address whoever the
+	// thread root didn't come from, so a bare reply on an existing thread
+	// still wakes the right project instead of silently going nowhere.
+	// Skip on "done" — that's the worker's own completion notice, and
+	// auto-resolving it back to the (often registered) originator would
+	// wake that project's agent too, an unrequested reply-loop.
+	if p.To == "" && p.ThreadID != 0 && p.Status != "done" {
+		if root, err := d.Comms.GetMessage(p.ThreadID); err == nil {
+			other := root.ToProject
+			if other == "" || other == p.From {
+				other = root.FromProject
+			}
+			if other != "" && other != p.From {
+				p.To = other
+			}
+		}
+	}
 	// Canonicalize `to` before save: bare names resolve against the registry
 	// (1 → auto, 2+ → ambiguous error listing candidates). Stored msg stays canonical.
 	if p.To != "" {

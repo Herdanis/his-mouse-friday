@@ -109,21 +109,24 @@ See `examples/`.
 
 ## TODOs
 
-- [ ] **Enforce edit protection for registered projects from unregistered dirs.**
-  opencode's `edit` permission is a global string (`allow`/`ask`/`deny`), not
-  path-scoped. Global `deny` + per-repo `allow` doesn't reliably block edits
-  from parent/unregistered dirs in practice. Need a plugin/hook or different
-  approach (e.g. opencode plugin that intercepts edit calls and checks hmf
-  registry, or filesystem-level enforcement).
+- [x] **Enforce edit protection for registered projects from unregistered dirs.**
+  Fixed via `examples/plugins/hmf/plugin.ts` — an opencode plugin that
+  intercepts `edit` and `bash` calls and checks target paths against the hmf
+  registry (edit) plus path args extracted from the command (bash: `terraform
+  -chdir`, `docker compose -f`, `bash script.sh`, ...). Blocks only when the
+  target resolves inside a *registered* project other than the caller's own;
+  unregistered paths are untouched.
 
 - [ ] **Fix auto-spawn reliability.** Engaged agent sometimes doesn't post back
   (`in_progress`/`done`) when auto-spawned by `engage_project_agent` vs
   running `opencode run` manually. Likely prompt-engineering — the task
   prompt needs explicit instructions to use hmf tools.
 
-- [ ] **Thread `to` field through `post_message` auto-fill.** Reply messages
-  have empty `ToProject` — agent doesn't specify recipient. Could auto-fill
-  from the channel's other party.
+- [x] **Thread `to` field through `post_message` auto-fill.** Fixed in
+  `internal/daemon/daemon.go:handlePost` — a reply that omits `to` now
+  resolves it from the thread root (the other party relative to `from`),
+  skipped for `status=done` to avoid waking the originator back on a
+  worker's completion notice.
 
 - [ ] **Session resume.** User should be able to reopen any spawned agent's
   session (`hmf session attach <id>`) and continue directly.

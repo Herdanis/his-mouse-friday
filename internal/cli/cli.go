@@ -248,8 +248,25 @@ permissions:
       - "kubectl apply"
       - "gcloud * delete"
       - "aws * delete"
+      - "rm -rf /"
+      - "rm -rf ~"
+      - "git push --force"
+      - "git push -f"
+      - "git reset --hard"
+      - "git clean -fd"
+      - "git clean -xfd"
+      - "sudo"
+      - "chmod -R 777"
+      - "dd if="
+      - "mkfs"
+      - "shutdown"
+      - "reboot"
     ask:
       - "kubectl scale"
+      - "rm -rf"
+      - "git push"
+      - "npm publish"
+      - "docker system prune"
 a2a:
   allow_inbound: false
   allow_outbound: true

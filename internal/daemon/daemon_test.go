@@ -576,6 +576,76 @@ func TestHandle_ReplyWithToWakesAgent(t *testing.T) {
 	}
 }
 
+// A reply that forgets `to` should still wake the thread's original
+// recipient — this is the auto-spawn bug: retries posted as bare thread
+// replies (no `to`) silently went nowhere.
+func TestHandle_ReplyWithoutToAutoFillsFromRoot(t *testing.T) {
+	d := setupDaemon(t)
+	d.Registry.AddWorkspace("companyA")
+	userDir := t.TempDir()
+	os.WriteFile(filepath.Join(userDir, "mouse.yaml"),
+		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n"), 0644)
+	d.Registry.AddProject("companyA", "user-service", userDir)
+
+	// Seed: thread root 500 addressed to user-service, agent already exited.
+	d.Store.db.Exec(`INSERT INTO messages(id, channel_id, thread_id, from_project, to_project, content, status, ts)
+		VALUES(500, 1, NULL, 'companyA/payment', 'companyA/user-service', 'task', 'message', datetime('now'))`)
+	d.Store.db.Exec(`INSERT INTO sessions(project_id, agent_binary, model, status, pid, created_at, task_msg_id, root_thread_id)
+		VALUES((SELECT id FROM projects WHERE name='user-service'), 'opencode', 'default', 'exited', 0, datetime('now'), 500, 500)`)
+
+	// Follow-up reply with NO `to` — should still wake user-service.
+	params, _ := json.Marshal(map[string]any{
+		"channel": 1, "thread_id": 500, "from": "companyA/payment",
+		"status": "in_progress", "content": "retry, still nothing happened",
+	})
+	resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: params, ID: 1})
+	if resp.Error != nil {
+		t.Fatalf("post: %s", resp.Error.Message)
+	}
+	var sessCount int
+	d.Store.db.QueryRow(`SELECT count(*) FROM sessions WHERE root_thread_id=500`).Scan(&sessCount)
+	if sessCount != 2 {
+		t.Fatalf("expected auto-filled `to` to wake user-service, got %d sessions for thread 500", sessCount)
+	}
+}
+
+// The worker's own `done` reply must NOT auto-fill `to` — resolving it back
+// to the (often registered) originator would wake that project's agent too,
+// an unrequested reply-loop.
+func TestHandle_DoneReplyWithoutToDoesNotAutoWake(t *testing.T) {
+	d := setupDaemon(t)
+	d.Registry.AddWorkspace("companyA")
+	userDir := t.TempDir()
+	os.WriteFile(filepath.Join(userDir, "mouse.yaml"),
+		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n"), 0644)
+	d.Registry.AddProject("companyA", "user-service", userDir)
+	// payment is registered too — proves a done reply doesn't wake it back.
+	paymentDir := t.TempDir()
+	os.WriteFile(filepath.Join(paymentDir, "mouse.yaml"),
+		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n"), 0644)
+	d.Registry.AddProject("companyA", "payment", paymentDir)
+
+	d.Store.db.Exec(`INSERT INTO messages(id, channel_id, thread_id, from_project, to_project, content, status, ts)
+		VALUES(500, 1, NULL, 'companyA/payment', 'companyA/user-service', 'task', 'message', datetime('now'))`)
+	d.Store.db.Exec(`INSERT INTO sessions(project_id, agent_binary, model, status, pid, created_at, task_msg_id, root_thread_id)
+		VALUES((SELECT id FROM projects WHERE name='user-service'), 'opencode', 'default', 'exited', 0, datetime('now'), 500, 500)`)
+
+	// Worker's completion reply — no `to`, status=done.
+	params, _ := json.Marshal(map[string]any{
+		"channel": 1, "thread_id": 500, "from": "companyA/user-service",
+		"status": "done", "content": "done, files changed: x.go",
+	})
+	resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: params, ID: 1})
+	if resp.Error != nil {
+		t.Fatalf("post: %s", resp.Error.Message)
+	}
+	var sessCount int
+	d.Store.db.QueryRow(`SELECT count(*) FROM sessions WHERE root_thread_id=500`).Scan(&sessCount)
+	if sessCount != 1 {
+		t.Fatalf("done reply must not auto-wake originator, got %d sessions for thread 500", sessCount)
+	}
+}
+
 // ============================================
 // Wake guard — no wake on active session (done threads ARE re-wakeable)
 // ============================================

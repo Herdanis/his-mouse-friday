@@ -54,6 +54,17 @@ func (c *Comms) ReadChannel(channelID int64, since time.Time) ([]Message, error)
 	return scanMessages(rows)
 }
 
+// GetMessage fetches a single message by id (used to resolve a thread's root
+// when a reply omits `to`).
+func (c *Comms) GetMessage(id int64) (Message, error) {
+	var m Message
+	err := c.Store.db.QueryRow(
+		`SELECT id, channel_id, IFNULL(thread_id,0), from_project, IFNULL(to_project,''), content, status, ts
+		 FROM messages WHERE id=?`, id).
+		Scan(&m.ID, &m.ChannelID, &m.ThreadID, &m.FromProject, &m.ToProject, &m.Content, &m.Status, &m.TS)
+	return m, err
+}
+
 func (c *Comms) ReadThread(threadID int64) ([]Message, error) {
 	rows, err := c.Store.db.Query(
 		`SELECT id, channel_id, IFNULL(thread_id,0), from_project, IFNULL(to_project,''), content, status, ts
