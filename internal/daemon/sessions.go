@@ -17,7 +17,7 @@ type Session struct {
 	// resume, plus human-friendly name + random prefix for tracing siblings.
 	AgentSessionID string
 	Name           string
-	ParentID   int64
+	ParentID       int64
 	Prefix         string
 }
 

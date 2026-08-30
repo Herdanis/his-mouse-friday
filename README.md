@@ -107,6 +107,34 @@ After `make install`, in any opencode session:
 
 See `examples/`.
 
+## Troubleshooting
+
+**A session shows `active` in `hmf session list` but nothing's happening.**
+Usually a daemon restart orphaned it — the goroutine watching that spawned
+process died with the old daemon, so its real exit was never observed. Fix:
+
+```bash
+hmf down && hmf up
+```
+
+Every startup runs `reconcileOrphanedSessions()`: any `active` session whose
+PID is no longer alive gets marked `exited` (if a done reply already landed)
+or `failed` + a synthetic `BLOCKED` reply (if not). Doesn't disrupt other
+live agents — they don't hold a persistent daemon connection.
+
+Manual fix without restarting, if needed:
+
+```bash
+# find it
+sqlite3 ~/.hmf/hmf.db "SELECT id,pid,root_thread_id FROM sessions WHERE status='active';"
+# confirm it's actually dead
+ps -p <pid>
+# dead + done reply already exists for its thread → exited
+sqlite3 ~/.hmf/hmf.db "UPDATE sessions SET status='exited', exit_code=0 WHERE id=<id>;"
+# dead + no done reply → failed (redispatch the task)
+sqlite3 ~/.hmf/hmf.db "UPDATE sessions SET status='failed', exit_code=-1 WHERE id=<id>;"
+```
+
 ## TODOs
 
 - [x] **Enforce edit protection for registered projects from unregistered dirs.**

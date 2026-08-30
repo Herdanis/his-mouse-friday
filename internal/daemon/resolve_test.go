@@ -62,7 +62,7 @@ func TestResolveAgent_SecondaryDuplicateDropped(t *testing.T) {
 	// Secondary identical to primary → only one candidate; even with the
 	// model probe saying unavailable, result stays primary (no fallback loop).
 	d := &Daemon{
-		LookPath: okLookPath(),
+		LookPath:   okLookPath(),
 		ModelProbe: func(string, string) (bool, bool) { return false, true },
 	}
 	mouse := &config.MouseConfig{Agent: config.AgentConfig{

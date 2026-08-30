@@ -27,7 +27,7 @@ type PostInput struct {
 	To       string `json:"to,omitempty" jsonschema:"recipient workspace/project — a thread root with a to wakes that agent"`
 	Content  string `json:"content" jsonschema:"message content"`
 	Status   string `json:"status,omitempty" jsonschema:"delivered | in_progress | done | message (default)"`
-	ParentID   int64  `json:"root_id,omitempty" jsonschema:"set by hmf-mcp from HMF_TASK_MSG_ID when caller is a spawned agent — leave empty in user-initiated sessions"`
+	ParentID int64  `json:"root_id,omitempty" jsonschema:"set by hmf-mcp from HMF_TASK_MSG_ID when caller is a spawned agent — leave empty in user-initiated sessions"`
 }
 type ReadChanInput struct {
 	Channel int64 `json:"channel,omitempty" jsonschema:"channel id (defaults to the global general channel)"`
@@ -94,7 +94,8 @@ type PostOutput struct {
 	MessageID int64 `json:"message_id" jsonschema:"the id of the posted message (use as thread_id for replies / task_status)"`
 }
 type TaskStatusInput struct {
-	MessageID int64 `json:"message_id" jsonschema:"any message id on the thread (root or reply) — the handler resolves it to the thread root"`
+	MessageID   int64 `json:"message_id" jsonschema:"any message id on the thread (root or reply) — the handler resolves it to the thread root"`
+	WaitSeconds int64 `json:"wait_seconds,omitempty" jsonschema:"optional: block server-side up to this many seconds (capped at 120) until has_done or a terminal agent_status, instead of an instant snapshot. If has_done is still false, call again — that's the normal poll loop, no sleep needed."`
 }
 type TaskStatusOutput struct {
 	HasDone     bool   `json:"has_done"`
@@ -200,9 +201,16 @@ func newServer(callerID string) *mcpserver.Server {
 
 	mcpserver.AddTool(srv, &mcpserver.Tool{
 		Name:        "task_status",
-		Description: "Check the status of a delegated task: is the agent still working, exited cleanly, failed, or never woke. Plus whether a done reply has landed. Pass any message_id from the thread (root or reply) — the handler resolves it to the thread root.",
+		Description: "Check the status of a delegated task: is the agent still working, exited cleanly, failed, or never woke. Plus whether a done reply has landed. Pass any message_id from the thread (root or reply) — the handler resolves it to the thread root. Pass wait_seconds to block until done instead of polling yourself.",
 	}, func(ctx context.Context, req *mcpserver.CallToolRequest, in TaskStatusInput) (*mcpserver.CallToolResult, TaskStatusOutput, error) {
-		result, err := protocol.Call("task_status", map[string]any{"message_id": in.MessageID})
+		// Deadline must outlive the daemon's own wait; cap mirrors daemon.maxTaskStatusWait.
+		timeout := 30 * time.Second
+		if in.WaitSeconds > 0 {
+			timeout = min(time.Duration(in.WaitSeconds)*time.Second, 2*time.Minute) + 10*time.Second
+		}
+		result, err := protocol.CallWithTimeout("task_status", map[string]any{
+			"message_id": in.MessageID, "wait_seconds": in.WaitSeconds,
+		}, timeout)
 		if err != nil {
 			return nil, TaskStatusOutput{}, err
 		}

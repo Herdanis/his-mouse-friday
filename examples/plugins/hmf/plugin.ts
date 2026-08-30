@@ -179,11 +179,9 @@ function findProjectFor(abs: string, projects: ProjectInfo[]): ProjectInfo | und
   return projects.find((p) => abs === p.path || abs.startsWith(p.path + "/"));
 }
 
-// Pulls path-looking args out of a shell command: terraform -chdir=X, docker
-// compose -f X, bash X, ./script.sh, etc. Only tokens that exist on disk are
-// treated as paths — filters out flags, URLs, and image refs like "a/b:tag".
-// ponytail: whitespace/quote split, not a real shell parser — good enough for
-// the common `-flag=path` / `-flag path` / bare-path shapes.
+// Pulls path-looking args out of a shell command. Only tokens that exist on
+// disk count as paths — filters out flags, URLs, image refs.
+// ponytail: whitespace/quote split, not a real shell parser.
 function extractPathCandidates(cmd: string, cwd: string): string[] {
   const tokens = cmd.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) ?? [];
   const out: string[] = [];
@@ -222,20 +220,14 @@ export const HmfProtection: Plugin = async ({ directory }) => {
         const abs = resolve(filePath);
         const cwd = process.cwd();
 
-        // Guard applies ONLY when the edit target falls inside a registered
-        // project. Unregistered targets (scratch files, dotfiles, /tmp, a
-        // different clone outside the registry) are never blocked — hmf has
-        // no opinion on paths it doesn't own.
+        // Only guard edits INTO a registered project — unregistered targets
+        // (scratch files, /tmp, unrelated clones) are always allowed.
         const targetProject = findProjectFor(abs, projects);
-        if (!targetProject) return; // not a registered project → allow
+        if (!targetProject) return;
 
         const myProject = findProjectFor(cwd, projects);
-
-        // Case 1: editing my own registered project → allow.
         if (myProject && myProject.path === targetProject.path) return;
 
-        // Case 2: cwd outside targetProject (either a different registered
-        // project, or open/unregistered mode) → block, delegate instead.
         throw new Error(
           `hmf: blocked edit to ${targetProject.workspace}/${targetProject.name} — ` +
           `this is a registered project` +
@@ -253,10 +245,7 @@ export const HmfProtection: Plugin = async ({ directory }) => {
 
         const cwd = process.cwd();
 
-        // Cross-project path guard — same rule as edit: a command that
-        // touches a path inside a registered project other than my own
-        // (terraform -chdir, docker compose -f, `bash script.sh`, ...) is
-        // blocked. Delegate to that project's agent instead.
+        // Same rule as edit: block a command touching another registered project.
         const myProject = findProjectFor(cwd, projects);
         for (const abs of extractPathCandidates(cmd, cwd)) {
           const targetProject = findProjectFor(abs, projects);

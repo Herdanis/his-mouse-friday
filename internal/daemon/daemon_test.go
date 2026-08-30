@@ -543,6 +543,233 @@ func TestHandle_CrossProjectDelegationInheritsRoot(t *testing.T) {
 	}
 }
 
+// Delegation via `thread_id` (not explicit `parent_id`): the spawned agent
+// must be told to reply on the resolved root, or task_status never sees has_done.
+func TestWakeAgent_TaskMsgIDMatchesRootForTaskStatus(t *testing.T) {
+	var captured SpawnConfig
+	d := setupDaemon(t)
+	d.Launcher = &Launcher{Binary: "/bin/echo", SpawnFn: func(cfg SpawnConfig) (int, error) {
+		captured = cfg
+		return 1, nil
+	}}
+	d.Registry.AddWorkspace("companyA")
+	aDir := t.TempDir()
+	os.WriteFile(filepath.Join(aDir, "mouse.yaml"),
+		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n"), 0644)
+	d.Registry.AddProject("companyA", "service-a", aDir)
+	bDir := t.TempDir()
+	os.WriteFile(filepath.Join(bDir, "mouse.yaml"),
+		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n"), 0644)
+	d.Registry.AddProject("companyA", "service-b", bDir)
+	// Seed: root thread 500, service-a's session bound.
+	d.Store.db.Exec(`INSERT INTO messages(id, channel_id, thread_id, from_project, to_project, content, status, ts)
+		VALUES(500, 1, NULL, 'companyA/orchestrator', 'companyA/service-a', 'do X', 'message', datetime('now'))`)
+	d.Store.db.Exec(`INSERT INTO sessions(project_id, agent_binary, model, status, pid, created_at, task_msg_id, root_thread_id)
+		VALUES((SELECT id FROM projects WHERE name='service-a'), 'opencode', 'default', 'exited', 0, datetime('now'), 500, 500)`)
+
+	// service-a delegates via thread_id=500 (the real-world path — no
+	// explicit parent_id). This message itself becomes a reply on thread
+	// 500 while also spawning its own session.
+	params, _ := json.Marshal(map[string]any{
+		"from": "companyA/service-a", "to": "companyA/service-b",
+		"content": "sub-task", "thread_id": 500,
+	})
+	resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: params, ID: 1})
+	if resp.Error != nil {
+		t.Fatalf("post: %s", resp.Error.Message)
+	}
+	var pr PostResult
+	json.Unmarshal(resp.Result, &pr)
+
+	if captured.TaskMsgID != 500 {
+		t.Fatalf("spawned TaskMsgID=%d, want root 500 (got the delegating message's own id %d instead)", captured.TaskMsgID, pr.MessageID)
+	}
+
+	// service-b replies exactly like `hmf done`/[REPLY RULE] would: thread_id
+	// = HMF_TASK_MSG_ID = captured.TaskMsgID.
+	doneParams, _ := json.Marshal(map[string]any{
+		"from": "companyA/service-b", "thread_id": captured.TaskMsgID,
+		"content": "done", "status": "done",
+	})
+	if resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: doneParams, ID: 2}); resp.Error != nil {
+		t.Fatalf("done reply: %s", resp.Error.Message)
+	}
+
+	// The caller tracks its delegation by the message id it got back
+	// (pr.MessageID) — task_status on THAT id must see has_done=true.
+	tsParams, _ := json.Marshal(map[string]any{"message_id": pr.MessageID})
+	tsResp := d.Handle(context.Background(), protocol.Request{Method: "task_status", Params: tsParams, ID: 3})
+	if tsResp.Error != nil {
+		t.Fatalf("task_status: %s", tsResp.Error.Message)
+	}
+	var ts TaskStatusResult
+	json.Unmarshal(tsResp.Result, &ts)
+	if !ts.HasDone {
+		t.Fatalf("task_status(message_id=%d).has_done = false, want true", pr.MessageID)
+	}
+}
+
+// task_status with wait_seconds must return as soon as has_done flips, not
+// sleep out the full wait.
+func TestHandle_TaskStatusBlocksUntilDone(t *testing.T) {
+	d := setupDaemon(t)
+	d.Registry.AddWorkspace("companyA")
+	userDir := t.TempDir()
+	os.WriteFile(filepath.Join(userDir, "mouse.yaml"),
+		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n"), 0644)
+	d.Registry.AddProject("companyA", "user-service", userDir)
+
+	d.Store.db.Exec(`INSERT INTO messages(id, channel_id, thread_id, from_project, to_project, content, status, ts)
+		VALUES(500, 1, NULL, 'companyA/payment', 'companyA/user-service', 'task', 'message', datetime('now'))`)
+	d.Store.db.Exec(`INSERT INTO sessions(project_id, agent_binary, model, status, pid, created_at, task_msg_id, root_thread_id)
+		VALUES((SELECT id FROM projects WHERE name='user-service'), 'opencode', 'default', 'active', 0, datetime('now'), 500, 500)`)
+
+	start := time.Now()
+	done := make(chan protocol.Response, 1)
+	go func() {
+		params, _ := json.Marshal(map[string]any{"message_id": 500, "wait_seconds": 30})
+		done <- d.Handle(context.Background(), protocol.Request{Method: "task_status", Params: params, ID: 1})
+	}()
+
+	// Give the blocking call time to start polling, then post the done reply.
+	time.Sleep(150 * time.Millisecond)
+	replyParams, _ := json.Marshal(map[string]any{
+		"from": "companyA/user-service", "thread_id": 500, "content": "done", "status": "done",
+	})
+	if resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: replyParams, ID: 2}); resp.Error != nil {
+		t.Fatalf("done reply: %s", resp.Error.Message)
+	}
+
+	select {
+	case resp := <-done:
+		elapsed := time.Since(start)
+		if resp.Error != nil {
+			t.Fatalf("task_status: %s", resp.Error.Message)
+		}
+		var ts TaskStatusResult
+		json.Unmarshal(resp.Result, &ts)
+		if !ts.HasDone {
+			t.Fatalf("has_done=false after done reply posted")
+		}
+		if elapsed > 3*time.Second {
+			t.Fatalf("blocked %v — should return promptly after has_done flips, not sleep out wait_seconds=30", elapsed)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("task_status(wait_seconds=30) never returned after done reply posted")
+	}
+}
+
+// A done reply already landed must not get overwritten by a nonzero exit
+// code — should read "exited", not "failed".
+func TestWakeAgent_KillAfterDoneMarksExitedNotFailed(t *testing.T) {
+	d := setupDaemon(t)
+	d.Registry.AddWorkspace("companyA")
+	userDir := t.TempDir()
+	os.WriteFile(filepath.Join(userDir, "mouse.yaml"),
+		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n"), 0644)
+	d.Registry.AddProject("companyA", "user-service", userDir)
+
+	// OnExit fires async in real Spawn, after SetStatus("active") — call it
+	// after d.Handle returns below, not inline, or it races that ordering.
+	var captured SpawnConfig
+	d.Launcher = &Launcher{Binary: "/bin/echo", SpawnFn: func(cfg SpawnConfig) (int, error) {
+		captured = cfg
+		return 1, nil
+	}}
+
+	params, _ := json.Marshal(map[string]any{
+		"from": "companyA/payment", "to": "companyA/user-service", "content": "task",
+	})
+	resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: params, ID: 1})
+	if resp.Error != nil {
+		t.Fatalf("post: %s", resp.Error.Message)
+	}
+	var pr PostResult
+	json.Unmarshal(resp.Result, &pr)
+
+	// Simulate: agent posts its done reply, then the process gets killed
+	// afterward (e.g. a resumed session that won't self-exit) — exit code
+	// is nonzero despite the task having succeeded.
+	done, _ := json.Marshal(map[string]any{
+		"from": "companyA/user-service", "thread_id": captured.TaskMsgID,
+		"content": "done", "status": "done",
+	})
+	if resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: done, ID: 99}); resp.Error != nil {
+		t.Fatalf("done reply: %s", resp.Error.Message)
+	}
+	captured.OnExit(-1) // SIGTERM-style exit code
+
+	var status string
+	var exitCode int
+	d.Store.db.QueryRow(`SELECT status, exit_code FROM sessions WHERE task_msg_id=?`, pr.MessageID).Scan(&status, &exitCode)
+	if status != "exited" {
+		t.Fatalf("status=%q exit_code=%d, want status=exited (done reply already existed before kill)", status, exitCode)
+	}
+}
+
+// Dead PID with a done reply already posted → exited; dead PID with no
+// done reply → failed + synthetic BLOCKED reply.
+func TestReconcileOrphanedSessions(t *testing.T) {
+	d := setupDaemon(t)
+	d.SafetyNetEnabled = true
+	d.Registry.AddWorkspace("companyA")
+	userDir := t.TempDir()
+	os.WriteFile(filepath.Join(userDir, "mouse.yaml"),
+		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n"), 0644)
+	d.Registry.AddProject("companyA", "user-service", userDir)
+
+	// PID 999999999 is never a real live process. Root msg 700, completed.
+	d.Store.db.Exec(`INSERT INTO messages(id, channel_id, thread_id, from_project, to_project, content, status, ts)
+		VALUES(700, 1, NULL, 'companyA/payment', 'companyA/user-service', 'task', 'message', datetime('now'))`)
+	d.Store.db.Exec(`INSERT INTO messages(channel_id, thread_id, from_project, to_project, content, status, ts)
+		VALUES(1, 700, 'companyA/user-service', 'companyA/payment', 'done', 'done', datetime('now'))`)
+	d.Store.db.Exec(`INSERT INTO sessions(project_id, agent_binary, model, status, pid, created_at, task_msg_id, root_thread_id)
+		VALUES((SELECT id FROM projects WHERE name='user-service'), 'opencode', 'default', 'active', 999999999, datetime('now'), 700, 700)`)
+
+	// Root msg 701, orphaned mid-task, no done reply ever posted.
+	d.Store.db.Exec(`INSERT INTO messages(id, channel_id, thread_id, from_project, to_project, content, status, ts)
+		VALUES(701, 1, NULL, 'companyA/payment', 'companyA/user-service', 'task 2', 'message', datetime('now'))`)
+	d.Store.db.Exec(`INSERT INTO sessions(project_id, agent_binary, model, status, pid, created_at, task_msg_id, root_thread_id)
+		VALUES((SELECT id FROM projects WHERE name='user-service'), 'opencode', 'default', 'active', 999999998, datetime('now'), 701, 701)`)
+
+	// A genuinely live process (this test's own PID) must be left alone.
+	d.Store.db.Exec(`INSERT INTO messages(id, channel_id, thread_id, from_project, to_project, content, status, ts)
+		VALUES(702, 1, NULL, 'companyA/payment', 'companyA/user-service', 'task 3', 'message', datetime('now'))`)
+	d.Store.db.Exec(`INSERT INTO sessions(project_id, agent_binary, model, status, pid, created_at, task_msg_id, root_thread_id)
+		VALUES((SELECT id FROM projects WHERE name='user-service'), 'opencode', 'default', 'active', ?, datetime('now'), 702, 702)`, os.Getpid())
+
+	d.reconcileOrphanedSessions()
+
+	var status700, status701, status702 string
+	d.Store.db.QueryRow(`SELECT status FROM sessions WHERE root_thread_id=700`).Scan(&status700)
+	d.Store.db.QueryRow(`SELECT status FROM sessions WHERE root_thread_id=701`).Scan(&status701)
+	d.Store.db.QueryRow(`SELECT status FROM sessions WHERE root_thread_id=702`).Scan(&status702)
+
+	if status700 != "exited" {
+		t.Errorf("dead PID + done reply already posted: status=%q, want exited", status700)
+	}
+	if status701 != "failed" {
+		t.Errorf("dead PID + no done reply: status=%q, want failed", status701)
+	}
+	if status702 != "active" {
+		t.Errorf("live PID must be left alone: status=%q, want active", status702)
+	}
+
+	// Orphan with no done reply gets a synthetic BLOCKED reply, matching the
+	// live OnExit safety-net behavior.
+	var blockedCount int
+	d.Store.db.QueryRow(`SELECT count(*) FROM messages WHERE thread_id=701 AND status='done' AND content LIKE 'BLOCKED:%'`).Scan(&blockedCount)
+	if blockedCount != 1 {
+		t.Errorf("expected 1 synthetic BLOCKED reply for orphaned thread 701, got %d", blockedCount)
+	}
+	// The completed one must NOT get a duplicate/extra done reply.
+	var doneCount700 int
+	d.Store.db.QueryRow(`SELECT count(*) FROM messages WHERE thread_id=700 AND status='done'`).Scan(&doneCount700)
+	if doneCount700 != 1 {
+		t.Errorf("thread 700 already had its done reply, reconcile must not add another — got %d done messages", doneCount700)
+	}
+}
+
 func TestHandle_ReplyWithToWakesAgent(t *testing.T) {
 	d := setupDaemon(t)
 	d.Registry.AddWorkspace("companyA")
@@ -576,9 +803,7 @@ func TestHandle_ReplyWithToWakesAgent(t *testing.T) {
 	}
 }
 
-// A reply that forgets `to` should still wake the thread's original
-// recipient — this is the auto-spawn bug: retries posted as bare thread
-// replies (no `to`) silently went nowhere.
+// A reply that forgets `to` should still wake the thread's original recipient.
 func TestHandle_ReplyWithoutToAutoFillsFromRoot(t *testing.T) {
 	d := setupDaemon(t)
 	d.Registry.AddWorkspace("companyA")
@@ -609,9 +834,8 @@ func TestHandle_ReplyWithoutToAutoFillsFromRoot(t *testing.T) {
 	}
 }
 
-// The worker's own `done` reply must NOT auto-fill `to` — resolving it back
-// to the (often registered) originator would wake that project's agent too,
-// an unrequested reply-loop.
+// The worker's own `done` reply must NOT auto-fill `to` — would wake the
+// originator too, an unrequested reply-loop.
 func TestHandle_DoneReplyWithoutToDoesNotAutoWake(t *testing.T) {
 	d := setupDaemon(t)
 	d.Registry.AddWorkspace("companyA")

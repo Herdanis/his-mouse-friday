@@ -27,7 +27,7 @@ type SpawnConfig struct {
 	ProjectID      string // this project's "workspace/project" identity
 	ChannelID      int64  // hmf channel for this conversation
 	SessionID      int64  // hmf session id
-	TaskMsgID      int64  // hmf task message id; spawned agent threads its done reply to this
+	TaskMsgID      int64  // root thread id the agent must reply on
 	OnExit         func(exitCode int)
 	AgentSessionID string // non-empty = resume this agent session (opencode run -s)
 	SessionName    string // hmf session name (<prefix>-<project>) — passed as --title to opencode run for later lookup

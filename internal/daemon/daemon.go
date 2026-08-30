@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/herdanis/his-mouse-friday/internal/config"
@@ -96,7 +97,7 @@ type Daemon struct {
 	LookPath   func(string) (string, error)
 	ModelProbe func(binary, model string) (ok, checkable bool)
 	Sock       string
-	shutdownCh            chan struct{}
+	shutdownCh chan struct{}
 }
 
 // NewDaemon wires a Daemon with default components for the given socket + db.
@@ -133,13 +134,14 @@ type PostParams struct {
 	To       string `json:"to"`
 	Content  string `json:"content"`
 	Status   string `json:"status,omitempty"` // delivered | in_progress | done | message (default)
-	ParentID   int64  `json:"parent_id,omitempty"`
+	ParentID int64  `json:"parent_id,omitempty"`
 }
 type PostResult struct {
 	MessageID int64 `json:"message_id"`
 }
 type TaskStatusParams struct {
-	MessageID int64 `json:"message_id"`
+	MessageID   int64 `json:"message_id"`
+	WaitSeconds int64 `json:"wait_seconds,omitempty"` // block server-side until has_done/terminal, capped at maxTaskStatusWait
 }
 type TaskStatusResult struct {
 	HasDone     bool   `json:"has_done"`
@@ -189,7 +191,7 @@ type SessionListItem struct {
 	Project        string `json:"project"`
 	Status         string `json:"status"`
 	AgentSessionID string `json:"session_id,omitempty"`
-	ParentID   int64  `json:"parent_id,omitempty"`
+	ParentID       int64  `json:"parent_id,omitempty"`
 	CreatedAt      string `json:"created_at"`
 }
 
@@ -203,7 +205,7 @@ func (d *Daemon) Handle(ctx context.Context, req protocol.Request) protocol.Resp
 	case "post_message":
 		return d.handlePost(ctx, req)
 	case "task_status":
-		return d.handleTaskStatus(req)
+		return d.handleTaskStatus(ctx, req)
 	case "read_channel":
 		return d.handleReadChannel(req)
 	case "read_thread":
@@ -233,7 +235,6 @@ func (d *Daemon) Handle(ctx context.Context, req protocol.Request) protocol.Resp
 	case "shutdown":
 		select {
 		case <-d.shutdownCh:
-			// already shutting down
 		default:
 			close(d.shutdownCh)
 		}
@@ -428,28 +429,35 @@ func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error
 			"4. Reply: post_message with thread_id=%d, status=\"done\", and a one-line summary.",
 		msg.FromProject, msg.ID, parentID, parentID, parentID)
 	spawnCfg := SpawnConfig{
-		Dir:            proj.Path,
-		Binary:         binary,
-		Model:          model,
-		Runbook:        string(runbook),
-		Task:           entrypoint,
-		FromID:         msg.FromProject,
-		ProjectID:      msg.ToProject,
-		ChannelID:      msg.ChannelID,
-		SessionID:      tmpSess.ID,
-		TaskMsgID:      msg.ID,
+		Dir:       proj.Path,
+		Binary:    binary,
+		Model:     model,
+		Runbook:   string(runbook),
+		Task:      entrypoint,
+		FromID:    msg.FromProject,
+		ProjectID: msg.ToProject,
+		ChannelID: msg.ChannelID,
+		SessionID: tmpSess.ID,
+		// parentID, not msg.ID — must match the root task_status resolves to.
+		TaskMsgID:      parentID,
 		SessionName:    name,
 		AgentSessionID: priorOcID.String,
 		OnExit: func(code int) {
-			d.Sessions.MarkExited(tmpSess.ID, code)
+			var doneCount int
+			d.Store.db.QueryRow(
+				`SELECT count(*) FROM messages WHERE thread_id=? AND status='done'`, parentID).Scan(&doneCount)
+			// Done reply already landed — don't let a nonzero exit code
+			// (e.g. killing a resumed session that won't self-exit) mark it failed.
+			effectiveCode := code
+			if doneCount > 0 {
+				effectiveCode = 0
+			}
+			d.Sessions.MarkExited(tmpSess.ID, effectiveCode)
 			if !d.SafetyNetEnabled {
 				return
 			}
 			// Safety net: post BLOCKED reply if agent exited without one.
 			// Covers crashes, kills, and silent exits from bash:ask walls.
-			var doneCount int
-			d.Store.db.QueryRow(
-				`SELECT count(*) FROM messages WHERE thread_id=? AND status='done'`, parentID).Scan(&doneCount)
 			if doneCount == 0 {
 				content := fmt.Sprintf("BLOCKED: agent exited (code=%d) without posting a done reply", code)
 				if _, err := d.Comms.PostMessage(msg.ChannelID, parentID, msg.ToProject, msg.FromProject, content, "done"); err != nil {
@@ -513,10 +521,18 @@ func logCapture(sessionID int64, format string, args ...any) {
 	fmt.Fprintf(f, "session %d: "+format+"\n", append([]any{sessionID}, args...)...)
 }
 
-// handleTaskStatus reports agent state (working/exited/failed/no_agent) + done
-// reply presence. message_id resolves to thread root; done check scoped to
-// replies at or after the passed message so prior tasks don't false-complete.
-func (d *Daemon) handleTaskStatus(req protocol.Request) protocol.Response {
+// maxTaskStatusWait caps a blocking task_status call. Some MCP clients
+// (opencode) enforce their own shorter tool-call timeout and error with
+// "-32001 Request timed out" past it — 2min held up in practice.
+const maxTaskStatusWait = 2 * time.Minute
+
+// taskStatusPollInterval is how often a blocking task_status re-checks the DB.
+const taskStatusPollInterval = 2 * time.Second
+
+// handleTaskStatus reports agent state (working/exited/failed/no_agent) +
+// done reply presence. wait_seconds > 0 blocks server-side (capped at
+// maxTaskStatusWait) until has_done or a terminal agent_status.
+func (d *Daemon) handleTaskStatus(ctx context.Context, req protocol.Request) protocol.Response {
 	var p TaskStatusParams
 	if err := json.Unmarshal(req.Params, &p); err != nil {
 		return errResp(req.ID, "bad params: "+err.Error())
@@ -524,22 +540,47 @@ func (d *Daemon) handleTaskStatus(req protocol.Request) protocol.Response {
 	if p.MessageID == 0 {
 		return errResp(req.ID, "message_id is required")
 	}
+	deadline := time.Now()
+	if p.WaitSeconds > 0 {
+		wait := min(time.Duration(p.WaitSeconds)*time.Second, maxTaskStatusWait)
+		deadline = deadline.Add(wait)
+	}
+	for {
+		result, terminal, err := d.computeTaskStatus(p.MessageID)
+		if err != nil {
+			return errResp(req.ID, err.Error())
+		}
+		if terminal || !time.Now().Before(deadline) {
+			b, _ := json.Marshal(result)
+			return protocol.Response{ID: req.ID, Result: b}
+		}
+		select {
+		case <-ctx.Done():
+			b, _ := json.Marshal(result)
+			return protocol.Response{ID: req.ID, Result: b}
+		case <-time.After(taskStatusPollInterval):
+		}
+	}
+}
+
+// computeTaskStatus is the instant (non-blocking) status snapshot.
+// terminal=true means further polling won't change the answer.
+func (d *Daemon) computeTaskStatus(messageID int64) (result TaskStatusResult, terminal bool, err error) {
 	// Resolve message to thread root: reply → thread_id, root → id.
 	var parentID int64
-	err := d.Store.db.QueryRow(
-		`SELECT IFNULL(thread_id, id) FROM messages WHERE id=?`, p.MessageID).Scan(&parentID)
+	err = d.Store.db.QueryRow(
+		`SELECT IFNULL(thread_id, id) FROM messages WHERE id=?`, messageID).Scan(&parentID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			result, _ := json.Marshal(TaskStatusResult{HasDone: false, AgentStatus: "no_agent"})
-			return protocol.Response{ID: req.ID, Result: result}
+			return TaskStatusResult{HasDone: false, AgentStatus: "no_agent"}, true, nil
 		}
-		return errResp(req.ID, err.Error())
+		return TaskStatusResult{}, true, err
 	}
 	// Done check: done replies on this thread at or after the passed message.
 	var doneCount int
 	d.Store.db.QueryRow(
 		`SELECT count(*) FROM messages WHERE thread_id=? AND status='done' AND id >= ?`,
-		parentID, p.MessageID).Scan(&doneCount)
+		parentID, messageID).Scan(&doneCount)
 
 	var sessID int64
 	var status string
@@ -550,24 +591,25 @@ func (d *Daemon) handleTaskStatus(req protocol.Request) protocol.Response {
 		parentID).Scan(&sessID, &status, &pid, &exitCode)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			result, _ := json.Marshal(TaskStatusResult{HasDone: doneCount > 0, AgentStatus: "no_agent"})
-			return protocol.Response{ID: req.ID, Result: result}
+			hasDone := doneCount > 0
+			return TaskStatusResult{HasDone: hasDone, AgentStatus: "no_agent"}, hasDone, nil
 		}
-		return errResp(req.ID, err.Error())
+		return TaskStatusResult{}, true, err
 	}
 	// "active" → "working"; other statuses pass through.
 	agentStatus := status
 	if status == "active" {
 		agentStatus = "working"
 	}
-	result, _ := json.Marshal(TaskStatusResult{
-		HasDone:     doneCount > 0,
+	hasDone := doneCount > 0
+	terminal = hasDone || agentStatus == "exited" || agentStatus == "failed"
+	return TaskStatusResult{
+		HasDone:     hasDone,
 		AgentStatus: agentStatus,
 		SessionID:   sessID,
 		PID:         int(pid.Int64),
 		ExitCode:    int(exitCode.Int64),
-	})
-	return protocol.Response{ID: req.ID, Result: result}
+	}, terminal, nil
 }
 
 func (d *Daemon) handleReadChannel(req protocol.Request) protocol.Response {
@@ -599,7 +641,6 @@ func (d *Daemon) handleReadThread(req protocol.Request) protocol.Response {
 	if p.MessageID == 0 {
 		return errResp(req.ID, "message_id is required")
 	}
-	// Resolve to thread root: if reply (thread_id set), use that; if root, use id.
 	var parentID int64
 	err := d.Store.db.QueryRow(
 		`SELECT IFNULL(thread_id, id) FROM messages WHERE id=?`, p.MessageID).Scan(&parentID)
@@ -852,6 +893,69 @@ func (d *Daemon) handleTodoThreads(req protocol.Request) protocol.Response {
 // Unix socket server
 // ============================================
 
+// reconcileOrphanedSessions marks "active" sessions with a dead PID as
+// exited/failed. A daemon restart loses the goroutine watching the spawned
+// process, so its real exit is never observed — the row stays "active"
+// forever and silently blocks future wakes on that thread. Run at startup.
+func (d *Daemon) reconcileOrphanedSessions() {
+	rows, err := d.Store.db.Query(`
+		SELECT s.id, s.pid, s.root_thread_id, m.channel_id, m.from_project, m.to_project
+		FROM sessions s JOIN messages m ON m.id = s.root_thread_id
+		WHERE s.status = 'active'`)
+	if err != nil {
+		log.Printf("reconcile: query active sessions: %v", err)
+		return
+	}
+	type orphanCandidate struct {
+		id, rootThreadID, channelID int64
+		pid                         sql.NullInt64
+		fromProject, toProject      string
+	}
+	var candidates []orphanCandidate
+	for rows.Next() {
+		var c orphanCandidate
+		if err := rows.Scan(&c.id, &c.pid, &c.rootThreadID, &c.channelID, &c.fromProject, &c.toProject); err != nil {
+			log.Printf("reconcile: scan: %v", err)
+			continue
+		}
+		candidates = append(candidates, c)
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("reconcile: rows: %v", err)
+	}
+	rows.Close()
+
+	for _, c := range candidates {
+		if c.pid.Valid && c.pid.Int64 > 0 && processAlive(c.pid.Int64) {
+			continue // still genuinely running
+		}
+		var doneCount int
+		d.Store.db.QueryRow(
+			`SELECT count(*) FROM messages WHERE thread_id=? AND status='done'`, c.rootThreadID).Scan(&doneCount)
+		code := 0
+		if doneCount == 0 {
+			code = -1
+		}
+		if err := d.Sessions.MarkExited(c.id, code); err != nil {
+			log.Printf("reconcile: mark session %d exited: %v", c.id, err)
+			continue
+		}
+		log.Printf("reconcile: orphaned session %d (pid=%v) had no live process at startup, marked exited (done=%t)", c.id, c.pid, doneCount > 0)
+		if d.SafetyNetEnabled && doneCount == 0 {
+			content := "BLOCKED: agent process was orphaned by a daemon restart and never posted a done reply"
+			if _, err := d.Comms.PostMessage(c.channelID, c.rootThreadID, c.toProject, c.fromProject, content, "done"); err != nil {
+				log.Printf("reconcile: synthetic done reply for thread %d: %v", c.rootThreadID, err)
+			}
+		}
+	}
+}
+
+// processAlive reports whether pid names a live process this OS user can
+// signal. Signal 0 sends nothing — it only probes existence/permission.
+func processAlive(pid int64) bool {
+	return syscall.Kill(int(pid), 0) == nil
+}
+
 // Serve listens on d.Sock and dispatches requests. One json.Decoder per
 // connection (shared decoder carries buffered state across requests).
 func (d *Daemon) Serve(ctx context.Context) error {
@@ -877,6 +981,7 @@ func (d *Daemon) Serve(ctx context.Context) error {
 	if err := d.Store.RunRetention(); err != nil {
 		log.Printf("retention: %v", err)
 	}
+	d.reconcileOrphanedSessions()
 	for {
 		conn, err := ln.Accept()
 		if err != nil {

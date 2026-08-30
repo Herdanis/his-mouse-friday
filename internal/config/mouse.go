@@ -26,8 +26,8 @@ type AgentTarget struct {
 }
 
 type PermissionsConfig struct {
-	FS       FSPermissions       `yaml:"fs"`
-	Commands CommandPermissions  `yaml:"commands"`
+	FS       FSPermissions      `yaml:"fs"`
+	Commands CommandPermissions `yaml:"commands"`
 }
 
 // FSPermissions: gitignore-style patterns. deny=blocked, ask=approval
