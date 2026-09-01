@@ -132,10 +132,15 @@ $OPENCODE_CONFIG/opencode.json:
       "hmf": {
         "type": "local",
         "command": ["hmf-mcp"],
-        "enabled": true
+        "enabled": true,
+        "timeout": 330000
       }
     }
   }
+
+The "timeout" is required: task_status blocks up to 5min waiting on a
+delegated agent, and opencode's MCP client defaults to 5s — without it
+every status check fails with "MCP error -32001: Request timed out".
 
 Then start the daemon:  hmf up
 EOF

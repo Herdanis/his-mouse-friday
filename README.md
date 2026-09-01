@@ -77,6 +77,28 @@ step prints the snippet above; add it to `~/.config/opencode/opencode.json`
 (global) or a repo's `opencode.json`. See `examples/opencode.json` for a
 version with bash permission rules too.
 
+**`timeout` is required, not optional:**
+
+```json
+"mcp": {
+  "hmf": {
+    "command": ["hmf-mcp"],
+    "enabled": true,
+    "type": "local",
+    "timeout": 330000
+  }
+}
+```
+
+`task_status` blocks server-side for up to 5 minutes while a delegated agent
+works — that's deliberate, it's what paces polling instead of burning tokens
+on a sleep-and-recheck loop. opencode's MCP client defaults to a **5 second**
+request timeout, so without this setting every `task_status` call dies with:
+
+    MCP error -32001: Request timed out
+
+330000 ms (5.5 min) leaves headroom over the daemon's 5 min wait.
+
 ## Setup
 
 **Option A — Slash command (recommended):**
@@ -134,6 +156,20 @@ without one). Get the `message_id` from whatever posted the task
 (`post_message`'s return value, or `hmf task list` / `hmf session list`).
 
 ## Troubleshooting
+
+**`MCP error -32001: Request timed out` on every `task_status` call.**
+The `hmf` MCP server has no `timeout` set, so opencode is using its 5-second
+default while `task_status` blocks for up to 5 minutes. Add
+`"timeout": 330000` to the `hmf` entry in your `opencode.json` (see *Wire the
+MCP server into opencode*) and restart the session — MCP config is read at
+connection time.
+
+**Spawned agents do nothing, or refuse multi-file work.**
+Check what agent they run as. hmf passes `--agent hmf-worker`; if that agent
+isn't installed (`~/.config/opencode/agents/hmf-worker.md`), opencode falls
+back to your `default_agent`, which may be a narrow one that refuses 3+ file
+tasks or has no shell. Re-run the installer, or copy
+`examples/agents/hmf-worker.md` into place.
 
 **A session shows `active` in `hmf session list` but nothing's happening.**
 Usually a daemon restart orphaned it — the goroutine watching that spawned

@@ -4,7 +4,8 @@
     "hmf": {
       "type": "local",
       "command": ["hmf-mcp"],
-      "enabled": true
+      "enabled": true,
+      "timeout": 330000
     }
   },
   "permission": {
