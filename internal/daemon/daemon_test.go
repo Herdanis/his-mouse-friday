@@ -511,8 +511,9 @@ func TestHandle_CrossProjectDelegationInheritsRoot(t *testing.T) {
 	d.Registry.AddWorkspace("companyA")
 	// Project A (caller) — already woken, has task_msg_id=500.
 	aDir := t.TempDir()
+	// service-a delegates outward, so it must declare outbound consent.
 	os.WriteFile(filepath.Join(aDir, "mouse.yaml"),
-		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n"), 0644)
+		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n  allow_outbound: true\n"), 0644)
 	d.Registry.AddProject("companyA", "service-a", aDir)
 	// Project B (callee) — inbound allowed.
 	bDir := t.TempDir()
@@ -556,8 +557,9 @@ func TestWakeAgent_TaskMsgIDMatchesRootForTaskStatus(t *testing.T) {
 	}}
 	d.Registry.AddWorkspace("companyA")
 	aDir := t.TempDir()
+	// service-a delegates outward, so it must declare outbound consent.
 	os.WriteFile(filepath.Join(aDir, "mouse.yaml"),
-		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n"), 0644)
+		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n  allow_outbound: true\n"), 0644)
 	d.Registry.AddProject("companyA", "service-a", aDir)
 	bDir := t.TempDir()
 	os.WriteFile(filepath.Join(bDir, "mouse.yaml"),
@@ -1408,4 +1410,64 @@ func TestTaskStatus_CarriesChildProgressDetail(t *testing.T) {
 	if ts.LastUpdate != "migration written, moving on" {
 		t.Errorf("last_update should be the first line only, got %q", ts.LastUpdate)
 	}
+}
+
+// A2A consent is two-sided: the recipient declares allow_inbound, the sender
+// declares allow_outbound. Only inbound was enforced — allow_outbound existed
+// in mouse.yaml but nothing read it, so a repo that forbade delegating out
+// still could.
+func TestHandle_Post_OutboundDenied(t *testing.T) {
+	const inbound = "agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n  allow_outbound: true\n"
+
+	newDaemon := func(t *testing.T, senderYAML string) *Daemon {
+		d := setupDaemon(t)
+		d.Registry.AddWorkspace("companyA")
+		senderDir := t.TempDir()
+		os.WriteFile(filepath.Join(senderDir, "mouse.yaml"), []byte(senderYAML), 0644)
+		d.Registry.AddProject("companyA", "payment", senderDir)
+		recvDir := t.TempDir()
+		os.WriteFile(filepath.Join(recvDir, "mouse.yaml"), []byte(inbound), 0644)
+		d.Registry.AddProject("companyA", "user-service", recvDir)
+		return d
+	}
+	post := func(d *Daemon) protocol.Response {
+		params, _ := json.Marshal(map[string]any{
+			"from": "companyA/payment", "to": "companyA/user-service", "content": "do X"})
+		return d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: params, ID: 1})
+	}
+
+	t.Run("explicitly denied", func(t *testing.T) {
+		d := newDaemon(t, "agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n  allow_outbound: false\n")
+		if resp := post(d); resp.Error == nil {
+			t.Fatal("expected outbound-denied error")
+		} else if !strings.Contains(resp.Error.Message, "outbound") {
+			t.Fatalf("error should name outbound consent, got %q", resp.Error.Message)
+		}
+	})
+
+	// Absent field is false in Go — same deny-by-default as inbound already has.
+	t.Run("field absent", func(t *testing.T) {
+		d := newDaemon(t, "agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n")
+		if resp := post(d); resp.Error == nil {
+			t.Fatal("absent allow_outbound should deny, matching inbound's behaviour")
+		}
+	})
+
+	t.Run("allowed", func(t *testing.T) {
+		d := newDaemon(t, inbound)
+		if resp := post(d); resp.Error != nil {
+			t.Fatalf("allow_outbound:true must permit the wake, got %q", resp.Error.Message)
+		}
+	})
+
+	// A human orchestrating from an unregistered dir has no mouse.yaml and so
+	// declares nothing — must not be governed by a repo's outbound rule.
+	t.Run("unregistered sender unaffected", func(t *testing.T) {
+		d := newDaemon(t, "agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n  allow_outbound: false\n")
+		params, _ := json.Marshal(map[string]any{
+			"from": "some/scratch-dir", "to": "companyA/user-service", "content": "do X"})
+		if resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: params, ID: 1}); resp.Error != nil {
+			t.Fatalf("unregistered sender should be unrestricted, got %q", resp.Error.Message)
+		}
+	})
 }

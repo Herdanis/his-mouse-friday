@@ -80,6 +80,18 @@ func OpenStore(path string) (*Store, error) {
 	db.Exec(`ALTER TABLE sessions ADD COLUMN name TEXT`)
 	db.Exec(`ALTER TABLE sessions ADD COLUMN root_thread_id INTEGER`)
 	db.Exec(`ALTER TABLE sessions ADD COLUMN prefix TEXT`)
+	// finished_at lets callers show how long a task actually ran. Without it
+	// elapsed is now-minus-start, which keeps climbing after the work is done.
+	db.Exec(`ALTER TABLE sessions ADD COLUMN finished_at DATETIME`)
+	// Backfill sessions that ended before the column existed, using the last
+	// done reply on their thread as the finish time. Rows with no such reply
+	// stay NULL — their duration is genuinely unknown, better than a guess.
+	db.Exec(`UPDATE sessions SET finished_at = (
+	           SELECT MAX(m.ts) FROM messages m
+	           WHERE m.thread_id = sessions.root_thread_id AND m.status = 'done')
+	         WHERE finished_at IS NULL
+	           AND status IN ('exited','failed')
+	           AND root_thread_id IS NOT NULL`)
 	// Global "general" channel — lobby where all agents live. Sentinel
 	// __global__ workspace satisfies the FK without a schema migration.
 	db.Exec(`INSERT OR IGNORE INTO workspaces(name) VALUES('__global__')`)

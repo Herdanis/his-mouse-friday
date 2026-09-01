@@ -90,6 +90,10 @@ func (s *SessionStore) MarkExited(id int64, exitCode int) error {
 	if exitCode != 0 {
 		status = "failed"
 	}
-	_, err := s.Store.db.Exec(`UPDATE sessions SET status=?, exit_code=? WHERE id=?`, status, exitCode, id)
+	// Stamp the finish time so elapsed can freeze at the real duration.
+	// COALESCE keeps the first one: a re-marked session isn't running longer.
+	_, err := s.Store.db.Exec(
+		`UPDATE sessions SET status=?, exit_code=?, finished_at=COALESCE(finished_at, ?) WHERE id=?`,
+		status, exitCode, time.Now().UTC(), id)
 	return err
 }

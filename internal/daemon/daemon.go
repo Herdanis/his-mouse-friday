@@ -229,6 +229,7 @@ type SessionListItem struct {
 	AgentSessionID string `json:"session_id,omitempty"`
 	ParentID       int64  `json:"parent_id,omitempty"`
 	CreatedAt      string `json:"created_at"`
+	FinishedAt     string `json:"finished_at,omitempty"` // empty while still running
 }
 
 // ============================================
@@ -397,6 +398,31 @@ func (d *Daemon) handlePost(ctx context.Context, req protocol.Request) protocol.
 	return protocol.Response{ID: req.ID, Result: result}
 }
 
+// checkOutboundAllowed rejects a wake when the sending project's mouse.yaml
+// sets a2a.allow_outbound: false. Mirrors the inbound guard — both sides of an
+// A2A hop declare consent, and both are enforced here.
+//
+// Anything that isn't a registered "workspace/project" with a mouse.yaml is
+// allowed through: humans and scratch dirs aren't governed by a repo's config.
+func (d *Daemon) checkOutboundAllowed(fromProject string) error {
+	parts := strings.SplitN(fromProject, "/", 2)
+	if len(parts) != 2 {
+		return nil
+	}
+	proj, err := d.findProject(parts[0], parts[1])
+	if err != nil {
+		return nil // unregistered sender — nothing declared, nothing to enforce
+	}
+	mouse, err := d.MouseLoader(filepath.Join(proj.Path, "mouse.yaml"))
+	if err != nil || mouse == nil {
+		return nil // no config = open mode, same as inbound
+	}
+	if !mouse.A2A.AllowOutbound {
+		return fmt.Errorf("project %s does not allow outbound engagement (a2a.allow_outbound is false in its mouse.yaml)", fromProject)
+	}
+	return nil
+}
+
 // wakeAgent spawns the addressed project agent so it can read the thread and
 // reply. Serverless: boot per mention, handle, reply in-thread, exit.
 func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error {
@@ -411,6 +437,13 @@ func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error
 			return nil
 		}
 		return fmt.Errorf("project %s not found: %w", msg.ToProject, err)
+	}
+	// Outbound consent: a registered sender may forbid delegating out. Checked
+	// before inbound so the refusal names the side that actually said no.
+	// Unregistered senders (a human orchestrating from a scratch dir) have no
+	// mouse.yaml and are unrestricted.
+	if err := d.checkOutboundAllowed(msg.FromProject); err != nil {
+		return err
 	}
 	mouse, err := d.MouseLoader(filepath.Join(proj.Path, "mouse.yaml"))
 	if err != nil {
@@ -879,7 +912,7 @@ func (d *Daemon) handleStatus(req protocol.Request) protocol.Response {
 // IFNULL coerces NULL ocID/root to ""/0 so the CLI renders clean dashes.
 func (d *Daemon) handleSessionList(req protocol.Request) protocol.Response {
 	rows, err := d.Store.db.Query(
-		`SELECT IFNULL(s.name,'-'), p.name, s.status, IFNULL(s.opencode_session_id,'') AS session_id, IFNULL(s.root_thread_id,0) AS parent_id, IFNULL(s.created_at,'')
+		`SELECT IFNULL(s.name,'-'), p.name, s.status, IFNULL(s.opencode_session_id,'') AS session_id, IFNULL(s.root_thread_id,0) AS parent_id, IFNULL(s.created_at,''), IFNULL(s.finished_at,'')
 		 FROM sessions s JOIN projects p ON s.project_id=p.id
 		 ORDER BY s.id DESC`)
 	if err != nil {
@@ -889,7 +922,7 @@ func (d *Daemon) handleSessionList(req protocol.Request) protocol.Response {
 	var out []SessionListItem
 	for rows.Next() {
 		var it SessionListItem
-		if err := rows.Scan(&it.Name, &it.Project, &it.Status, &it.AgentSessionID, &it.ParentID, &it.CreatedAt); err != nil {
+		if err := rows.Scan(&it.Name, &it.Project, &it.Status, &it.AgentSessionID, &it.ParentID, &it.CreatedAt, &it.FinishedAt); err != nil {
 			return errResp(req.ID, err.Error())
 		}
 		out = append(out, it)

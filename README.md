@@ -122,7 +122,10 @@ After `make install`, in any opencode session:
        hmf status
 
 3. Add `mouse.yaml` + `MOUSE.md` to each repo (see `examples/`).
-   Set `a2a.allow_inbound: true` on repos other agents may engage.
+   Set `a2a.allow_inbound: true` on repos other agents may engage, and
+   `a2a.allow_outbound: true` on repos whose agent may delegate to others.
+   Both are enforced and both default to false when omitted, so a repo that
+   declares neither can neither be engaged nor delegate.
    `mouse.yaml` declares command + filesystem permissions (gitignore-style:
    deny / ask / allow). `/hmf-setup` auto-generates `opencode.json` from it,
    so opencode enforces the policy natively — agents physically cannot run
@@ -139,6 +142,70 @@ After `make install`, in any opencode session:
 - `AGENTS.md` — OpenCode instruction file (references MOUSE.md)
 
 See `examples/`.
+
+## Watching delegated work
+
+Children run as separate processes, so they can't report into the session that
+dispatched them. Two views, depending on where you are:
+
+**From another terminal — live dashboard:**
+
+```bash
+hmf monitor          # active tasks, refreshing in place
+hmf monitor --all    # include finished ones
+```
+
+```
+hmf monitor · 2 active · 20:13:31 · ↑↓ move · enter opens · q quits
+
+  STATUS   PROJECT         ELAPSED   TODOS
+▸ working  mouse-for-sale  33s       1/3
+    → list route directories
+  working  penny-pincher   2m10s     0/2
+    → write migration
+```
+
+Each row is one child: status, how long it's been running, todo progress, and
+the step it's on.
+
+| key | |
+|---|---|
+| `↑` `↓` / `j` `k` | move (list scrolls) |
+| `enter` | open a task |
+| `esc` | back to the list |
+| `a` | toggle active-only / all |
+| `r` | refresh now |
+| `q` | quit |
+
+Opening a task shows its full work list and the **entire thread** — every
+reply, word-wrapped and scrollable — not just the latest line:
+
+```
+mouse-for-sale · exited · 26m13s · thread 158
+
+session fd4fe-mouse-for-sale
+
+work items · 3/3 done
+  ✓ count svelte files
+  ✓ list route directories
+  ✓ read package.json name
+
+thread
+  haydn/mouse-for-sale [done]
+    Survey done. (1) 13 .svelte files under src/. (2) Route dirs:
+    src/routes/{login,pockets,settings,transactions} + root. (3)
+    package.json name: "frontend". No files edited — read-only as instructed.
+```
+
+Piping works too — `hmf monitor --all | tee log.txt` prints one plain
+snapshot instead of starting the interactive view.
+
+**From inside the dispatching session — `task_status`:**
+
+That MCP tool returns the same detail (project, elapsed, `todos_done/total`,
+`current_step`, the full todo list, and the child's latest reply line). It's
+the only option that works without a second terminal, but it reports when
+called rather than continuously.
 
 ## Waiting on a task without polling
 

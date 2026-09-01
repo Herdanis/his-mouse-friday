@@ -53,5 +53,8 @@ permissions:
       - "npm publish"
       - "docker system prune"
 a2a:
+  # Both directions are enforced, and both default to false when omitted:
+  #   allow_inbound  — may other agents wake this project?
+  #   allow_outbound — may this project's agent delegate to others?
   allow_inbound: true
   allow_outbound: true

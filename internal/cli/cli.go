@@ -33,6 +33,7 @@ func NewRootCmd() *cobra.Command {
 	root.AddCommand(sessionCmd())
 	root.AddCommand(taskCmd())
 	root.AddCommand(watchCmd())
+	root.AddCommand(monitorCmd())
 	return root
 }
 
