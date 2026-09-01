@@ -103,6 +103,20 @@ type TaskStatusOutput struct {
 	PID         int    `json:"pid,omitempty"`
 	ExitCode    int    `json:"exit_code,omitempty"`
 	NextAction  string `json:"next_action" jsonschema:"what to do next — follow it literally. Anything other than STILL WORKING is final: stop calling task_status for this message_id."`
+
+	Project     string     `json:"project,omitempty" jsonschema:"the project doing the work"`
+	ElapsedSecs int64      `json:"elapsed_secs,omitempty" jsonschema:"seconds since the task was dispatched"`
+	TodosDone   int        `json:"todos_done" jsonschema:"work items the child has finished"`
+	TodosTotal  int        `json:"todos_total" jsonschema:"work items the child has planned (0 = it hasn't posted any yet)"`
+	CurrentStep string     `json:"current_step,omitempty" jsonschema:"the work item it is on right now"`
+	Todos       []TodoLine `json:"todos,omitempty" jsonschema:"the child's full work-item list with state"`
+	LastUpdate  string     `json:"last_update,omitempty" jsonschema:"first line of the most recent reply on the thread"`
+}
+
+// TodoLine is one of the child's work items.
+type TodoLine struct {
+	Content string `json:"content"`
+	State   string `json:"state" jsonschema:"pending | done"`
 }
 
 // ============================================
@@ -221,7 +235,7 @@ func newServer(callerID string) *mcpserver.Server {
 
 	mcpserver.AddTool(srv, &mcpserver.Tool{
 		Name:        "task_status",
-		Description: "Check the status of a delegated task: is the agent still working, exited cleanly, failed, or never woke, and whether a done reply has landed. Pass any message_id from the thread (root or reply). This call BLOCKS for up to 5 minutes, returning early the moment the task finishes — do not sleep around it, and do not call it again until it returns. Follow the next_action field it gives you.",
+		Description: "Check on a delegated task and see what the child agent is actually doing: its work items (todos with state), the step it's on, how long it's been running, and its latest reply — plus whether it finished, exited, failed, or never woke. This is how you observe a child from here; it runs in its own process and cannot write into your session. Pass any message_id from the thread (root or reply). BLOCKS up to 5 minutes, returning early the moment the task finishes — do not sleep around it, and do not call it again until it returns. Follow the next_action field it gives you.",
 	}, func(ctx context.Context, req *mcpserver.CallToolRequest, in TaskStatusInput) (*mcpserver.CallToolResult, TaskStatusOutput, error) {
 		// Socket deadline must outlive the daemon's fixed 5min wait.
 		result, err := protocol.CallWithTimeout("task_status",

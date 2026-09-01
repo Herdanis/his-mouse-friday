@@ -1360,3 +1360,52 @@ func TestNextAction_TellsCallerWhetherToStop(t *testing.T) {
 		}
 	}
 }
+
+// A child runs in its own process and can't write into the caller's session,
+// so task_status is the only window into it: it must carry the child's work
+// items, current step, and latest reply — not just a done flag.
+func TestTaskStatus_CarriesChildProgressDetail(t *testing.T) {
+	defer withTaskStatusWait(50 * time.Millisecond)()
+	d := setupDaemon(t)
+	d.Registry.AddWorkspace("companyA")
+	userDir := t.TempDir()
+	os.WriteFile(filepath.Join(userDir, "mouse.yaml"),
+		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n"), 0644)
+	d.Registry.AddProject("companyA", "user-service", userDir)
+
+	d.Store.db.Exec(`INSERT INTO messages(id, channel_id, thread_id, from_project, to_project, content, status, ts)
+		VALUES(700, 1, NULL, 'companyA/payment', 'companyA/user-service', 'task', 'message', datetime('now'))`)
+	d.Store.db.Exec(`INSERT INTO sessions(project_id, agent_binary, model, status, pid, created_at, task_msg_id, root_thread_id)
+		VALUES((SELECT id FROM projects WHERE name='user-service'), 'opencode', 'default', 'active', 0, datetime('now'), 700, 700)`)
+	// The child plans three steps and finishes the first.
+	first, _ := d.Todos.Add(700, "write migration")
+	d.Todos.Add(700, "update handler")
+	d.Todos.Add(700, "run tests")
+	d.Todos.Update(first.ID, "done")
+	d.Store.db.Exec(`INSERT INTO messages(channel_id, thread_id, from_project, content, status, ts)
+		VALUES(1, 700, 'companyA/user-service', 'migration written, moving on' || char(10) || 'second line ignored', 'message', datetime('now'))`)
+
+	params, _ := json.Marshal(map[string]any{"message_id": 700})
+	resp := d.Handle(context.Background(), protocol.Request{Method: "task_status", Params: params, ID: 1})
+	if resp.Error != nil {
+		t.Fatalf("task_status: %s", resp.Error.Message)
+	}
+	var ts TaskStatusResult
+	json.Unmarshal(resp.Result, &ts)
+
+	if ts.TodosDone != 1 || ts.TodosTotal != 3 {
+		t.Errorf("todos: got %d/%d want 1/3", ts.TodosDone, ts.TodosTotal)
+	}
+	if ts.CurrentStep != "update handler" {
+		t.Errorf("current_step: got %q want %q", ts.CurrentStep, "update handler")
+	}
+	if len(ts.Todos) != 3 {
+		t.Errorf("todos list: got %d entries want 3", len(ts.Todos))
+	}
+	if ts.Project != "companyA/user-service" {
+		t.Errorf("project: got %q", ts.Project)
+	}
+	if ts.LastUpdate != "migration written, moving on" {
+		t.Errorf("last_update should be the first line only, got %q", ts.LastUpdate)
+	}
+}

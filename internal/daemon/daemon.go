@@ -153,6 +153,22 @@ type TaskStatusResult struct {
 	// recognise it as final re-calls at full speed — an in-band instruction
 	// stops that better than a passive boolean.
 	NextAction string `json:"next_action"`
+
+	// Progress detail. The child runs in its own process and can't write into
+	// the caller's session, so this is how its work becomes visible there.
+	Project     string     `json:"project,omitempty"`      // workspace/project doing the work
+	ElapsedSecs int64      `json:"elapsed_secs,omitempty"` // since the task was posted
+	TodosDone   int        `json:"todos_done"`
+	TodosTotal  int        `json:"todos_total"`
+	CurrentStep string     `json:"current_step,omitempty"` // first not-done todo
+	Todos       []TodoLine `json:"todos,omitempty"`
+	LastUpdate  string     `json:"last_update,omitempty"` // most recent reply on the thread
+}
+
+// TodoLine is one work item as the caller sees it.
+type TodoLine struct {
+	Content string `json:"content"`
+	State   string `json:"state"`
 }
 
 // nextAction renders the caller's next step for a status snapshot.
@@ -166,7 +182,7 @@ func nextAction(hasDone bool, agentStatus string, messageID int64) string {
 	case agentStatus == "no_agent":
 		return "NO AGENT WAS WOKEN — stop polling. Re-post with a `to` field to spawn one."
 	default:
-		return "STILL WORKING — call task_status again for this message_id. It blocks up to 5min for you; do not sleep."
+		return "STILL WORKING — see todos/current_step for what it's doing. Call task_status again for this message_id; it blocks up to 5min for you, so do not sleep."
 	}
 }
 
@@ -631,14 +647,65 @@ func (d *Daemon) computeTaskStatus(messageID int64) (result TaskStatusResult, te
 	}
 	hasDone := doneCount > 0
 	terminal = hasDone || agentStatus == "exited" || agentStatus == "failed"
-	return TaskStatusResult{
+	res := TaskStatusResult{
 		HasDone:     hasDone,
 		AgentStatus: agentStatus,
 		SessionID:   sessID,
 		PID:         int(pid.Int64),
 		ExitCode:    int(exitCode.Int64),
 		NextAction:  nextAction(hasDone, agentStatus, messageID),
-	}, terminal, nil
+	}
+	d.addProgressDetail(&res, parentID)
+	return res, terminal, nil
+}
+
+// addProgressDetail fills in what the child has actually been doing. The
+// caller can't see the child's own session, so this is the only window into
+// it — best-effort, never fails the status call.
+func (d *Daemon) addProgressDetail(res *TaskStatusResult, parentID int64) {
+	var toProject string
+	var ts time.Time
+	if err := d.Store.db.QueryRow(
+		`SELECT IFNULL(to_project,''), ts FROM messages WHERE id=?`, parentID).
+		Scan(&toProject, &ts); err == nil {
+		res.Project = toProject
+		if !ts.IsZero() {
+			res.ElapsedSecs = int64(time.Since(ts).Seconds())
+		}
+	}
+
+	todos, err := d.Todos.List(parentID)
+	if err == nil {
+		res.TodosTotal = len(todos)
+		for _, t := range todos {
+			if t.State == "done" {
+				res.TodosDone++
+			} else if res.CurrentStep == "" {
+				res.CurrentStep = t.Content
+			}
+			res.Todos = append(res.Todos, TodoLine{Content: t.Content, State: t.State})
+		}
+	}
+
+	// Latest reply on the thread — the child's own words, if it posted any.
+	var last string
+	if err := d.Store.db.QueryRow(
+		`SELECT content FROM messages WHERE thread_id=? ORDER BY id DESC LIMIT 1`,
+		parentID).Scan(&last); err == nil {
+		res.LastUpdate = firstLine(last, 200)
+	}
+}
+
+// firstLine trims a message to its first line, capped at max runes.
+func firstLine(s string, max int) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	s = strings.TrimSpace(s)
+	if r := []rune(s); len(r) > max {
+		return string(r[:max-1]) + "…"
+	}
+	return s
 }
 
 func (d *Daemon) handleReadChannel(req protocol.Request) protocol.Response {
