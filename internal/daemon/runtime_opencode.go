@@ -17,28 +17,37 @@ func isOpencode(binary string) bool {
 	return strings.Contains(binary, "opencode")
 }
 
-// opencodeResumeArgs returns args for `opencode run -s <session_id> [--title <name>] [-m <model>] <task>`.
-func opencodeResumeArgs(sessionID, task, model, title string) []string {
-	args := []string{"run", "-s", sessionID}
-	if title != "" {
-		args = append(args, "--title", title)
-	}
-	if model != "" && model != "default" {
-		args = append(args, "-m", model)
-	}
-	return append(args, task)
+// defaultAgentName is the agent hmf spawns with when mouse.yaml doesn't name
+// one. Explicit so a child never silently inherits the user's own
+// `default_agent` — that default may be a narrow one (e.g. a surgical
+// 1-2 file editor with no shell) that refuses ordinary delegated work.
+const defaultAgentName = "hmf-worker"
+
+// opencodeResumeArgs returns args for `opencode run -s <id> [--agent <a>] [--title <n>] [-m <model>] <task>`.
+func opencodeResumeArgs(sessionID, task, model, title, agent string) []string {
+	return append(opencodeCommonArgs([]string{"run", "-s", sessionID}, model, title, agent), task)
 }
 
-// opencodeFreshArgs returns args for `opencode run [--title <name>] [-m <model>] <task>`.
-func opencodeFreshArgs(task, model, title string) []string {
-	args := []string{"run"}
+// opencodeFreshArgs returns args for `opencode run [--agent <a>] [--title <n>] [-m <model>] <task>`.
+func opencodeFreshArgs(task, model, title, agent string) []string {
+	return append(opencodeCommonArgs([]string{"run"}, model, title, agent), task)
+}
+
+func opencodeCommonArgs(args []string, model, title, agent string) []string {
+	if agent == "" {
+		agent = defaultAgentName
+	}
+	// --auto: headless spawns have no TTY, so opencode's native `ask` prompts
+	// hang forever. Auto-approves only what isn't explicitly denied, so deny
+	// rules still hold — unlike a blanket `bash: "*": "allow"` in the config.
+	args = append(args, "--auto", "--agent", agent)
 	if title != "" {
 		args = append(args, "--title", title)
 	}
 	if model != "" && model != "default" {
 		args = append(args, "-m", model)
 	}
-	return append(args, task)
+	return args
 }
 
 // opencodeListSessions runs `<binary> session list` in dir, returns stdout.

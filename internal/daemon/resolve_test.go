@@ -23,7 +23,7 @@ func okLookPath(missing ...string) func(string) (string, error) {
 
 func TestResolveAgent_NoMouse(t *testing.T) {
 	d := &Daemon{LookPath: okLookPath()}
-	bin, model := d.resolveAgent(nil)
+	bin, model, _ := d.resolveAgent(nil)
 	if bin != "opencode" || model != "default" {
 		t.Errorf("got %s/%s want opencode/default", bin, model)
 	}
@@ -35,7 +35,7 @@ func TestResolveAgent_PrimaryBinaryMissing(t *testing.T) {
 		Primary:   config.AgentTarget{Provider: "opencode", Model: "default"},
 		Secondary: config.AgentTarget{Provider: "claude", Model: "default"},
 	}}
-	bin, model := d.resolveAgent(mouse)
+	bin, model, _ := d.resolveAgent(mouse)
 	if bin != "claude" || model != "default" {
 		t.Errorf("got %s/%s want claude/default", bin, model)
 	}
@@ -52,7 +52,7 @@ func TestResolveAgent_PrimaryModelMissing(t *testing.T) {
 		Primary:   config.AgentTarget{Provider: "opencode", Model: "primary-model"},
 		Secondary: config.AgentTarget{Provider: "opencode", Model: "fallback-model"},
 	}}
-	bin, model := d.resolveAgent(mouse)
+	bin, model, _ := d.resolveAgent(mouse)
 	if bin != "opencode" || model != "fallback-model" {
 		t.Errorf("got %s/%s want opencode/fallback-model", bin, model)
 	}
@@ -69,7 +69,7 @@ func TestResolveAgent_SecondaryDuplicateDropped(t *testing.T) {
 		Primary:   config.AgentTarget{Provider: "opencode", Model: "m"},
 		Secondary: config.AgentTarget{Provider: "opencode", Model: "m"},
 	}}
-	bin, model := d.resolveAgent(mouse)
+	bin, model, _ := d.resolveAgent(mouse)
 	if bin != "opencode" || model != "m" {
 		t.Errorf("got %s/%s want opencode/m", bin, model)
 	}
@@ -84,7 +84,7 @@ func TestResolveAgent_UncheckableModelKept(t *testing.T) {
 		Primary:   config.AgentTarget{Provider: "opencode", Model: "primary-model"},
 		Secondary: config.AgentTarget{Provider: "claude", Model: "default"},
 	}}
-	bin, model := d.resolveAgent(mouse)
+	bin, model, _ := d.resolveAgent(mouse)
 	if bin != "opencode" || model != "primary-model" {
 		t.Errorf("got %s/%s want opencode/primary-model", bin, model)
 	}

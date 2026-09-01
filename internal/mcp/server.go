@@ -94,8 +94,7 @@ type PostOutput struct {
 	MessageID int64 `json:"message_id" jsonschema:"the id of the posted message (use as thread_id for replies / task_status)"`
 }
 type TaskStatusInput struct {
-	MessageID   int64 `json:"message_id" jsonschema:"any message id on the thread (root or reply) — the handler resolves it to the thread root"`
-	WaitSeconds int64 `json:"wait_seconds,omitempty" jsonschema:"optional: block server-side up to this many seconds (capped at 120) until has_done or a terminal agent_status, instead of an instant snapshot. If has_done is still false, wait roughly 5 minutes before calling again for the same message_id — calling sooner returns instantly with no new information (server-side throttle), so nothing is gained by retrying faster."`
+	MessageID int64 `json:"message_id" jsonschema:"any message id on the thread (root or reply) — the handler resolves it to the thread root"`
 }
 type TaskStatusOutput struct {
 	HasDone     bool   `json:"has_done"`
@@ -103,6 +102,7 @@ type TaskStatusOutput struct {
 	SessionID   int64  `json:"session_id,omitempty"`
 	PID         int    `json:"pid,omitempty"`
 	ExitCode    int    `json:"exit_code,omitempty"`
+	NextAction  string `json:"next_action" jsonschema:"what to do next — follow it literally. Anything other than STILL WORKING is final: stop calling task_status for this message_id."`
 }
 
 // ============================================
@@ -138,6 +138,21 @@ func envChannelID() int64 {
 	return id
 }
 
+// resolveThreadID picks the thread a post belongs to when the caller didn't
+// name one. Addressed posts bind per recipient, not per session: two
+// delegations to different projects must start separate threads, or the
+// second collapses onto the first's thread and the daemon's wake guard
+// (active session on that thread) silently suppresses its spawn.
+func resolveThreadID(explicit int64, to string, byRecipient map[string]int64, current int64) int64 {
+	if explicit != 0 {
+		return explicit
+	}
+	if to != "" {
+		return byRecipient[to]
+	}
+	return current
+}
+
 // ============================================
 // MCP server
 // ============================================
@@ -155,6 +170,8 @@ func newServer(callerID string) *mcpserver.Server {
 	if tid := os.Getenv("HMF_TASK_MSG_ID"); tid != "" {
 		fmt.Sscanf(tid, "%d", &currentThread)
 	}
+	// Per-recipient thread roots, so parallel delegations don't share a thread.
+	threadByRecipient := map[string]int64{}
 
 	mcpserver.AddTool(srv, &mcpserver.Tool{
 		Name:        "post_message",
@@ -169,11 +186,7 @@ func newServer(callerID string) *mcpserver.Server {
 		if in.Channel != 0 {
 			params["channel"] = in.Channel
 		}
-		// Auto-bind thread_id to the session's current thread if caller didn't set it.
-		threadID := in.ThreadID
-		if threadID == 0 {
-			threadID = currentThread
-		}
+		threadID := resolveThreadID(in.ThreadID, in.To, threadByRecipient, currentThread)
 		if threadID != 0 {
 			params["thread_id"] = threadID
 		}
@@ -192,25 +205,27 @@ func newServer(callerID string) *mcpserver.Server {
 		}
 		var pr PostOutput
 		json.Unmarshal(result, &pr)
-		// First post (no prior thread) → bind session to this thread root.
-		if currentThread == 0 && pr.MessageID != 0 {
-			currentThread = pr.MessageID
+		if pr.MessageID != 0 {
+			// New root for this recipient → remember it so follow-ups continue
+			// (and resume) the same thread instead of starting a fresh one.
+			if in.To != "" && threadID == 0 {
+				threadByRecipient[in.To] = pr.MessageID
+			}
+			// First post (no prior thread) → bind session to this thread root.
+			if currentThread == 0 {
+				currentThread = pr.MessageID
+			}
 		}
 		return nil, pr, nil
 	})
 
 	mcpserver.AddTool(srv, &mcpserver.Tool{
 		Name:        "task_status",
-		Description: "Check the status of a delegated task: is the agent still working, exited cleanly, failed, or never woke. Plus whether a done reply has landed. Pass any message_id from the thread (root or reply) — the handler resolves it to the thread root. Pass wait_seconds to block until done instead of polling yourself.",
+		Description: "Check the status of a delegated task: is the agent still working, exited cleanly, failed, or never woke, and whether a done reply has landed. Pass any message_id from the thread (root or reply). This call BLOCKS for up to 5 minutes, returning early the moment the task finishes — do not sleep around it, and do not call it again until it returns. Follow the next_action field it gives you.",
 	}, func(ctx context.Context, req *mcpserver.CallToolRequest, in TaskStatusInput) (*mcpserver.CallToolResult, TaskStatusOutput, error) {
-		// Deadline must outlive the daemon's own wait; cap mirrors daemon.maxTaskStatusWait.
-		timeout := 30 * time.Second
-		if in.WaitSeconds > 0 {
-			timeout = min(time.Duration(in.WaitSeconds)*time.Second, 2*time.Minute) + 10*time.Second
-		}
-		result, err := protocol.CallWithTimeout("task_status", map[string]any{
-			"message_id": in.MessageID, "wait_seconds": in.WaitSeconds,
-		}, timeout)
+		// Socket deadline must outlive the daemon's fixed 5min wait.
+		result, err := protocol.CallWithTimeout("task_status",
+			map[string]any{"message_id": in.MessageID}, 5*time.Minute+10*time.Second)
 		if err != nil {
 			return nil, TaskStatusOutput{}, err
 		}

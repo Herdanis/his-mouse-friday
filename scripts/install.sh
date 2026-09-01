@@ -94,9 +94,10 @@ gobin="$(go env GOBIN)"
 [ -n "$gobin" ] || gobin="$(go env GOPATH)/bin"
 
 # ============================================
-# Opencode plugin + slash commands
+# Opencode plugin + slash commands + worker agent
 # ============================================
-mkdir -p "$OPENCODE_CONFIG/plugins" "$OPENCODE_CONFIG/plugins/hmf" "$OPENCODE_CONFIG/commands"
+mkdir -p "$OPENCODE_CONFIG/plugins" "$OPENCODE_CONFIG/plugins/hmf" \
+         "$OPENCODE_CONFIG/commands" "$OPENCODE_CONFIG/agents"
 
 fetch() { # <remote-path> <local-path>
   info "fetching $1"
@@ -106,8 +107,9 @@ fetch() { # <remote-path> <local-path>
 fetch "examples/plugins/hmf/plugin.ts"        "$OPENCODE_CONFIG/plugins/hmf/plugin.ts"
 fetch "examples/commands/hmf-setup.md"        "$OPENCODE_CONFIG/commands/hmf-setup.md"
 fetch "examples/commands/hmf-register.md"     "$OPENCODE_CONFIG/commands/hmf-register.md"
+fetch "examples/agents/hmf-worker.md"         "$OPENCODE_CONFIG/agents/hmf-worker.md"
 
-ok "plugin + commands → $OPENCODE_CONFIG"
+ok "plugin + commands + agent → $OPENCODE_CONFIG"
 
 # ============================================
 # Path + next-steps

@@ -20,9 +20,11 @@ type AgentConfig struct {
 
 // AgentTarget identifies a coding agent runtime + model.
 // Empty provider = unset (secondary optional).
+// Name overrides the spawned agent (opencode `--agent`); empty = hmf's default.
 type AgentTarget struct {
 	Provider string `yaml:"provider"`
 	Model    string `yaml:"model"`
+	Name     string `yaml:"name"`
 }
 
 type PermissionsConfig struct {

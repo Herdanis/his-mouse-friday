@@ -54,7 +54,7 @@ func Call(method string, params any) (json.RawMessage, error) {
 }
 
 // CallWithTimeout is Call with a caller-chosen deadline — for RPCs that may
-// legitimately block server-side (task_status with wait_seconds).
+// legitimately block server-side (task_status blocks up to 5min).
 func CallWithTimeout(method string, params any, timeout time.Duration) (json.RawMessage, error) {
 	var raw json.RawMessage
 	if params != nil {

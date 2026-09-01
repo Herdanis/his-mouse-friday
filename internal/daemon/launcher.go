@@ -21,6 +21,7 @@ type SpawnConfig struct {
 	Dir            string // repo path to run in
 	Binary         string // agent binary (opencode, /bin/echo, etc.)
 	Model          string // model id
+	AgentName      string // opencode --agent; empty = hmf's default worker
 	Runbook        string // MOUSE.md content
 	Task           string // the task to perform
 	FromID         string // engaging agent's "workspace/project" identity
@@ -45,9 +46,9 @@ func buildArgs(cfg SpawnConfig) (bin string, args []string) {
 	switch {
 	case isOpencode(bin):
 		if cfg.AgentSessionID != "" {
-			args = opencodeResumeArgs(cfg.AgentSessionID, task, cfg.Model, cfg.SessionName)
+			args = opencodeResumeArgs(cfg.AgentSessionID, task, cfg.Model, cfg.SessionName, cfg.AgentName)
 		} else {
-			args = opencodeFreshArgs(task, cfg.Model, cfg.SessionName)
+			args = opencodeFreshArgs(task, cfg.Model, cfg.SessionName, cfg.AgentName)
 		}
 	case isClaude(bin):
 		if cfg.AgentSessionID != "" {

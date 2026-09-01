@@ -189,7 +189,7 @@ func TestLauncher_ResumeArgUsesSessionFlag(t *testing.T) {
 	if bin != "opencode" {
 		t.Fatalf("bin: got %q want opencode", bin)
 	}
-	want := []string{"run", "-s", "ses_abc123", "do thing"}
+	want := []string{"run", "-s", "ses_abc123", "--auto", "--agent", defaultAgentName, "do thing"}
 	if !reflect.DeepEqual(args, want) {
 		t.Fatalf("args: got %v want %v", args, want)
 	}
@@ -197,9 +197,26 @@ func TestLauncher_ResumeArgUsesSessionFlag(t *testing.T) {
 	// Fresh spawn (no AgentSessionID): no -s flag.
 	cfg.AgentSessionID = ""
 	_, args = buildArgs(cfg)
-	want = []string{"run", "do thing"}
+	want = []string{"run", "--auto", "--agent", defaultAgentName, "do thing"}
 	if !reflect.DeepEqual(args, want) {
 		t.Fatalf("fresh args: got %v want %v", args, want)
+	}
+}
+
+// A spawn must never silently inherit the user's own `default_agent` — an
+// unset AgentName resolves to hmf's worker, and mouse.yaml can override it.
+func TestLauncher_AgentNameDefaultAndOverride(t *testing.T) {
+	cfg := SpawnConfig{Dir: t.TempDir(), Binary: "opencode", Task: "do thing"}
+
+	_, args := buildArgs(cfg)
+	if !reflect.DeepEqual(args, []string{"run", "--auto", "--agent", defaultAgentName, "do thing"}) {
+		t.Fatalf("unset AgentName: got %v", args)
+	}
+
+	cfg.AgentName = "frontend-specialist"
+	_, args = buildArgs(cfg)
+	if !reflect.DeepEqual(args, []string{"run", "--auto", "--agent", "frontend-specialist", "do thing"}) {
+		t.Fatalf("override: got %v", args)
 	}
 }
 

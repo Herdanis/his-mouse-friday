@@ -273,7 +273,7 @@ Rules:
 See ./MOUSE.md for this project's agent guide and ownership scope.
 ```
 
-### Generate opencode.json (stays permissive — mouse.yaml is the real gate)
+### Generate opencode.json (mouse.yaml is the real gate)
 
 If `opencode.json` already exists in the repo root, skip this step (don't overwrite user's config). Note it was skipped.
 
@@ -284,21 +284,26 @@ If it does NOT exist, write `opencode.json` with this exact structure:
   "$schema": "https://opencode.ai/config.json",
   "permission": {
     "bash": {
-      "*": "allow"
+      "*": "ask"
     },
     "edit": "allow"
   }
 }
 ```
 
-Do NOT put the Step 5 deny/ask patterns here as `"deny"`/`"ask"` values. hmf-spawned
-agents run headless (`opencode run`, no TTY) — an opencode-native `ask` on any
-pattern hangs/stalls exactly like a blanket `"*": "ask"` would, since there's
-nobody to answer the prompt. The Step 5 patterns are already enforced at the
-code level by the hmf plugin (`plugins/hmf/plugin.ts`) reading `mouse.yaml`'s
-`commands.deny`/`ask` — that's the actual gate, and it fails with a clean
-error back to the agent instead of hanging. `opencode.json` here only needs
-to stay out of the way.
+Do NOT put the Step 5 deny/ask patterns here as `"deny"`/`"ask"` values, and do
+NOT set `bash` to a blanket `"allow"`. Two separate mechanisms already cover it:
+
+- **Interactive sessions** have a TTY, so `"ask"` is answerable and correct.
+- **hmf-spawned agents** run headless, where an unanswerable `ask` would hang —
+  so the daemon spawns them with `--auto`, which auto-approves only what is not
+  explicitly denied.
+- **The real guardrail** is the hmf plugin (`plugins/hmf/plugin.ts`) reading
+  `mouse.yaml`'s `commands.deny`/`ask`. It throws a clean error back to the
+  agent rather than hanging, and it still fires under `--auto` (verified).
+
+A blanket `bash: "*": "allow"` would defeat all of this and was flagged by a
+security review — don't reintroduce it.
 
 After writing, report ONLY this line (listing only files you wrote):
 

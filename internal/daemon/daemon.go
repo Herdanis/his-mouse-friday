@@ -14,7 +14,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -35,17 +34,17 @@ func generatePrefix() string {
 // resolveAgent picks the runtime for a wake: primary, falling back to
 // secondary when primary's binary is missing or its model is unavailable.
 // Failed/unknown probes mean "assume available" — never block spawn.
-func (d *Daemon) resolveAgent(mouse *config.MouseConfig) (binary, model string) {
-	type agent struct{ bin, model string }
-	cands := []agent{{"opencode", "default"}}
+func (d *Daemon) resolveAgent(mouse *config.MouseConfig) (binary, model, agentName string) {
+	type agent struct{ bin, model, name string }
+	cands := []agent{{"opencode", "default", ""}}
 	if mouse != nil && mouse.Agent.Primary.Provider != "" {
-		cands[0] = agent{mouse.Agent.Primary.Provider, mouse.Agent.Primary.Model}
+		cands[0] = agent{mouse.Agent.Primary.Provider, mouse.Agent.Primary.Model, mouse.Agent.Primary.Name}
 		if cands[0].model == "" {
 			cands[0].model = "default"
 		}
 	}
 	if mouse != nil && mouse.Agent.Secondary.Provider != "" {
-		sec := agent{mouse.Agent.Secondary.Provider, mouse.Agent.Secondary.Model}
+		sec := agent{mouse.Agent.Secondary.Provider, mouse.Agent.Secondary.Model, mouse.Agent.Secondary.Name}
 		if sec.model == "" {
 			sec.model = "default"
 		}
@@ -70,10 +69,10 @@ func (d *Daemon) resolveAgent(mouse *config.MouseConfig) (binary, model string) 
 				continue // model known missing
 			}
 		}
-		return c.bin, c.model
+		return c.bin, c.model, c.name
 	}
 	logCapture(0, "resolveAgent: no candidate available, using primary %s/%s", cands[0].bin, cands[0].model)
-	return cands[0].bin, cands[0].model
+	return cands[0].bin, cands[0].model, cands[0].name
 }
 
 // ============================================
@@ -99,10 +98,6 @@ type Daemon struct {
 	ModelProbe func(binary, model string) (ok, checkable bool)
 	Sock       string
 	shutdownCh chan struct{}
-	// lastPollAt throttles task_status: a repeat call for the same message_id
-	// within minTaskStatusPollInterval skips blocking and returns instantly.
-	pollMu     sync.Mutex
-	lastPollAt map[int64]time.Time
 }
 
 // NewDaemon wires a Daemon with default components for the given socket + db.
@@ -145,8 +140,7 @@ type PostResult struct {
 	MessageID int64 `json:"message_id"`
 }
 type TaskStatusParams struct {
-	MessageID   int64 `json:"message_id"`
-	WaitSeconds int64 `json:"wait_seconds,omitempty"` // block server-side until has_done/terminal, capped at maxTaskStatusWait
+	MessageID int64 `json:"message_id"`
 }
 type TaskStatusResult struct {
 	HasDone     bool   `json:"has_done"`
@@ -154,7 +148,28 @@ type TaskStatusResult struct {
 	SessionID   int64  `json:"session_id,omitempty"`
 	PID         int    `json:"pid,omitempty"`
 	ExitCode    int    `json:"exit_code,omitempty"`
+	// NextAction spells out what to do with this result. A terminal result
+	// returns instantly (nothing left to wait for), so a caller that doesn't
+	// recognise it as final re-calls at full speed — an in-band instruction
+	// stops that better than a passive boolean.
+	NextAction string `json:"next_action"`
 }
+
+// nextAction renders the caller's next step for a status snapshot.
+func nextAction(hasDone bool, agentStatus string, messageID int64) string {
+	switch {
+	case hasDone:
+		return fmt.Sprintf("COMPLETE — stop polling. Call read_thread(message_id=%d) to read the result.", messageID)
+	case agentStatus == "exited" || agentStatus == "failed":
+		return fmt.Sprintf("ENDED WITHOUT A DONE REPLY — stop polling. Call read_thread(message_id=%d); "+
+			"if there is no reply, re-dispatch with post_message.", messageID)
+	case agentStatus == "no_agent":
+		return "NO AGENT WAS WOKEN — stop polling. Re-post with a `to` field to spawn one."
+	default:
+		return "STILL WORKING — call task_status again for this message_id. It blocks up to 5min for you; do not sleep."
+	}
+}
+
 type ReadChanParams struct {
 	Channel int64 `json:"channel"`
 }
@@ -388,8 +403,8 @@ func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error
 	if mouse != nil && !mouse.A2A.AllowInbound {
 		return fmt.Errorf("project %s does not allow inbound engagement", msg.ToProject)
 	}
-	binary, model := d.resolveAgent(mouse)
-	logCapture(0, "wake %s: agent=%s model=%s", msg.ToProject, binary, model)
+	binary, model, agentName := d.resolveAgent(mouse)
+	logCapture(0, "wake %s: agent=%s model=%s name=%s", msg.ToProject, binary, model, agentName)
 	runbook, _ := os.ReadFile(filepath.Join(proj.Path, "MOUSE.md"))
 	// parentID: explicit (cross-project delegation), else msg.ID (root) or
 	// msg.ThreadID (reply wake).
@@ -429,14 +444,20 @@ func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error
 	entrypoint := fmt.Sprintf(
 		"[DELEGATED TASK] Parent agent %s sent you a message (id %d) in the general channel.\n"+
 			"1. Call the read_thread MCP tool with message_id=%d to load the task and prior context.\n"+
-			"2. Do the work inside this project directory.\n"+
+			"2. Do the work inside this project directory. The task states intent; you own the\n"+
+			"   details. Locate the code, decide the files, and carry it through — including\n"+
+			"   any file count the task implies. Read this project's MOUSE.md/AGENTS.md for\n"+
+			"   local conventions and its verify commands, and run them before replying.\n"+
 			"3. Track work items: todo_list with thread_id=%d (see existing), todo_add for new steps, todo_update to mark done.\n"+
-			"4. Reply: post_message with thread_id=%d, status=\"done\", and a one-line summary.",
+			"4. Reply: post_message with thread_id=%d, status=\"done\", a one-line summary, the\n"+
+			"   files you changed, and the verify result. The parent trusts this reply instead\n"+
+			"   of re-reading your files, so it must be accurate. Blocked → start with \"BLOCKED: \".",
 		msg.FromProject, msg.ID, parentID, parentID, parentID)
 	spawnCfg := SpawnConfig{
 		Dir:       proj.Path,
 		Binary:    binary,
 		Model:     model,
+		AgentName: agentName,
 		Runbook:   string(runbook),
 		Task:      entrypoint,
 		FromID:    msg.FromProject,
@@ -526,24 +547,18 @@ func logCapture(sessionID int64, format string, args ...any) {
 	fmt.Fprintf(f, "session %d: "+format+"\n", append([]any{sessionID}, args...)...)
 }
 
-// maxTaskStatusWait caps a blocking task_status call. Some MCP clients
-// (opencode) enforce their own shorter tool-call timeout and error with
-// "-32001 Request timed out" past it — 2min held up in practice.
-const maxTaskStatusWait = 2 * time.Minute
+// taskStatusWait is how long a task_status call blocks before reporting back.
+// Fixed, not caller-tunable: a shorter wait just produces more round trips for
+// the same answer. var (not const) so tests can shorten it.
+var taskStatusWait = 5 * time.Minute
 
 // taskStatusPollInterval is how often a blocking task_status re-checks the DB.
 const taskStatusPollInterval = 2 * time.Second
 
-// minTaskStatusPollInterval: a repeat call for the same message_id sooner
-// than this since the last call skips blocking and returns instantly. Can't
-// stop a caller from calling again immediately, but can make doing so
-// pointless — no reason to hammer a call that returns the same snapshot with
-// zero wait each time.
-const minTaskStatusPollInterval = 5 * time.Minute
-
 // handleTaskStatus reports agent state (working/exited/failed/no_agent) +
-// done reply presence. wait_seconds > 0 blocks server-side (capped at
-// maxTaskStatusWait) until has_done or a terminal agent_status.
+// done reply presence. Always blocks for taskStatusWait, returning early the
+// moment the task reaches a terminal state. Blocking IS the pacing mechanism —
+// a call that returns instantly just invites an immediate retry.
 func (d *Daemon) handleTaskStatus(ctx context.Context, req protocol.Request) protocol.Response {
 	var p TaskStatusParams
 	if err := json.Unmarshal(req.Params, &p); err != nil {
@@ -552,23 +567,7 @@ func (d *Daemon) handleTaskStatus(ctx context.Context, req protocol.Request) pro
 	if p.MessageID == 0 {
 		return errResp(req.ID, "message_id is required")
 	}
-	now := time.Now()
-	d.pollMu.Lock()
-	last, seen := d.lastPollAt[p.MessageID]
-	throttled := seen && now.Sub(last) < minTaskStatusPollInterval
-	if !throttled {
-		if d.lastPollAt == nil {
-			d.lastPollAt = make(map[int64]time.Time)
-		}
-		d.lastPollAt[p.MessageID] = now
-	}
-	d.pollMu.Unlock()
-
-	deadline := now
-	if p.WaitSeconds > 0 && !throttled {
-		wait := min(time.Duration(p.WaitSeconds)*time.Second, maxTaskStatusWait)
-		deadline = deadline.Add(wait)
-	}
+	deadline := time.Now().Add(taskStatusWait)
 	for {
 		result, terminal, err := d.computeTaskStatus(p.MessageID)
 		if err != nil {
@@ -596,7 +595,8 @@ func (d *Daemon) computeTaskStatus(messageID int64) (result TaskStatusResult, te
 		`SELECT IFNULL(thread_id, id) FROM messages WHERE id=?`, messageID).Scan(&parentID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return TaskStatusResult{HasDone: false, AgentStatus: "no_agent"}, true, nil
+			return TaskStatusResult{HasDone: false, AgentStatus: "no_agent",
+				NextAction: nextAction(false, "no_agent", messageID)}, true, nil
 		}
 		return TaskStatusResult{}, true, err
 	}
@@ -615,8 +615,12 @@ func (d *Daemon) computeTaskStatus(messageID int64) (result TaskStatusResult, te
 		parentID).Scan(&sessID, &status, &pid, &exitCode)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
+			// Terminal: the wake already ran (synchronously, before the caller
+			// got this message_id), so no session means none is coming.
+			// Blocking here would just wait out the full timeout for nothing.
 			hasDone := doneCount > 0
-			return TaskStatusResult{HasDone: hasDone, AgentStatus: "no_agent"}, hasDone, nil
+			return TaskStatusResult{HasDone: hasDone, AgentStatus: "no_agent",
+				NextAction: nextAction(hasDone, "no_agent", messageID)}, true, nil
 		}
 		return TaskStatusResult{}, true, err
 	}
@@ -633,6 +637,7 @@ func (d *Daemon) computeTaskStatus(messageID int64) (result TaskStatusResult, te
 		SessionID:   sessID,
 		PID:         int(pid.Int64),
 		ExitCode:    int(exitCode.Int64),
+		NextAction:  nextAction(hasDone, agentStatus, messageID),
 	}, terminal, nil
 }
 

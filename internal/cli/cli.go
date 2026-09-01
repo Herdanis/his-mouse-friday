@@ -355,7 +355,7 @@ func watchCmd() *cobra.Command {
 			fmt.Printf("watching message %d — Ctrl-C to stop\n", msgID)
 			for {
 				result, err := protocol.CallWithTimeout("task_status",
-					map[string]any{"message_id": msgID, "wait_seconds": 120}, 130*time.Second)
+					map[string]any{"message_id": msgID}, 5*time.Minute+10*time.Second)
 				if err != nil {
 					return fmt.Errorf("task_status: %w", err)
 				}
