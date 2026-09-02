@@ -87,3 +87,25 @@ func TestTodos_AddIsIdempotent(t *testing.T) {
 		t.Errorf("distinct content should add a row, got %d todos", len(list))
 	}
 }
+
+func TestTodos_Delete(t *testing.T) {
+	s, _ := OpenStore(filepath.Join(t.TempDir(), "t.db"))
+	defer s.Close()
+	s.db.Exec(`INSERT INTO workspaces(id, name) VALUES(1, 'ws')`)
+	s.db.Exec(`INSERT INTO channels(id, workspace_id, name, type) VALUES(1, 1, 'dm', 'dm')`)
+	s.db.Exec(`INSERT INTO messages(id, channel_id, from_project, content, ts) VALUES(1, 1, 'a/b', 'task', datetime('now'))`)
+	td := &TodoStore{Store: s}
+
+	keep, _ := td.Add(1, "keep me")
+	drop, _ := td.Add(1, "stale orphan")
+	if err := td.Delete(drop.ID); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	list, _ := td.List(1)
+	if len(list) != 1 || list[0].ID != keep.ID {
+		t.Errorf("after delete got %+v, want only the kept item", list)
+	}
+	if err := td.Delete(drop.ID); err == nil {
+		t.Error("deleting a missing todo should report it, not silently succeed")
+	}
+}

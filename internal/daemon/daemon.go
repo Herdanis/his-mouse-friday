@@ -238,6 +238,14 @@ type SessionListItem struct {
 	ParentID       int64  `json:"parent_id,omitempty"`
 	CreatedAt      string `json:"created_at"`
 	FinishedAt     string `json:"finished_at,omitempty"` // empty while still running
+	// EngagedBy is who asked for this session's work — the sender of the
+	// message that spawned it. On a chain (A engages B, B engages C) every
+	// session shares one root thread, so this edge is what recovers the shape.
+	EngagedBy string `json:"engaged_by,omitempty"`
+	PID       int    `json:"pid,omitempty"`
+	// Dir is the project path. opencode resumes per-directory, so the session
+	// id alone is not enough to reopen a session.
+	Dir string `json:"dir,omitempty"`
 }
 
 // ============================================
@@ -279,7 +287,7 @@ func (d *Daemon) Handle(ctx context.Context, req protocol.Request) protocol.Resp
 		return d.handlePrune(req)
 	case "report_progress":
 		return d.handleReportProgress(req)
-	case "todo_add", "todo_update", "todo_list", "todo_threads":
+	case "todo_add", "todo_update", "todo_list", "todo_threads", "todo_delete":
 		return d.handleTodo(req)
 	case "shutdown":
 		select {
@@ -972,8 +980,10 @@ func (d *Daemon) handleStatus(req protocol.Request) protocol.Response {
 // IFNULL coerces NULL ocID/root to ""/0 so the CLI renders clean dashes.
 func (d *Daemon) handleSessionList(req protocol.Request) protocol.Response {
 	rows, err := d.Store.db.Query(
-		`SELECT IFNULL(s.name,'-'), p.name, s.status, IFNULL(s.opencode_session_id,'') AS session_id, IFNULL(s.root_thread_id,0) AS parent_id, IFNULL(s.created_at,''), IFNULL(s.finished_at,'')
+		`SELECT IFNULL(s.name,'-'), p.name, s.status, IFNULL(s.opencode_session_id,'') AS session_id, IFNULL(s.root_thread_id,0) AS parent_id, IFNULL(s.created_at,''), IFNULL(s.finished_at,''),
+		        IFNULL(m.from_project,''), IFNULL(s.pid,0), p.path
 		 FROM sessions s JOIN projects p ON s.project_id=p.id
+		 LEFT JOIN messages m ON m.id = s.task_msg_id
 		 ORDER BY s.id DESC`)
 	if err != nil {
 		return errResp(req.ID, err.Error())
@@ -982,7 +992,7 @@ func (d *Daemon) handleSessionList(req protocol.Request) protocol.Response {
 	var out []SessionListItem
 	for rows.Next() {
 		var it SessionListItem
-		if err := rows.Scan(&it.Name, &it.Project, &it.Status, &it.AgentSessionID, &it.ParentID, &it.CreatedAt, &it.FinishedAt); err != nil {
+		if err := rows.Scan(&it.Name, &it.Project, &it.Status, &it.AgentSessionID, &it.ParentID, &it.CreatedAt, &it.FinishedAt, &it.EngagedBy, &it.PID, &it.Dir); err != nil {
 			return errResp(req.ID, err.Error())
 		}
 		out = append(out, it)
@@ -1092,6 +1102,15 @@ func (d *Daemon) handleTodo(req protocol.Request) protocol.Response {
 		return protocol.Response{ID: req.ID, Result: b}
 	case "todo_update":
 		if err := d.Todos.Update(p.ID, p.State); err != nil {
+			return errResp(req.ID, err.Error())
+		}
+		b, _ := json.Marshal(map[string]bool{"ok": true})
+		return protocol.Response{ID: req.ID, Result: b}
+	case "todo_delete":
+		if p.ID == 0 {
+			return errResp(req.ID, "todo_delete needs id")
+		}
+		if err := d.Todos.Delete(p.ID); err != nil {
 			return errResp(req.ID, err.Error())
 		}
 		b, _ := json.Marshal(map[string]bool{"ok": true})

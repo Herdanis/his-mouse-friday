@@ -131,9 +131,10 @@ After `make install`, in any opencode session:
    so opencode enforces the policy natively — agents physically cannot run
    denied commands (e.g. `kubectl delete`, `gcloud * delete`).
 
-4. Open opencode in a registered repo. The agent now has 5 tools:
-   `engage_project_agent`, `post_message`, `read_channel`, `read_thread`,
-   `list_project_agents`. The `from` field is auto-detected from cwd.
+4. Open opencode in a registered repo. The agent now has 6 tools:
+   `post_message`, `task_status`, `report_progress`, `read_channel`,
+   `read_thread`, `list_project_agents`. The `from` field is auto-detected
+   from cwd.
 
 ## Config (per repo)
 
@@ -156,47 +157,72 @@ hmf monitor --active   # only what's still running
 ```
 
 ```
-hmf monitor · 40 tasks · 1 working · 21:40:34
-↑↓ move · enter open · a filter · r refresh · q quit
-
-  ID   STATUS   FROM              WORKER             ELAPSED   TODOS
-▸ 165  working  his-mouse-friday  mouse-for-sale     12s       1/3
-  163  done     you               mouse-for-sale     38s       -
-  97   done     his-mouse-friday  penny-pincher +1   1m09s     0/4
-  33   failed   you               mouse-for-sale +1  5m00s     4/4
+ hmf monitor  ● 1 working · ✗ 1 failed · 4 tasks                                           21:40:34 
+╭────────────────────────────────────╮╭────────────────────────────────────────────────────────────╮
+│ ▎ ● #214  frontend +1        7m00s ││ #214  backend → frontend +1                      ● working │
+│ ▎ ▰▱▱▱▱ 1/4   ✗1 ship the login f… ││ ▰▰▰▱▱▱▱▱▱▱▱▱  1/4 done · 7m00s                             │
+│   ✓ #213  penny-pincher      1m00s ││ ────────────────────────────────────────────────────────── │
+│   ▰▰▰▰▰ 4/4   bump dependencies    ││ task                                                       │
+│   ✗ #212  store              1m00s ││   ship the login flow end to end                           │
+│   ▰▱▱▱▱ 1/5   migrate the session… ││                                                            │
+│   ✓ #211  his-mouse-friday   9m00s ││ sessions · 2                                               │
+│   ····· —     fix the flaky daemo… ││   backend  (dispatcher)                                    │
+│                                    ││     └ 1. ● working  frontend  6m00s  ses_fe01  pid 771     │
+│                                    ││       └ 2. ✗ failed   store  1m00s  ses_st03               │
+│                                    ││                                                            │
+│                                    ││   open one:  cd /tmp/fe && opencode -s <session id>        │
+│                                    ││                                                            │
+│                                    ││ work items · 1/4 done                                      │
+│                                    ││   ✓ define the auth contract                               │
+│                                    ││   ▸ build the form                                         │
+│                                    ││   ○ wire the gateway route                                 │
+│                                    ││   ○ migrate sessions table                                 │
+╰────────────────────────────────────╯╰────────────────────────────────────────────────────────────╯
+ ↑↓ move · tab focus · d del item · a active only · r refresh · q quit
 ```
 
-One row per **conversation**: `FROM` is the parent that dispatched it,
-`WORKER` the project doing the work (`+1` when a second project got pulled
-in). A conversation that was retried, resumed, or handed between projects
-keeps all of that on one row. Running work sorts to the top so it is never
-buried under history.
+On a terminal at least 96 columns wide the list and the selected task sit side
+by side, so moving the cursor updates the detail immediately — no opening and
+closing to compare two tasks. Narrower terminals fall back to a plain list,
+with `enter` opening a task and `esc` going back.
 
-`FROM` reads `you` when the task came from a human in an unregistered
-directory, since the daemon has no project identity for those.
+Each list entry is two lines: status mark, thread id and the project doing the
+work on the first, work-item progress and the instruction on the second. `●`
+is running, `✓` finished, `✗` failed, and the elapsed time on the right is
+time actually spent working. A task that pulled in more than one project shows
+`frontend +1`; who *dispatched* it is in the detail header, which reads
+`backend → frontend +1`, or `you` when the task came from a human in an
+unregistered directory.
 
-`ID` is the thread id, so anything you spot is directly actionable:
-`hmf watch 165`, or `task_status(message_id=165)` from an agent.
+A conversation that was retried, resumed, or handed between projects keeps all
+of that on one entry, and running work sorts to the top so it is never buried
+under history.
+
+The id is the thread id, so anything you spot is directly actionable:
+`hmf watch 214`, or `task_status(message_id=214)` from an agent.
 
 | key | |
 |---|---|
 | `↑` `↓` / `j` `k` | move (list scrolls) |
 | `g` / `G` | jump to first / last |
-| `enter` | open a task |
+| `tab` | switch focus between list and detail (wide terminals) |
+| `enter` | focus the detail pane (or open a task on narrow terminals) |
 | `esc` | back to the list |
 | `a` | toggle all / running-only |
+| `d` | in a task: pick a work item, `d` again to delete it (`y` confirms) |
 | `r` | refresh now |
 | `q` | quit |
 
-Opening one is a read-only view of the whole exchange — who asked, what was
-asked, each attempt, the work items, and the **conversation itself**:
+The detail pane is a read-only view of the whole exchange — who asked, what
+was asked, each attempt, the work items, and the **conversation itself**:
 dispatches indented left, replies indented right, so the back-and-forth
-between parent and child reads at a glance.
+between parent and child reads at a glance. Its header pins the identity,
+status and progress in place while the body scrolls under them.
 
 ```
-mouse-for-sale · exited · 1m11s · thread 165
-
-from haydn/his-mouse-friday  →  mouse-for-sale
+#165  his-mouse-friday → mouse-for-sale                              ✓ done
+▰▰▰▰▰▰▰▰▰▰▰▰  1/1 done · 1m11s
+──────────────────────────────────────────────────────────────────────────
 
 task
   Read-only, NO edits. todo_add 'count routes' then count dirs under
@@ -206,11 +232,11 @@ work items · 1/1 done
   ✓ count routes
 
 conversation
-  21:40:22 haydn/his-mouse-friday → haydn/mouse-for-sale
+  21:40 his-mouse-friday → haydn/mouse-for-sale
     Read-only, NO edits. todo_add 'count routes' then count dirs under
     src/routes, mark done. Reply done with the number.
 
-      21:41:25 haydn/mouse-for-sale ↩ [done]
+      21:41 mouse-for-sale ↩ done
         Done. 4 route dirs under src/routes: login, pockets, settings,
         transactions. Read-only, no edits.
 ```
@@ -218,18 +244,49 @@ conversation
 A parent that sends follow-ups mid-task shows them interleaved, so a long
 multi-turn exchange reads in order.
 
-A task with several attempts lists them instead, each with its own status
-and duration:
+Every task shows who ran it. The dispatcher sits at the top and each spawned
+session hangs under whoever engaged it, so a hand-off (one agent pulling in a
+second project) reads as a chain rather than unrelated attempts:
 
 ```
-attempts · 2
-  1. done     mouse-for-sale  5m00s
-  2. failed   penny-pincher   0s
+sessions · 3
+  his-mouse-friday  (dispatcher)
+    ├ 1. ✓ done     penny-pincher   5m00s  ses_7f3a2b9c1d4e5f6a  ·3 runs, 1 failed
+      └ 2. ● working  mouse-for-sale  1m01s  ses_9b8c7d6e5f4a3b2c  pid 42
+    └ 3. ✗ failed   ledger          0m12s  ses_1a2b3c4d5e6f7a8b
+
+  open one:  cd /path/to/project && opencode -s <session id>
 ```
 
-`ELAPSED` is how long a task *ran* — it freezes when the task ends rather
-than counting up forever. A finished task whose duration was never recorded
-shows `?`.
+Each agent hangs under whoever engaged it, so a task that fans out to several
+projects reads as a tree: the two agents the dispatcher engaged sit at the
+first level, and the one `penny-pincher` pulled in nests under it. The list
+entry carries the same fan-out in miniature — `frontend +3` names the first
+worker and counts the rest, and a `✗2` beside the progress bar flags children
+that failed while the task as a whole is still running.
+
+One line per child agent, not per spawn. Resuming a task reuses its opencode
+session id, so a task picked up three times leaves three session rows carrying
+a single conversation — they collapse into one entry with `·3 runs`, and the
+time shown is the sum of the runs, excluding the gaps between them. A failed
+run among them is called out rather than hidden by the collapse.
+
+Those are opencode session ids, so any agent listed can be reopened
+directly — `cd` into that project and pass the id to `opencode -s`. opencode
+resumes per-directory, which is why the hint carries the path as well as the
+id. A spawn whose session id was never captured is never merged with another
+on a guess; it stays its own entry, listed by its hmf name.
+
+Work items can be deleted from here — press `d` to pick one, `d` again to
+delete, `y` to confirm. An agent that loses track of a work item can strand it
+as permanently pending, and this is where you notice. From the shell:
+`hmf task show <thread_id>` to see ids, `hmf task delete <id>`.
+
+The elapsed time is how long a task *ran* — it freezes when the task ends rather
+than counting up forever, and on a task with several attempts it sums the
+attempts rather than spanning the first start to now. A task you follow up on
+hours later reports the work, not the wait. A finished task whose duration was
+never recorded shows `?`; a mix of known and unknown attempts shows `32m+?`.
 
 Piping works too — `hmf monitor | tee log.txt` prints one plain snapshot
 instead of starting the interactive view.
@@ -248,11 +305,38 @@ It comes from the daemon, not the agent, and that is the point: an agent asked
 to "reply that you started" cannot report the failure where it never started.
 The ack separates *never spawned* from *working quietly* — the two cases that
 otherwise look identical from the parent. It lands in `read_thread` and in
-`task_status`'s `last_update` immediately, is tagged `[hmf]` in the monitor so
+`task_status`'s `last_update` immediately, is tagged `hmf` in the monitor so
 it is never mistaken for the child's own words, and is kept out of
 `read_channel` since the lobby is not its audience.
 
 It carries status `ack`, so it never counts as completion.
+
+**What the child says about itself.**
+
+A spawned agent is told to call `report_progress` once it realises the job
+runs longer than a couple of minutes, and again whenever its estimate moves:
+
+```
+      21:43:10 haydn/mouse-for-sale ↩ [progress]
+        decoding the screenshot to locate the flash element (eta ~12min)
+```
+
+`task_status` surfaces it as three fields:
+
+```
+progress_note:     decoding the screenshot to locate the flash element
+eta_minutes:       12
+progress_age_secs: 95
+```
+
+Read the ETA against the age. The note and the estimate are the child's
+claims; the age is fact. Together they separate "on track" from "said ten
+minutes, then went quiet forty minutes ago" — an estimate alone gets more
+misleading the staler it is.
+
+Reporting costs the parent nothing: the message posts with status `progress`
+and never wakes anyone. Agents that reach for the shell first can use
+`hmf progress "<note>" --eta 12` instead.
 
 **From inside the dispatching session — `task_status`:**
 

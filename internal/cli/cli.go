@@ -557,8 +557,24 @@ func taskCmd() *cobra.Command {
 			return printThreadTodos(atoi64(args[0]))
 		},
 	}
+	del := &cobra.Command{
+		Use:     "delete <todo_id>...",
+		Aliases: []string{"rm"},
+		Short:   "Delete work items by id (see `hmf task show <thread_id>`)",
+		Args:    cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			for _, a := range args {
+				if _, err := protocol.Call("todo_delete", map[string]any{"id": atoi64(a)}); err != nil {
+					return fmt.Errorf("todo %s: %w", a, err)
+				}
+				fmt.Printf("deleted todo %s\n", a)
+			}
+			return nil
+		},
+	}
 	c.AddCommand(list)
 	c.AddCommand(show)
+	c.AddCommand(del)
 	return c
 }
 

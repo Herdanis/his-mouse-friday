@@ -60,6 +60,17 @@ func (t *TodoStore) Update(id int64, state string) error {
 	return nil
 }
 
+func (t *TodoStore) Delete(id int64) error {
+	res, err := t.Store.db.Exec(`DELETE FROM todos WHERE id=?`, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("no todo %d", id)
+	}
+	return nil
+}
+
 func (t *TodoStore) List(threadID int64) ([]Todo, error) {
 	rows, err := t.Store.db.Query(
 		`SELECT id, thread_id, content, state, updated_at FROM todos WHERE thread_id=? ORDER BY id`, threadID)

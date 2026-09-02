@@ -30,17 +30,35 @@ const (
 	monitorMaxRows = 40 // detail costs a socket round-trip per thread
 )
 
+// GitHub Primer palette, adaptive so the view reads on light and dark
+// terminals. Foreground only — the terminal keeps its own background.
 var (
-	styTitle   = lipgloss.NewStyle().Bold(true)
-	styDim     = lipgloss.NewStyle().Faint(true)
-	styWorking = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
-	styFailed  = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
-	stySel     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
-	styKey     = lipgloss.NewStyle().Foreground(lipgloss.Color("4"))
-	styLabel   = lipgloss.NewStyle().Faint(true)
+	cAccent  = lipgloss.AdaptiveColor{Light: "#0969da", Dark: "#58a6ff"}
+	cSuccess = lipgloss.AdaptiveColor{Light: "#1a7f37", Dark: "#3fb950"}
+	cDanger  = lipgloss.AdaptiveColor{Light: "#cf222e", Dark: "#f85149"}
+	cAttn    = lipgloss.AdaptiveColor{Light: "#9a6700", Dark: "#d29922"}
+	cDoneFg  = lipgloss.AdaptiveColor{Light: "#8250df", Dark: "#a371f7"}
+	cMuted   = lipgloss.AdaptiveColor{Light: "#59636e", Dark: "#8b949e"}
+	cBorder  = lipgloss.AdaptiveColor{Light: "#d1d9e0", Dark: "#30363d"}
+	cText    = lipgloss.AdaptiveColor{Light: "#1f2328", Dark: "#e6edf3"}
+)
+
+var (
+	styTitle   = lipgloss.NewStyle().Bold(true).Foreground(cText)
+	styText    = lipgloss.NewStyle().Foreground(cText)
+	styDim     = lipgloss.NewStyle().Foreground(cMuted)
+	styWorking = lipgloss.NewStyle().Foreground(cSuccess)
+	styFailed  = lipgloss.NewStyle().Foreground(cDanger)
+	styDone    = lipgloss.NewStyle().Foreground(cDoneFg)
+	styAttn    = lipgloss.NewStyle().Foreground(cAttn)
+	stySel     = lipgloss.NewStyle().Bold(true).Foreground(cAccent)
+	styKey     = lipgloss.NewStyle().Foreground(cAccent)
+	styLabel   = lipgloss.NewStyle().Bold(true).Foreground(cMuted)
+	styRule    = lipgloss.NewStyle().Foreground(cBorder)
 )
 
 type todoItem struct {
+	ID      int64
 	Content string
 	State   string
 }
@@ -71,6 +89,10 @@ type attempt struct {
 	Status     string
 	CreatedAt  string
 	FinishedAt string
+	EngagedBy  string // who asked for this work
+	PID        int
+	SessionID  string // opencode session id — what `opencode -s` takes
+	Dir        string // project path; opencode resumes per-directory
 }
 
 // Projects lists the distinct projects that worked on this task, in the order
@@ -85,6 +107,18 @@ func (r monitorRow) Projects() []string {
 		}
 	}
 	return out
+}
+
+// FailedAttempts counts spawns that ended badly. A task stays "working" while
+// any attempt runs, so a failed sibling is otherwise invisible from the list.
+func (r monitorRow) FailedAttempts() int {
+	n := 0
+	for _, a := range r.Attempts {
+		if a.Status == "failed" {
+			n++
+		}
+	}
+	return n
 }
 
 // FromLabel names the parent that dispatched this conversation.
@@ -189,6 +223,18 @@ type monitorModel struct {
 	vpReady  bool
 	loading  bool
 	lastLoad time.Time
+
+	// split is set when the terminal is wide enough for list and detail side
+	// by side; focus picks which of the two panes the keys drive.
+	split bool
+	focus int
+
+	// Work-item selection inside the detail view. pickTodo turns ↑↓ into an
+	// item cursor instead of scrolling; confirmDel guards the delete.
+	pickTodo   bool
+	todoIdx    int
+	confirmDel bool
+	notice     string
 }
 
 func newMonitorModel(all bool) monitorModel {
@@ -197,6 +243,90 @@ func newMonitorModel(all bool) monitorModel {
 
 func (m monitorModel) Init() tea.Cmd {
 	return tea.Batch(fetchRows(m.all), tickCmd())
+}
+
+// agentRun is one child agent: every spawn that shares its opencode session,
+// rolled into a single entry. Resuming a session reuses its id, so a task
+// picked up three times produced three session rows carrying one conversation
+// — listing them separately implies three children that you could open
+// separately, and you cannot.
+type agentRun struct {
+	attempt
+	Runs   int
+	Failed int
+	Total  time.Duration
+	Known  bool // at least one run had a measurable duration
+}
+
+// groupRuns collapses attempts per agent session, preserving what collapsing
+// would otherwise hide: how many runs there were and whether any failed.
+func groupRuns(as []attempt) []agentRun {
+	var out []agentRun
+	idx := map[string]int{}
+	for _, a := range as {
+		// Sessions whose id was never captured cannot be proven to be the same
+		// conversation, so they stay separate rather than being merged on a
+		// guess. Name is the next-best identity; failing that, never merge.
+		key := a.SessionID
+		if key == "" {
+			key = "name:" + a.Name
+		}
+		if key == "" || key == "name:" || key == "name:-" {
+			key = fmt.Sprintf("uniq:%d", len(out))
+		}
+		i, seen := idx[key]
+		if !seen {
+			idx[key] = len(out)
+			out = append(out, agentRun{attempt: a})
+			i = len(out) - 1
+		}
+		g := &out[i]
+		g.Runs++
+		if a.Status == "failed" {
+			g.Failed++
+		}
+		// Latest run wins for status/pid: it is the current state of the agent.
+		if a.Status == "active" || g.Status != "active" {
+			g.Status, g.PID = a.Status, a.PID
+		}
+		if start, ok := parseDaemonTime(a.CreatedAt); ok {
+			if end, ok := parseDaemonTime(a.FinishedAt); ok {
+				g.Total += end.Sub(start)
+				g.Known = true
+			} else if a.Status == "active" {
+				g.Total += time.Since(start)
+				g.Known = true
+			}
+		}
+	}
+	return out
+}
+
+func (g agentRun) Duration() string {
+	if !g.Known {
+		return "?"
+	}
+	return humanDuration(g.Total)
+}
+
+// firstResumable returns an attempt whose session can actually be reopened,
+// for the hint line. Sessions whose id was never captured cannot.
+func firstResumable(as []attempt) *attempt {
+	for i := range as {
+		if as[i].SessionID != "" && as[i].Dir != "" {
+			return &as[i]
+		}
+	}
+	return nil
+}
+
+// refreshDetail re-renders the detail pane after state that changes its
+// content (item cursor, confirm prompt, notice).
+func (m *monitorModel) refreshDetail() tea.Cmd {
+	if m.detail >= 0 && m.vpReady {
+		m.vp.SetContent(m.detailBody())
+	}
+	return nil
 }
 
 func fetchRows(all bool) tea.Cmd {
@@ -214,12 +344,19 @@ func (m monitorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.w, m.h = msg.Width, msg.Height
-		vh := max(3, m.h-6)
+		m.split = m.w >= splitMinWidth
+		vw, vh := m.vpSize()
 		if !m.vpReady {
-			m.vp = viewport.New(msg.Width, vh)
+			m.vp = viewport.New(vw, vh)
+			// vim keys scroll the detail too; the list already answers to them.
+			m.vp.KeyMap.Down.SetKeys("down", "j")
+			m.vp.KeyMap.Up.SetKeys("up", "k")
 			m.vpReady = true
 		} else {
-			m.vp.Width, m.vp.Height = msg.Width, vh
+			m.vp.Width, m.vp.Height = vw, vh
+		}
+		if m.split && m.detail < 0 && len(m.rows) > 0 {
+			m.detail = m.cursor
 		}
 		if m.detail >= 0 {
 			m.vp.SetContent(m.detailBody())
@@ -234,6 +371,13 @@ func (m monitorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.detail >= len(m.rows) {
 			m.detail = -1
+		}
+		if m.split && m.detail < 0 && len(m.rows) > 0 {
+			m.detail = m.cursor
+			if m.vpReady {
+				m.vp.SetContent(m.detailBody())
+				m.vp.GotoTop()
+			}
 		}
 		if m.detail >= 0 && m.vpReady {
 			// Keep the scroll position while content refreshes underneath.
@@ -268,19 +412,71 @@ func (m monitorModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "q", "ctrl+c":
 		return m, tea.Quit
 
-	case "esc", "h", "left":
-		if m.detail >= 0 {
-			m.detail = -1
+	case "tab":
+		if m.split {
+			m.focus = 1 - m.focus
 		}
 		return m, nil
 
+	case "esc", "h", "left":
+		switch {
+		case m.confirmDel:
+			m.confirmDel = false
+		case m.pickTodo:
+			m.pickTodo = false
+		case m.split && m.focus == 1:
+			m.focus = 0
+		case !m.split && m.detail >= 0:
+			m.detail = -1
+		}
+		m.notice = ""
+		return m, m.refreshDetail()
+
 	case "enter", "l", "right":
+		if m.split {
+			m.focus = 1
+			return m, nil
+		}
 		if m.detail < 0 && len(m.rows) > 0 {
 			m.detail = m.cursor
 			if m.vpReady {
 				m.vp.SetContent(m.detailBody())
 				m.vp.GotoTop()
 			}
+		}
+		return m, nil
+
+	case "d":
+		// Work-item delete lives here because this is where you notice a
+		// stale one — an orphaned item that can never be completed.
+		if m.detail >= 0 && !m.confirmDel {
+			r := m.rows[m.detail]
+			if len(r.Todos) == 0 {
+				m.notice = "no work items to delete"
+				return m, m.refreshDetail()
+			}
+			if !m.pickTodo {
+				m.pickTodo, m.todoIdx, m.notice = true, 0, ""
+			} else {
+				m.confirmDel = true
+			}
+			return m, m.refreshDetail()
+		}
+		return m, nil
+
+	case "y":
+		if m.confirmDel && m.detail >= 0 {
+			r := m.rows[m.detail]
+			if m.todoIdx < len(r.Todos) {
+				if err := deleteTodo(r.Todos[m.todoIdx].ID); err != nil {
+					m.notice = "delete failed: " + err.Error()
+				} else {
+					m.notice = "deleted work item"
+				}
+			}
+			m.confirmDel, m.pickTodo = false, false
+			m.loading = true
+			return m, fetchRows(m.all)
 		}
 		return m, nil
 
@@ -299,7 +495,23 @@ func (m monitorModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	if m.detail >= 0 {
+	// Item selection owns ↑↓ while it is on, whichever pane has focus.
+	if m.detail >= 0 && m.pickTodo {
+		n := len(m.rows[m.detail].Todos)
+		switch msg.String() {
+		case "up", "k":
+			if m.todoIdx > 0 {
+				m.todoIdx--
+			}
+		case "down", "j":
+			if m.todoIdx < n-1 {
+				m.todoIdx++
+			}
+		}
+		return m, m.refreshDetail()
+	}
+
+	if (m.split && m.focus == 1) || (!m.split && m.detail >= 0) {
 		var cmd tea.Cmd
 		m.vp, cmd = m.vp.Update(msg)
 		return m, cmd
@@ -319,111 +531,390 @@ func (m monitorModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "G", "end":
 		m.cursor = max(0, len(m.rows)-1)
 	}
+	m.syncDetail()
 	return m, nil
+}
+
+// syncDetail keeps the split-pane detail pointed at the highlighted row.
+func (m *monitorModel) syncDetail() {
+	if !m.split || len(m.rows) == 0 || m.detail == m.cursor {
+		return
+	}
+	m.detail = m.cursor
+	m.pickTodo, m.confirmDel, m.notice = false, false, ""
+	if m.vpReady {
+		m.vp.SetContent(m.detailBody())
+		m.vp.GotoTop()
+	}
 }
 
 // ============================================
 // View
 // ============================================
 
-func (m monitorModel) View() string {
-	if m.detail >= 0 && m.detail < len(m.rows) {
-		return m.detailView()
-	}
-	return m.listView()
+// Wide terminals get the task list and the selected task's detail side by
+// side, so a running child's latest reply is visible without leaving the
+// list. Narrow ones fall back to list → detail as separate screens.
+const splitMinWidth = 96
+
+func (m monitorModel) paneWidths() (int, int) {
+	lw := clamp(m.w*38/100, 34, 56)
+	return lw, m.w - lw
 }
 
-func (m monitorModel) header(help string) string {
+func (m monitorModel) paneHeight() int { return max(6, m.h-2) }
+
+// vpSize is the detail viewport: pane minus its border, padding and header.
+func (m monitorModel) vpSize() (int, int) {
+	if m.split {
+		_, rw := m.paneWidths()
+		return max(20, rw-4), max(3, m.paneHeight()-5)
+	}
+	return max(20, m.w-4), max(3, m.h-6)
+}
+
+func (m monitorModel) bodyWidth() int {
+	w, _ := m.vpSize()
+	return max(40, w)
+}
+
+func (m monitorModel) View() string {
+	if m.err != nil {
+		return m.topBar() + "\n\n  " + styFailed.Render("daemon unreachable") +
+			"  " + styDim.Render(m.err.Error()) + "\n\n" + m.footer()
+	}
+	if !m.split {
+		if m.detail >= 0 && m.detail < len(m.rows) {
+			return m.narrowDetail()
+		}
+		return m.narrowList()
+	}
+	return m.splitView()
+}
+
+func (m monitorModel) splitView() string {
+	lw, rw := m.paneWidths()
+	ph := m.paneHeight()
+	left := pane(lw, ph, m.listBody(lw-4, ph-2), m.focus == 0)
+	right := pane(rw, ph, m.detailPane(), m.focus == 1)
+	return m.topBar() + "\n" +
+		lipgloss.JoinHorizontal(lipgloss.Top, left, right) + "\n" + m.footer()
+}
+
+func (m monitorModel) narrowList() string {
+	return m.topBar() + "\n" + m.listBody(max(20, m.w-2), max(2, m.h-3)) + "\n" + m.footer()
+}
+
+func (m monitorModel) narrowDetail() string {
+	head := m.detailHead(m.rows[m.detail], max(20, m.w-2))
+	body := m.detailBody()
+	if m.vpReady {
+		body = m.vp.View()
+	}
+	return m.topBar() + "\n" + head + "\n" + body + "\n" + m.footer()
+}
+
+func pane(w, h int, body string, focused bool) string {
+	border := cBorder
+	if focused {
+		border = cAccent
+	}
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).BorderForeground(border).
+		Width(max(4, w-2)).Height(max(2, h-2)).Padding(0, 1).
+		Render(body)
+}
+
+// topBar is the one line that answers "is anything running right now".
+func (m monitorModel) topBar() string {
+	var working, failed int
+	for _, r := range m.rows {
+		switch r.Status {
+		case "active":
+			working++
+		case "failed":
+			failed++
+		}
+	}
 	scope := "tasks"
 	if !m.all {
 		scope = "running"
 	}
-	working := 0
-	for _, r := range m.rows {
-		if r.Status == "active" {
-			working++
-		}
+	segs := []string{}
+	if working > 0 {
+		segs = append(segs, styWorking.Render(fmt.Sprintf("● %d working", working)))
 	}
-	summary := fmt.Sprintf("· %d %s", len(m.rows), scope)
-	if m.all && working > 0 {
-		summary += fmt.Sprintf(" · %d working", working)
+	if failed > 0 {
+		segs = append(segs, styFailed.Render(fmt.Sprintf("✗ %d failed", failed)))
 	}
+	if len(m.rows) == 1 {
+		scope = strings.TrimSuffix(scope, "s")
+	}
+	segs = append(segs, styDim.Render(fmt.Sprintf("%d %s", len(m.rows), scope)))
+
+	left := " " + styTitle.Render("hmf monitor") + "  " + strings.Join(segs, styDim.Render(" · "))
+	clock := time.Now().Format("15:04:05")
 	if m.loading {
-		summary += " · refreshing"
+		clock += " ⟳"
 	}
-	return styTitle.Render("hmf monitor") + " " +
-		styDim.Render(summary+" · "+time.Now().Format("15:04:05")) +
-		"\n" + styDim.Render(help) + "\n\n"
+	right := styDim.Render(clock) + " "
+	gap := m.w - lipgloss.Width(left) - lipgloss.Width(right)
+	if gap < 1 {
+		return left
+	}
+	return left + strings.Repeat(" ", gap) + right
 }
 
-func (m monitorModel) listView() string {
-	help := keyHelp(
-		"↑↓", "move", "enter", "open", "a", "filter", "r", "refresh", "q", "quit",
-	)
-	var b strings.Builder
-	b.WriteString(m.header(help))
-
-	if m.err != nil {
-		b.WriteString(styFailed.Render("daemon unreachable") + " — " + m.err.Error() + "\n")
-		return b.String()
+func (m monitorModel) footer() string {
+	scope := "active only"
+	if !m.all {
+		scope = "show all"
 	}
+	pairs := []string{"↑↓", "move"}
+	switch {
+	case m.split:
+		pairs = append(pairs, "tab", "focus")
+	case m.detail >= 0:
+		pairs = []string{"↑↓", "scroll", "esc", "back"}
+	default:
+		pairs = append(pairs, "enter", "open")
+	}
+	pairs = append(pairs, "d", "del item", "a", scope, "r", "refresh", "q", "quit")
+	return " " + keyHelp(pairs...)
+}
+
+func keyHelp(pairs ...string) string {
+	var parts []string
+	for i := 0; i+1 < len(pairs); i += 2 {
+		parts = append(parts, styKey.Render(pairs[i])+" "+styDim.Render(pairs[i+1]))
+	}
+	return strings.Join(parts, styDim.Render(" · "))
+}
+
+// ============================================
+// List
+// ============================================
+
+// listBody renders two lines per task — identity on top, progress and the
+// instruction below — so the list stays scannable at any pane width.
+func (m monitorModel) listBody(w, h int) string {
 	if len(m.rows) == 0 {
-		b.WriteString(styDim.Render("no tasks yet — dispatch one with post_message") + "\n")
-		return b.String()
+		return styDim.Render("no tasks yet") + "\n\n" +
+			styDim.Render("dispatch one with post_message")
 	}
-
-	idW, fromW := len("ID"), len("FROM")
-	for _, r := range m.rows {
-		idW = max(idW, len(fmt.Sprint(r.ThreadID)))
-		fromW = max(fromW, lipgloss.Width(r.FromLabel()))
+	visible := max(1, h/2)
+	if len(m.rows) > visible {
+		visible = max(1, (h-1)/2) // the "n of m" line costs a row
 	}
-	// Whatever is left goes to the task summary — the one field that actually
-	// tells rows apart. Who did the work can be several projects, so that
-	// lives in the detail view rather than being flattened into a column.
-	taskW := max(20, m.w-(idW+fromW+7+9+6+12))
-
-	b.WriteString(styLabel.Render(fmt.Sprintf("  %-*s  %-7s  %-*s  %-9s  %-5s  %s",
-		idW, "ID", "STATUS", fromW, "FROM", "ELAPSED", "TODOS", "TASK")) + "\n")
-
-	// One line per row: details belong in the detail view, not here.
-	visible := max(1, m.h-7)
 	start := clamp(m.cursor-visible/2, 0, max(0, len(m.rows)-visible))
 	end := min(len(m.rows), start+visible)
 
+	var b strings.Builder
 	for i := start; i < end; i++ {
-		r := m.rows[i]
-		todos := styDim.Render(padTo("–", 5))
-		if r.TodosTotal > 0 {
-			todos = padTo(fmt.Sprintf("%d/%d", r.TodosDone, r.TodosTotal), 5)
-		}
-		line := fmt.Sprintf("%-*d  %s  %-*s  %-9s  %s  %s",
-			idW, r.ThreadID, statusLabel(r.Status), fromW, r.FromLabel(),
-			r.WorkElapsed(),
-			todos, truncate(firstLine(r.Task), taskW))
-
-		if i == m.cursor {
-			b.WriteString(stySel.Render("▸ ") + lipgloss.NewStyle().Bold(true).Render(line) + "\n")
-		} else {
-			b.WriteString("  " + line + "\n")
-		}
+		b.WriteString(m.listEntry(i, w) + "\n")
 	}
-
 	if len(m.rows) > visible {
-		b.WriteString(styDim.Render(fmt.Sprintf("\n  showing %d–%d of %d", start+1, end, len(m.rows))))
+		b.WriteString(styDim.Render(fmt.Sprintf(" %d–%d of %d", start+1, end, len(m.rows))))
 	}
-	return b.String()
+	return strings.TrimRight(b.String(), "\n")
 }
 
-func (m monitorModel) detailView() string {
-	r := m.rows[m.detail]
-	help := keyHelp("↑↓", "scroll", "esc", "back", "r", "refresh", "q", "quit")
-	head := styTitle.Render(fmt.Sprintf("thread %d", r.ThreadID)) + " " +
-		styDim.Render("· "+r.Status+" · "+r.WorkElapsed()) +
-		"\n" + styDim.Render(help) + "\n\n"
-	if !m.vpReady {
-		return head + m.detailBody()
+func (m monitorModel) listEntry(i, w int) string {
+	r := m.rows[i]
+	sel := i == m.cursor
+
+	mark, markSty := statusMark(r.Status)
+	lead, name := "  ", styDim
+	if sel {
+		lead, name = stySel.Render("▎")+" ", styText.Bold(true)
 	}
-	return head + m.vp.View()
+
+	el := r.WorkElapsed()
+	inner := max(8, w-2) // minus the selection lead
+	// The worker, not the dispatcher: at this width only one name fits, and
+	// the party doing the work is the one you are watching. The dispatcher is
+	// named in the detail header. Nothing spawned yet — fall back to it here.
+	who := r.ProjectLabel()
+	if len(r.Projects()) == 0 {
+		who = r.FromLabel()
+	}
+	head := fmt.Sprintf("#%d  %s", r.ThreadID, who)
+	headW := max(4, inner-2-lipgloss.Width(el)-1)
+	head = padTo(truncate(head, headW), headW)
+	line1 := lead + markSty.Render(mark) + " " + name.Render(head) + " " + styDim.Render(el)
+
+	counts := "—"
+	if r.TodosTotal > 0 {
+		counts = fmt.Sprintf("%d/%d", r.TodosDone, r.TodosTotal)
+	}
+	counts = padTo(counts, 5)
+	// A task reads as running while one of its agents has already failed —
+	// say so here rather than only inside the session tree.
+	fail := ""
+	if n := r.FailedAttempts(); n > 0 && r.Status != "failed" {
+		fail = styFailed.Render(fmt.Sprintf("✗%d ", n))
+	}
+	task := truncate(firstLine(r.Task), max(4, inner-12-lipgloss.Width(fail)))
+	line2 := lead + progressBar(r.TodosDone, r.TodosTotal, 5) + " " +
+		styDim.Render(counts) + " " + fail + styDim.Render(task)
+
+	return line1 + "\n" + line2
+}
+
+func progressBar(done, total, w int) string {
+	if total <= 0 {
+		return styRule.Render(strings.Repeat("·", w))
+	}
+	filled := clamp(done*w/total, 0, w)
+	if done > 0 && filled == 0 {
+		filled = 1 // any progress at all must be visible
+	}
+	return styWorking.Render(strings.Repeat("▰", filled)) +
+		styRule.Render(strings.Repeat("▱", w-filled))
+}
+
+func statusMark(s string) (string, lipgloss.Style) {
+	switch s {
+	case "active":
+		return "●", styWorking
+	case "exited":
+		return "✓", styDone
+	case "failed":
+		return "✗", styFailed
+	}
+	return "○", styDim
+}
+
+func statusWord(s string) string {
+	switch s {
+	case "active":
+		return "working"
+	case "exited":
+		return "done"
+	case "failed":
+		return "failed"
+	}
+	return s
+}
+
+func statusLabel(s string) string {
+	mark, sty := statusMark(s)
+	return sty.Render(mark + " " + padTo(statusWord(s), 7))
+}
+
+// ============================================
+// Session tree
+// ============================================
+
+// sessionTree lays each agent under whoever engaged it, so a hand-off
+// (A engages B, B engages C) reads as a chain rather than a flat list of
+// unrelated attempts.
+//
+// ponytail: two agents in the same project share a key, so the second nests
+// under the first's parent. Per-session parent ids would fix it; the daemon
+// records engaged_by by project, and one project working a thread twice in
+// parallel has not happened yet.
+func sessionTree(runs []agentRun, root string) []string {
+	known := map[string]bool{root: true}
+	for _, g := range runs {
+		known[g.Project] = true
+	}
+	// An engager nobody recognises (or an agent naming itself) hangs off the
+	// dispatcher — better a flat entry than a session dropped from the tree.
+	kids := map[string][]int{}
+	for i, g := range runs {
+		p := shortIdentity(g.EngagedBy)
+		if p == "" || p == g.Project || !known[p] {
+			p = root
+		}
+		kids[p] = append(kids[p], i)
+	}
+
+	var out []string
+	seen := make([]bool, len(runs))
+	var walk func(key string, depth int)
+	walk = func(key string, depth int) {
+		list := kids[key]
+		for n, i := range list {
+			if seen[i] {
+				continue
+			}
+			seen[i] = true
+			out = append(out, sessionLine(runs[i], i+1, depth, n == len(list)-1))
+			walk(runs[i].Project, depth+1)
+		}
+	}
+	walk(root, 1)
+	// A cycle in engaged_by must not swallow a session.
+	for i := range runs {
+		if !seen[i] {
+			out = append(out, sessionLine(runs[i], i+1, 1, true))
+		}
+	}
+	return out
+}
+
+func sessionLine(g agentRun, num, depth int, last bool) string {
+	branch := "├"
+	if last {
+		branch = "└"
+	}
+	line := fmt.Sprintf("%s%s %d. %s  %s  %s", strings.Repeat("  ", depth+1), branch,
+		num, statusLabel(g.Status), g.Project, styDim.Render(g.Duration()))
+	// The opencode session id, not the hmf name: this is the one `opencode -s`
+	// takes, so the tree doubles as a way back in.
+	if g.SessionID != "" {
+		line += "  " + styDim.Render(g.SessionID)
+	} else if g.Name != "" && g.Name != "-" {
+		line += styDim.Render("  " + g.Name)
+	}
+	if g.Runs > 1 {
+		note := fmt.Sprintf("  ·%d runs", g.Runs)
+		if g.Failed > 0 {
+			note += fmt.Sprintf(", %d failed", g.Failed)
+		}
+		line += styAttn.Render(note)
+	}
+	if g.Status == "active" && g.PID > 0 {
+		line += styDim.Render(fmt.Sprintf("  pid %d", g.PID))
+	}
+	return line
+}
+
+// ============================================
+// Detail
+// ============================================
+
+func (m monitorModel) detailPane() string {
+	if m.detail < 0 || m.detail >= len(m.rows) {
+		return styDim.Render("select a task")
+	}
+	_, rw := m.paneWidths()
+	head := m.detailHead(m.rows[m.detail], rw-4)
+	if !m.vpReady {
+		return head + "\n" + m.detailBody()
+	}
+	return head + "\n" + m.vp.View()
+}
+
+// detailHead is the fixed part of the detail pane: identity, status and
+// progress stay put while the body scrolls under them.
+func (m monitorModel) detailHead(r monitorRow, w int) string {
+	mark, sty := statusMark(r.Status)
+	title := fmt.Sprintf("#%d  %s → %s", r.ThreadID, r.FromLabel(), r.ProjectLabel())
+	status := sty.Render(mark + " " + statusWord(r.Status))
+	title = truncate(title, max(8, w-lipgloss.Width(status)-2))
+	gap := max(1, w-lipgloss.Width(title)-lipgloss.Width(status))
+	line1 := styTitle.Render(title) + strings.Repeat(" ", gap) + status
+
+	counts := "no work items"
+	if r.TodosTotal > 0 {
+		counts = fmt.Sprintf("%d/%d done", r.TodosDone, r.TodosTotal)
+	}
+	line2 := progressBar(r.TodosDone, r.TodosTotal, 12) + "  " +
+		styDim.Render(counts+" · "+r.WorkElapsed())
+
+	return line1 + "\n" + line2 + "\n" + styRule.Render(strings.Repeat("─", max(4, w)))
 }
 
 // detailBody is everything known about one task — its work items and the full
@@ -434,60 +925,61 @@ func (m monitorModel) detailBody() string {
 	}
 	r := m.rows[m.detail]
 	var b strings.Builder
-	width := max(40, m.w-4)
-
-	// Who dispatched this — the parent. Empty means a human from an
-	// unregistered directory rather than another project's agent.
-	from := r.From
-	switch {
-	case from == "":
-		from = "you (unregistered dir)"
-	case strings.HasPrefix(from, "dir:"):
-		from = strings.TrimPrefix(from, "dir:") + "/ " + styDim.Render("(unregistered dir)")
-	}
-	// Name every worker here rather than a "+N" summary — the detail view is
-	// exactly where the full list belongs.
-	workers := strings.Join(r.Projects(), ", ")
-	if workers == "" {
-		workers = "-"
-	}
-	b.WriteString(styLabel.Render("from ") + from + styDim.Render("  →  ") + workers + "\n\n")
+	width := m.bodyWidth()
 
 	if r.Task != "" {
 		b.WriteString(styLabel.Render("task") + "\n")
-		for _, line := range wrapText(r.Task, width-4) {
-			b.WriteString("  " + styDim.Render(line) + "\n")
+		for _, line := range wrapText(r.Task, width-2) {
+			b.WriteString("  " + styText.Render(line) + "\n")
 		}
 		b.WriteString("\n")
 	}
 
-	// Attempts: a task can be retried, resumed, or handed between projects —
-	// the list view collapses that to one line, so show it in full here.
-	if len(r.Attempts) > 1 || (len(r.Attempts) == 1 && len(r.Projects()) > 1) {
-		b.WriteString(styLabel.Render(fmt.Sprintf("attempts · %d", len(r.Attempts))) + "\n")
-		for i, a := range r.Attempts {
-			b.WriteString(fmt.Sprintf("  %d. %s  %s  %s\n",
-				i+1, statusLabel(a.Status), a.Project,
-				styDim.Render(elapsed(a.CreatedAt, a.FinishedAt, a.Status == "active"))))
+	// Who actually ran: the dispatcher at the root, each spawned session
+	// under whoever engaged it. A task handed on (A engages B, B engages C)
+	// shares one thread, so without the engaged-by edge the chain reads as a
+	// flat list of unrelated attempts.
+	if runs := groupRuns(r.Attempts); len(runs) > 0 {
+		b.WriteString(styLabel.Render(fmt.Sprintf("sessions · %d", len(runs))) + "\n")
+		b.WriteString("  " + styKey.Render(shortIdentity(r.From)) + styDim.Render("  (dispatcher)") + "\n")
+		for _, line := range sessionTree(runs, shortIdentity(r.From)) {
+			b.WriteString(line + "\n")
+		}
+		if a := firstResumable(r.Attempts); a != nil {
+			b.WriteString("\n  " + styDim.Render("open one:  cd "+a.Dir+" && opencode -s <session id>") + "\n")
 		}
 		b.WriteString("\n")
-	} else if len(r.Attempts) == 1 {
-		b.WriteString(styLabel.Render("session ") + r.Attempts[0].Name + "\n\n")
 	}
 
 	if r.TodosTotal == 0 {
 		b.WriteString(styDim.Render("no work items posted yet") + "\n\n")
 	} else {
-		b.WriteString(styLabel.Render(fmt.Sprintf("work items · %d/%d done", r.TodosDone, r.TodosTotal)) + "\n")
-		for _, t := range r.Todos {
-			mark := styDim.Render("·")
-			text := styDim.Render(t.Content)
+		head := fmt.Sprintf("work items · %d/%d done", r.TodosDone, r.TodosTotal)
+		b.WriteString(styLabel.Render(head))
+		if m.pickTodo {
+			b.WriteString("  " + styKey.Render("↑↓ select · d delete · esc cancel"))
+		}
+		b.WriteString("\n")
+		current := r.Current() // only the item being worked on gets the marker
+		for i, t := range r.Todos {
+			mark, text := styRule.Render("○"), styDim.Render(t.Content)
 			if t.State == "done" {
 				mark, text = styWorking.Render("✓"), styDim.Render(t.Content)
-			} else if r.Status == "active" {
-				mark, text = styKey.Render("▸"), t.Content
+			} else if r.Status == "active" && t.Content == current {
+				mark, text = styKey.Render("▸"), styText.Render(t.Content)
 			}
-			b.WriteString("  " + mark + " " + text + "\n")
+			cursor := "  "
+			if m.pickTodo && i == m.todoIdx {
+				cursor, text = stySel.Render("▎")+" ", styText.Render(t.Content)
+			}
+			b.WriteString(cursor + mark + " " + text + "\n")
+		}
+		if m.confirmDel && m.todoIdx < len(r.Todos) {
+			b.WriteString("\n  " + styFailed.Render("delete this work item?") + styDim.Render("  y / esc") + "\n")
+			b.WriteString("  " + styDim.Render(r.Todos[m.todoIdx].Content) + "\n")
+		}
+		if m.notice != "" {
+			b.WriteString("\n  " + styAttn.Render(m.notice) + "\n")
 		}
 		b.WriteString("\n")
 	}
@@ -504,53 +996,33 @@ func (m monitorModel) detailBody() string {
 	for _, e := range r.Events {
 		when := ""
 		if t, ok := parseDaemonTime(e.TS); ok {
-			when = styDim.Render(t.Local().Format("15:04:05") + " ")
+			when = styDim.Render(t.Local().Format("15:04") + " ")
 		}
 		var head, indent string
 		if e.Dispatch {
-			head = when + styKey.Render(e.Who()) + styDim.Render(" → ") + e.To
+			head = when + styKey.Render(e.Who()) + styDim.Render(" → "+e.To)
 			indent = "  "
 		} else {
 			tag := ""
 			switch e.Status {
 			case "done":
-				tag = " " + styWorking.Render("[done]")
+				tag = " " + styDone.Render("done")
 			case "ack":
 				// Harness-generated, not the agent talking — label it so a
 				// pickup notice is never mistaken for the child's own reply.
-				tag = " " + styDim.Render("[hmf]")
+				tag = " " + styDim.Render("hmf")
 			case "progress":
-				tag = " " + styDim.Render("[progress]")
+				tag = " " + styAttn.Render("progress")
 			}
 			head = when + styWorking.Render(e.Who()) + styDim.Render(" ↩") + tag
 			indent = "      "
 		}
 		b.WriteString("\n" + indent + head + "\n")
 		for _, line := range wrapText(e.Content, max(20, width-len(indent)-2)) {
-			b.WriteString(indent + "  " + line + "\n")
+			b.WriteString(indent + "  " + styText.Render(line) + "\n")
 		}
 	}
 	return b.String()
-}
-
-func keyHelp(pairs ...string) string {
-	var parts []string
-	for i := 0; i+1 < len(pairs); i += 2 {
-		parts = append(parts, pairs[i]+" "+pairs[i+1])
-	}
-	return strings.Join(parts, " · ")
-}
-
-func statusLabel(s string) string {
-	switch s {
-	case "active":
-		return styWorking.Render(fmt.Sprintf("%-7s", "working"))
-	case "exited":
-		return styDim.Render(fmt.Sprintf("%-7s", "done"))
-	case "failed":
-		return styFailed.Render(fmt.Sprintf("%-7s", "failed"))
-	}
-	return fmt.Sprintf("%-7s", s)
 }
 
 // ============================================
@@ -570,6 +1042,10 @@ func collectMonitorRows(all bool) ([]monitorRow, error) {
 		ParentID   int64  `json:"parent_id"`
 		CreatedAt  string `json:"created_at"`
 		FinishedAt string `json:"finished_at"`
+		EngagedBy  string `json:"engaged_by"`
+		PID        int    `json:"pid"`
+		SessionID  string `json:"session_id"`
+		Dir        string `json:"dir"`
 	}
 	if err := json.Unmarshal(result, &sessions); err != nil {
 		return nil, fmt.Errorf("parse sessions: %w", err)
@@ -596,6 +1072,8 @@ func collectMonitorRows(all bool) ([]monitorRow, error) {
 		row.Attempts = append(row.Attempts, attempt{
 			Name: s.Name, Project: s.Project, Status: s.Status,
 			CreatedAt: s.CreatedAt, FinishedAt: s.FinishedAt,
+			EngagedBy: s.EngagedBy, PID: s.PID,
+			SessionID: s.SessionID, Dir: s.Dir,
 		})
 	}
 
@@ -662,6 +1140,7 @@ func fetchTodos(threadID int64) []todoItem {
 		return nil
 	}
 	var td []struct {
+		ID      int64  `json:"id"`
 		Content string `json:"content"`
 		State   string `json:"state"`
 	}
@@ -670,9 +1149,14 @@ func fetchTodos(threadID int64) []todoItem {
 	}
 	out := make([]todoItem, 0, len(td))
 	for _, t := range td {
-		out = append(out, todoItem{Content: t.Content, State: t.State})
+		out = append(out, todoItem{ID: t.ID, Content: t.Content, State: t.State})
 	}
 	return out
+}
+
+func deleteTodo(id int64) error {
+	_, err := protocol.Call("todo_delete", map[string]any{"id": id})
+	return err
 }
 
 // fetchConversation returns the whole parent↔child exchange on a thread,
