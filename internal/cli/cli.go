@@ -35,6 +35,7 @@ func NewRootCmd() *cobra.Command {
 	root.AddCommand(watchCmd())
 	root.AddCommand(monitorCmd())
 	root.AddCommand(pruneCmd())
+	root.AddCommand(progressCmd())
 	return root
 }
 
@@ -402,6 +403,32 @@ func atoi64(s string) int64 {
 }
 
 // sessionCmd groups session subcommands (currently just `list`).
+// progressCmd is the shell equivalent of the report_progress MCP tool, for
+// spawned agents that reach for bash before tools (same rationale as doneCmd).
+func progressCmd() *cobra.Command {
+	var eta int
+	c := &cobra.Command{
+		Use:   "progress <note>",
+		Short: "Report what you are working on and how much longer you need",
+		Args:  cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			tid := os.Getenv("HMF_TASK_MSG_ID")
+			if tid == "" {
+				return fmt.Errorf("HMF_TASK_MSG_ID not set; 'hmf progress' is for agents spawned by an hmf wake")
+			}
+			_, err := protocol.Call("report_progress", map[string]any{
+				"thread_id":   atoi64(tid),
+				"from":        os.Getenv("HMF_PROJECT"),
+				"note":        strings.Join(args, " "),
+				"eta_minutes": eta,
+			})
+			return err
+		},
+	}
+	c.Flags().IntVar(&eta, "eta", 0, "minutes you expect still to need")
+	return c
+}
+
 func pruneCmd() *cobra.Command {
 	var olderThan string
 	var yes bool

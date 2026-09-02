@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -163,6 +164,13 @@ type TaskStatusResult struct {
 	CurrentStep string     `json:"current_step,omitempty"` // first not-done todo
 	Todos       []TodoLine `json:"todos,omitempty"`
 	LastUpdate  string     `json:"last_update,omitempty"` // most recent reply on the thread
+
+	// Child's own account of where it is. ProgressNote and ETAMinutes are its
+	// claims; ProgressAgeSecs is fact, and the two together are what separate
+	// "on track" from "said 10min, went quiet 40min ago".
+	ProgressNote    string `json:"progress_note,omitempty"`
+	ETAMinutes      int    `json:"eta_minutes,omitempty"`
+	ProgressAgeSecs int64  `json:"progress_age_secs,omitempty"`
 }
 
 // TodoLine is one work item as the caller sees it.
@@ -269,6 +277,8 @@ func (d *Daemon) Handle(ctx context.Context, req protocol.Request) protocol.Resp
 		return d.handleSessionList(req)
 	case "prune":
 		return d.handlePrune(req)
+	case "report_progress":
+		return d.handleReportProgress(req)
 	case "todo_add", "todo_update", "todo_list", "todo_threads":
 		return d.handleTodo(req)
 	case "shutdown":
@@ -520,7 +530,12 @@ func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error
 			"   any file count the task implies. Read this project's MOUSE.md/AGENTS.md for\n"+
 			"   local conventions and its verify commands, and run them before replying.\n"+
 			"3. Track work items: todo_list with thread_id=%d (see existing), todo_add for new steps, todo_update to mark done.\n"+
-			"4. Reply: post_message with thread_id=%d, status=\"done\", a one-line summary, the\n"+
+			"4. Say where you are. The parent cannot see this session — silence is\n"+
+			"   indistinguishable from being stuck. Once you know the job runs longer than a\n"+
+			"   couple of minutes, call report_progress with what you are doing and\n"+
+			"   eta_minutes; call it again whenever that estimate moves or before a long\n"+
+			"   quiet stretch. It wakes nobody and costs the parent nothing.\n"+
+			"5. Reply: post_message with thread_id=%d, status=\"done\", a one-line summary, the\n"+
 			"   files you changed, and the verify result. The parent trusts this reply instead\n"+
 			"   of re-reading your files, so it must be accurate. Blocked → start with \"BLOCKED: \".",
 		msg.FromProject, msg.ID, parentID, parentID, parentID)
@@ -555,9 +570,11 @@ func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error
 			}
 			// Safety net: post BLOCKED reply if agent exited without one.
 			// Covers crashes, kills, and silent exits from bash:ask walls.
+			// Conditional insert, not the doneCount read above: the agent may
+			// post its real reply between that read and this write.
 			if doneCount == 0 {
 				content := fmt.Sprintf("BLOCKED: agent exited (code=%d) without posting a done reply", code)
-				if _, err := d.Comms.PostMessage(msg.ChannelID, parentID, msg.ToProject, msg.FromProject, content, "done"); err != nil {
+				if _, err := d.Comms.PostBlockedIfNoDone(msg.ChannelID, parentID, msg.ToProject, msg.FromProject, content); err != nil {
 					log.Printf("synthetic done reply for thread %d: %v", parentID, err)
 				}
 			}
@@ -756,6 +773,19 @@ func (d *Daemon) addProgressDetail(res *TaskStatusResult, parentID int64) {
 		`SELECT content FROM messages WHERE thread_id=? ORDER BY id DESC LIMIT 1`,
 		parentID).Scan(&last); err == nil {
 		res.LastUpdate = firstLine(last, 200)
+	}
+	// Latest self-report from the child, with how long ago it said it. An ETA
+	// is only meaningful next to its age.
+	var note string
+	var noteTS time.Time
+	if err := d.Store.db.QueryRow(
+		`SELECT content, ts FROM messages WHERE thread_id=? AND status='progress'
+		 ORDER BY id DESC LIMIT 1`, parentID).Scan(&note, &noteTS); err == nil {
+		res.ProgressNote = firstLine(note, 200)
+		res.ProgressAgeSecs = int64(time.Since(noteTS).Seconds())
+		if m := etaPattern.FindStringSubmatch(note); m != nil {
+			fmt.Sscanf(m[1], "%d", &res.ETAMinutes)
+		}
 	}
 }
 
@@ -963,6 +993,55 @@ func (d *Daemon) handleSessionList(req protocol.Request) protocol.Response {
 	result, _ := json.Marshal(out)
 	return protocol.Response{ID: req.ID, Result: result}
 }
+
+type ReportProgressParams struct {
+	ThreadID   int64  `json:"thread_id"`
+	From       string `json:"from"`
+	Note       string `json:"note"`
+	ETAMinutes int    `json:"eta_minutes"`
+}
+
+// handleReportProgress records a working child's status update. Posted with
+// status "progress", which never wakes anyone: it is the child narrating, and
+// spawning the parent to hear it would cost a whole agent process.
+func (d *Daemon) handleReportProgress(req protocol.Request) protocol.Response {
+	var p ReportProgressParams
+	if err := json.Unmarshal(req.Params, &p); err != nil {
+		return errResp(req.ID, "bad params: "+err.Error())
+	}
+	if p.ThreadID == 0 {
+		return errResp(req.ID, "thread_id required")
+	}
+	if strings.TrimSpace(p.Note) == "" {
+		return errResp(req.ID, "note required")
+	}
+	root, err := d.Comms.GetMessage(p.ThreadID)
+	if err != nil {
+		return errResp(req.ID, "thread "+err.Error())
+	}
+	threadID := p.ThreadID
+	if root.ThreadID != 0 {
+		threadID = root.ThreadID
+		root, _ = d.Comms.GetMessage(threadID)
+	}
+	from := p.From
+	if from == "" {
+		from = root.ToProject
+	}
+	content := p.Note
+	if p.ETAMinutes > 0 {
+		content = fmt.Sprintf("%s (eta ~%dmin)", p.Note, p.ETAMinutes)
+	}
+	msg, err := d.Comms.PostMessage(root.ChannelID, threadID, from, root.FromProject, content, "progress")
+	if err != nil {
+		return errResp(req.ID, err.Error())
+	}
+	result, _ := json.Marshal(PostResult{MessageID: msg.ID})
+	return protocol.Response{ID: req.ID, Result: result}
+}
+
+// etaPattern pulls the minutes back out of a progress note's "(eta ~12min)".
+var etaPattern = regexp.MustCompile(`\(eta ~(\d+)min\)`)
 
 // handlePrune clears task history. Sessions still running are left alone, so a
 // prune during live work cannot orphan an agent mid-task.

@@ -95,6 +95,11 @@ type TodosOutput struct {
 type PostOutput struct {
 	MessageID int64 `json:"message_id" jsonschema:"the id of the posted message (use as thread_id for replies / task_status)"`
 }
+type ReportProgressInput struct {
+	Note       string `json:"note" jsonschema:"what you are doing right now, in one line — concrete, not 'still working'"`
+	ETAMinutes int    `json:"eta_minutes,omitempty" jsonschema:"how many more minutes you expect to need; omit if you genuinely cannot tell"`
+	ThreadID   int64  `json:"thread_id,omitempty" jsonschema:"leave empty when spawned by hmf — inherited from HMF_TASK_MSG_ID"`
+}
 type TaskStatusInput struct {
 	MessageID int64 `json:"message_id" jsonschema:"any message id on the thread (root or reply) — the handler resolves it to the thread root"`
 }
@@ -113,6 +118,10 @@ type TaskStatusOutput struct {
 	CurrentStep string     `json:"current_step,omitempty" jsonschema:"the work item it is on right now"`
 	Todos       []TodoLine `json:"todos,omitempty" jsonschema:"the child's full work-item list with state"`
 	LastUpdate  string     `json:"last_update,omitempty" jsonschema:"first line of the most recent reply on the thread"`
+
+	ProgressNote    string `json:"progress_note,omitempty" jsonschema:"the child's own latest account of what it is doing"`
+	ETAMinutes      int    `json:"eta_minutes,omitempty" jsonschema:"how much longer the child said it needs, from that same report"`
+	ProgressAgeSecs int64  `json:"progress_age_secs,omitempty" jsonschema:"seconds since that report — read the ETA against this; a stale note means the child stopped narrating, not that it is on track"`
 }
 
 // TodoLine is one of the child's work items.
@@ -157,6 +166,13 @@ func dirIdentity(repo string) string {
 	return "dir:" + base
 }
 
+// envTaskMsgID reads HMF_TASK_MSG_ID — the thread a spawned agent works on.
+func envTaskMsgID() int64 {
+	var id int64
+	fmt.Sscanf(os.Getenv("HMF_TASK_MSG_ID"), "%d", &id)
+	return id
+}
+
 // envChannelID reads HMF_CHANNEL_ID (set when spawned by hmf engage).
 // Returns 0 if not set (user-initiated session).
 func envChannelID() int64 {
@@ -183,7 +199,7 @@ func resolveThreadID(explicit int64, to string, byRecipient map[string]int64, cu
 // MCP server
 // ============================================
 
-// newServer builds the MCP server + registers the 5 tools. callerID is the
+// newServer builds the MCP server + registers the 6 tools. callerID is the
 // resolved "workspace/project" of this shim's repo ("" = open mode), injected
 // as `from` on posts. Thread tracking: auto-binds every post_message to one
 // thread per session — first post creates the root, subsequent posts inherit
@@ -243,6 +259,33 @@ func newServer(callerID string) *mcpserver.Server {
 			}
 		}
 		return nil, pr, nil
+	})
+
+	mcpserver.AddTool(srv, &mcpserver.Tool{
+		Name:        "report_progress",
+		Description: "Tell the agent that delegated this task where you are, when the work is taking a while. Call it when you realise the job needs more time than a couple of minutes, whenever your estimate changes materially, and before any long stretch of quiet work. Say what you are doing now and how much longer you expect to need. The parent cannot see your session — without this it only knows you are alive, not what you are doing or whether to keep waiting. Costs the parent nothing: it never wakes anyone.",
+	}, func(ctx context.Context, req *mcpserver.CallToolRequest, in ReportProgressInput) (*mcpserver.CallToolResult, PostOutput, error) {
+		tid := in.ThreadID
+		if tid == 0 {
+			tid = envTaskMsgID()
+		}
+		if tid == 0 {
+			return nil, PostOutput{}, fmt.Errorf("no thread to report on: pass thread_id (spawned agents inherit it from HMF_TASK_MSG_ID)")
+		}
+		result, err := protocol.Call("report_progress", map[string]any{
+			"thread_id":   tid,
+			"from":        os.Getenv("HMF_PROJECT"),
+			"note":        in.Note,
+			"eta_minutes": in.ETAMinutes,
+		})
+		if err != nil {
+			return nil, PostOutput{}, err
+		}
+		var out PostOutput
+		if err := json.Unmarshal(result, &out); err != nil {
+			return nil, PostOutput{}, fmt.Errorf("decode report_progress: %w", err)
+		}
+		return nil, out, nil
 	})
 
 	mcpserver.AddTool(srv, &mcpserver.Tool{

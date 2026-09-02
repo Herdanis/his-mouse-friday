@@ -131,7 +131,18 @@ func TestCLI_DonePostsThreadedReply(t *testing.T) {
 	if len(msgs) < 2 {
 		t.Fatalf("got %d messages, want >=2 (root + done)", len(msgs))
 	}
-	done := msgs[len(msgs)-1]
+	// Find the agent's own reply rather than taking the last message: the
+	// stub agent exits immediately, so the safety net's BLOCKED reply can
+	// legitimately land alongside it.
+	var done daemon.Message
+	for _, m := range msgs {
+		if m.Content == "all done" {
+			done = m
+		}
+	}
+	if done.ID == 0 {
+		t.Fatalf("no 'all done' reply in thread: %+v", msgs)
+	}
 	if done.Status != "done" {
 		t.Errorf("status: got %q want done", done.Status)
 	}

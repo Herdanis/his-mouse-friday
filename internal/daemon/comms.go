@@ -43,12 +43,29 @@ func (c *Comms) PostMessage(channelID, threadID int64, from, to, content, status
 	return Message{ID: id, ChannelID: channelID, ThreadID: threadID, FromProject: from, ToProject: to, Content: content, Status: status, TS: now}, nil
 }
 
+// PostBlockedIfNoDone posts a synthetic done reply only when the thread still
+// has none, deciding and inserting in one statement. The exit watcher used to
+// count first and post after, so an agent's real reply landing in between got
+// a contradictory BLOCKED appended right after it.
+func (c *Comms) PostBlockedIfNoDone(channelID, threadID int64, from, to, content string) (bool, error) {
+	res, err := c.Store.db.Exec(
+		`INSERT INTO messages(channel_id, thread_id, from_project, to_project, content, status, ts)
+		 SELECT ?,?,?,?,?,'done',?
+		 WHERE NOT EXISTS (SELECT 1 FROM messages WHERE thread_id=? AND status='done')`,
+		channelID, nullIfZero(threadID), from, to, content, time.Now().UTC(), threadID)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
 func (c *Comms) ReadChannel(channelID int64, since time.Time) ([]Message, error) {
 	rows, err := c.Store.db.Query(
-		// Acks are harness bookkeeping aimed at whoever dispatched the thread,
-		// not lobby content — excluded here, still visible via read_thread.
+		// Acks and progress notes are aimed at whoever dispatched the thread,
+		// not at the lobby — excluded here, still visible via read_thread.
 		`SELECT id, channel_id, IFNULL(thread_id,0), from_project, IFNULL(to_project,''), content, status, ts
-		 FROM messages WHERE channel_id=? AND ts > ? AND status != 'ack' ORDER BY ts ASC`, channelID, since.UTC())
+		 FROM messages WHERE channel_id=? AND ts > ? AND status NOT IN ('ack','progress') ORDER BY id ASC`, channelID, since.UTC())
 	if err != nil {
 		return nil, err
 	}
@@ -67,10 +84,14 @@ func (c *Comms) GetMessage(id int64) (Message, error) {
 	return m, err
 }
 
+// ReadThread returns a thread in insertion order. Ordering by ts instead would
+// occasionally invert two near-simultaneous posts: each timestamp is read
+// before its insert executes, so it can disagree with what actually landed
+// first.
 func (c *Comms) ReadThread(threadID int64) ([]Message, error) {
 	rows, err := c.Store.db.Query(
 		`SELECT id, channel_id, IFNULL(thread_id,0), from_project, IFNULL(to_project,''), content, status, ts
-		 FROM messages WHERE id=? OR thread_id=? ORDER BY ts ASC`, threadID, threadID)
+		 FROM messages WHERE id=? OR thread_id=? ORDER BY id ASC`, threadID, threadID)
 	if err != nil {
 		return nil, err
 	}

@@ -51,3 +51,34 @@ func TestHumanDuration(t *testing.T) {
 		}
 	}
 }
+
+// TestWorkElapsed_ExcludesIdleGaps: a task picked up again hours later must
+// report the work done, not the wall time spanning the wait. The old span
+// calculation billed a 2h41m idle gap as effort.
+func TestWorkElapsed_ExcludesIdleGaps(t *testing.T) {
+	const layout = "2006-01-02 15:04:05.000000 -0700 MST"
+	ts := func(s string) string {
+		tm, err := time.Parse("15:04:05", s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return time.Date(2026, 9, 2, tm.Hour(), tm.Minute(), tm.Second(), 0, time.UTC).Format(layout)
+	}
+	r := monitorRow{
+		CreatedAt: ts("08:21:55"),
+		Status:    "exited",
+		Attempts: []attempt{
+			{Status: "exited", CreatedAt: ts("08:21:55"), FinishedAt: ts("08:53:19")}, // 31m24s
+			{Status: "exited", CreatedAt: ts("11:34:36"), FinishedAt: ts("11:35:37")}, // 1m01s
+		},
+	}
+	if got, want := r.WorkElapsed(), "32m25s"; got != want {
+		t.Errorf("WorkElapsed() = %q, want %q (sum of attempts, not the 3h13m span)", got, want)
+	}
+
+	// An attempt that ended without a recorded finish is unknown, not zero.
+	r.Attempts[1].FinishedAt = ""
+	if got := r.WorkElapsed(); got != "31m24s+?" {
+		t.Errorf("WorkElapsed() with an unknown attempt = %q, want 31m24s+?", got)
+	}
+}

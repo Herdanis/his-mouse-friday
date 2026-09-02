@@ -1601,3 +1601,60 @@ func TestHandle_AckReplyOnSpawn(t *testing.T) {
 		t.Error("ack should surface as last_update so the caller sees pickup immediately")
 	}
 }
+
+// TestHandle_ReportProgress: a child's status update reaches the parent via
+// task_status, carries its ETA, and never spawns anyone to deliver it.
+func TestHandle_ReportProgress(t *testing.T) {
+	d := setupDaemon(t)
+	d.Registry.AddWorkspace("companyA")
+	userDir := t.TempDir()
+	os.WriteFile(filepath.Join(userDir, "mouse.yaml"), []byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n"), 0644)
+	d.Registry.AddProject("companyA", "user-service", userDir)
+	// Parent is registered and wakeable, so "no spawn" below means the
+	// progress report chose not to wake it, not that it couldn't.
+	payDir := t.TempDir()
+	os.WriteFile(filepath.Join(payDir, "mouse.yaml"), []byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n  allow_outbound: true\n"), 0644)
+	d.Registry.AddProject("companyA", "payment-service", payDir)
+
+	params, _ := json.Marshal(map[string]any{
+		"from": "companyA/payment-service", "to": "companyA/user-service",
+		"content": "add field payment_status",
+	})
+	resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: params, ID: 1})
+	var pr PostResult
+	json.Unmarshal(resp.Result, &pr)
+
+	var before int
+	d.Store.db.QueryRow(`SELECT count(*) FROM sessions`).Scan(&before)
+
+	rp, _ := json.Marshal(map[string]any{
+		"thread_id": pr.MessageID, "from": "companyA/user-service",
+		"note": "migrating the schema", "eta_minutes": 12,
+	})
+	presp := d.Handle(context.Background(), protocol.Request{Method: "report_progress", Params: rp, ID: 2})
+	if presp.Error != nil {
+		t.Fatalf("report_progress: %s", presp.Error.Message)
+	}
+
+	// Reporting progress must not wake the parent — that would be a whole
+	// agent process spawned just to receive a status line.
+	var after int
+	d.Store.db.QueryRow(`SELECT count(*) FROM sessions`).Scan(&after)
+	if after != before {
+		t.Errorf("progress report spawned %d extra session(s)", after-before)
+	}
+
+	sp, _ := json.Marshal(map[string]any{"message_id": pr.MessageID})
+	sresp := d.Handle(context.Background(), protocol.Request{Method: "task_status", Params: sp, ID: 3})
+	var st TaskStatusResult
+	json.Unmarshal(sresp.Result, &st)
+	if !strings.Contains(st.ProgressNote, "migrating the schema") {
+		t.Errorf("progress_note = %q, want the child's note", st.ProgressNote)
+	}
+	if st.ETAMinutes != 12 {
+		t.Errorf("eta_minutes = %d, want 12", st.ETAMinutes)
+	}
+	if st.HasDone {
+		t.Error("a progress report must not count as completion")
+	}
+}

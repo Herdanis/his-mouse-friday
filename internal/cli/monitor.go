@@ -398,7 +398,7 @@ func (m monitorModel) listView() string {
 		}
 		line := fmt.Sprintf("%-*d  %s  %-*s  %-9s  %s  %s",
 			idW, r.ThreadID, statusLabel(r.Status), fromW, r.FromLabel(),
-			elapsed(r.CreatedAt, r.FinishedAt, r.Status == "active"),
+			r.WorkElapsed(),
 			todos, truncate(firstLine(r.Task), taskW))
 
 		if i == m.cursor {
@@ -418,7 +418,7 @@ func (m monitorModel) detailView() string {
 	r := m.rows[m.detail]
 	help := keyHelp("↑↓", "scroll", "esc", "back", "r", "refresh", "q", "quit")
 	head := styTitle.Render(fmt.Sprintf("thread %d", r.ThreadID)) + " " +
-		styDim.Render("· "+r.Status+" · "+elapsed(r.CreatedAt, r.FinishedAt, r.Status == "active")) +
+		styDim.Render("· "+r.Status+" · "+r.WorkElapsed()) +
 		"\n" + styDim.Render(help) + "\n\n"
 	if !m.vpReady {
 		return head + m.detailBody()
@@ -519,6 +519,8 @@ func (m monitorModel) detailBody() string {
 				// Harness-generated, not the agent talking — label it so a
 				// pickup notice is never mistaken for the child's own reply.
 				tag = " " + styDim.Render("[hmf]")
+			case "progress":
+				tag = " " + styDim.Render("[progress]")
 			}
 			head = when + styWorking.Render(e.Who()) + styDim.Render(" ↩") + tag
 			indent = "      "
@@ -725,6 +727,40 @@ func firstLine(s string) string {
 // finish time (it ended before that was tracked and had no done reply to
 // backfill from) its duration is unknown — say so rather than showing a
 // number that keeps growing.
+// WorkElapsed is time actually spent working: the sum of each attempt's own
+// duration. Spanning first-start to now instead would bill the idle gap
+// between a finished attempt and a much later follow-up as work — on a task
+// picked up hours later that reads as 3h of effort for 30min of it.
+func (r monitorRow) WorkElapsed() string {
+	if len(r.Attempts) == 0 {
+		return elapsed(r.CreatedAt, r.FinishedAt, r.Status == "active")
+	}
+	var total time.Duration
+	unknown := false
+	for _, a := range r.Attempts {
+		start, ok := parseDaemonTime(a.CreatedAt)
+		if !ok {
+			unknown = true
+			continue
+		}
+		switch end, ok := parseDaemonTime(a.FinishedAt); {
+		case ok:
+			total += end.Sub(start)
+		case a.Status == "active":
+			total += time.Since(start)
+		default:
+			unknown = true
+		}
+	}
+	if total == 0 && unknown {
+		return "?"
+	}
+	if unknown {
+		return humanDuration(total) + "+?"
+	}
+	return humanDuration(total)
+}
+
 func elapsed(created, finished string, running bool) string {
 	start, ok := parseDaemonTime(created)
 	if !ok {
@@ -852,7 +888,7 @@ func printMonitorSnapshot(out io.Writer, all bool) error {
 		}
 		fmt.Fprintf(out, "%-*d  %-7s  %-*s  %-9s  %-5s  %s\n",
 			idW, r.ThreadID, status, fromW, r.FromLabel(),
-			elapsed(r.CreatedAt, r.FinishedAt, r.Status == "active"),
+			r.WorkElapsed(),
 			todos, truncate(firstLine(r.Task), 60))
 	}
 	return nil

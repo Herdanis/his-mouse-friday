@@ -21,7 +21,19 @@ type TodoStore struct {
 	Store *Store
 }
 
+// Add creates a work item, or returns the existing one when the same thread
+// already has that exact item. An agent that loses track of the id it got back
+// re-adds the item verbatim and marks the copy done, stranding the original as
+// permanently pending — the count then never reaches full.
 func (t *TodoStore) Add(threadID int64, content string) (Todo, error) {
+	var existing Todo
+	err := t.Store.db.QueryRow(
+		`SELECT id, thread_id, content, state, updated_at FROM todos
+		 WHERE thread_id=? AND content=? ORDER BY id LIMIT 1`, threadID, content).
+		Scan(&existing.ID, &existing.ThreadID, &existing.Content, &existing.State, &existing.UpdatedAt)
+	if err == nil {
+		return existing, nil
+	}
 	now := time.Now().UTC()
 	res, err := t.Store.db.Exec(
 		`INSERT INTO todos(thread_id, content, state, updated_at) VALUES(?,?,'pending',?)`,
