@@ -151,54 +151,108 @@ dispatched them. Two views, depending on where you are:
 **From another terminal — live dashboard:**
 
 ```bash
-hmf monitor          # active tasks, refreshing in place
-hmf monitor --all    # include finished ones
+hmf monitor            # every task, running ones first
+hmf monitor --active   # only what's still running
 ```
 
 ```
-hmf monitor · 2 active · 20:13:31 · ↑↓ move · enter opens · q quits
+hmf monitor · 40 tasks · 1 working · 21:40:34
+↑↓ move · enter open · a filter · r refresh · q quit
 
-  STATUS   PROJECT         ELAPSED   TODOS
-▸ working  mouse-for-sale  33s       1/3
-    → list route directories
-  working  penny-pincher   2m10s     0/2
-    → write migration
+  ID   STATUS   FROM              WORKER             ELAPSED   TODOS
+▸ 165  working  his-mouse-friday  mouse-for-sale     12s       1/3
+  163  done     you               mouse-for-sale     38s       -
+  97   done     his-mouse-friday  penny-pincher +1   1m09s     0/4
+  33   failed   you               mouse-for-sale +1  5m00s     4/4
 ```
 
-Each row is one child: status, how long it's been running, todo progress, and
-the step it's on.
+One row per **conversation**: `FROM` is the parent that dispatched it,
+`WORKER` the project doing the work (`+1` when a second project got pulled
+in). A conversation that was retried, resumed, or handed between projects
+keeps all of that on one row. Running work sorts to the top so it is never
+buried under history.
+
+`FROM` reads `you` when the task came from a human in an unregistered
+directory, since the daemon has no project identity for those.
+
+`ID` is the thread id, so anything you spot is directly actionable:
+`hmf watch 165`, or `task_status(message_id=165)` from an agent.
 
 | key | |
 |---|---|
 | `↑` `↓` / `j` `k` | move (list scrolls) |
+| `g` / `G` | jump to first / last |
 | `enter` | open a task |
 | `esc` | back to the list |
-| `a` | toggle active-only / all |
+| `a` | toggle all / running-only |
 | `r` | refresh now |
 | `q` | quit |
 
-Opening a task shows its full work list and the **entire thread** — every
-reply, word-wrapped and scrollable — not just the latest line:
+Opening one is a read-only view of the whole exchange — who asked, what was
+asked, each attempt, the work items, and the **conversation itself**:
+dispatches indented left, replies indented right, so the back-and-forth
+between parent and child reads at a glance.
 
 ```
-mouse-for-sale · exited · 26m13s · thread 158
+mouse-for-sale · exited · 1m11s · thread 165
 
-session fd4fe-mouse-for-sale
+from haydn/his-mouse-friday  →  mouse-for-sale
 
-work items · 3/3 done
-  ✓ count svelte files
-  ✓ list route directories
-  ✓ read package.json name
+task
+  Read-only, NO edits. todo_add 'count routes' then count dirs under
+  src/routes, mark done. Reply done with the number.
 
-thread
-  haydn/mouse-for-sale [done]
-    Survey done. (1) 13 .svelte files under src/. (2) Route dirs:
-    src/routes/{login,pockets,settings,transactions} + root. (3)
-    package.json name: "frontend". No files edited — read-only as instructed.
+work items · 1/1 done
+  ✓ count routes
+
+conversation
+  21:40:22 haydn/his-mouse-friday → haydn/mouse-for-sale
+    Read-only, NO edits. todo_add 'count routes' then count dirs under
+    src/routes, mark done. Reply done with the number.
+
+      21:41:25 haydn/mouse-for-sale ↩ [done]
+        Done. 4 route dirs under src/routes: login, pockets, settings,
+        transactions. Read-only, no edits.
 ```
 
-Piping works too — `hmf monitor --all | tee log.txt` prints one plain
-snapshot instead of starting the interactive view.
+A parent that sends follow-ups mid-task shows them interleaved, so a long
+multi-turn exchange reads in order.
+
+A task with several attempts lists them instead, each with its own status
+and duration:
+
+```
+attempts · 2
+  1. done     mouse-for-sale  5m00s
+  2. failed   penny-pincher   0s
+```
+
+`ELAPSED` is how long a task *ran* — it freezes when the task ends rather
+than counting up forever. A finished task whose duration was never recorded
+shows `?`.
+
+Piping works too — `hmf monitor | tee log.txt` prints one plain snapshot
+instead of starting the interactive view.
+
+**Knowing it picked up at all.**
+
+The moment a child process spawns, the daemon posts a pickup notice on the
+thread — before the agent has said anything:
+
+```
+      21:40:23 haydn/mouse-for-sale ↩ [hmf]
+        working on it — agent spawned as 29898-mouse-for-sale (pid 15796)
+```
+
+It comes from the daemon, not the agent, and that is the point: an agent asked
+to "reply that you started" cannot report the failure where it never started.
+The ack separates *never spawned* from *working quietly* — the two cases that
+otherwise look identical from the parent. It lands in `read_thread` and in
+`task_status`'s `last_update` immediately, is tagged `[hmf]` in the monitor so
+it is never mistaken for the child's own words, and is kept out of
+`read_channel` since the lobby is not its audience.
+
+It carries status `ack`, so it never counts as completion.
 
 **From inside the dispatching session — `task_status`:**
 
@@ -221,6 +275,25 @@ agent), checks the daemon every ~2min, and fires a macOS desktop
 notification the moment the task's `done` reply lands (or if it ends
 without one). Get the `message_id` from whatever posted the task
 (`post_message`'s return value, or `hmf task list` / `hmf session list`).
+
+## Cleaning up history
+
+Every dispatch leaves messages, a session row, and todos behind, so `hmf
+monitor` fills up with old runs. Clear it:
+
+```bash
+hmf prune                      # everything (asks for confirmation)
+hmf prune --older-than 168h    # keep the last week
+hmf prune --yes                # skip the prompt
+```
+
+Workspaces and projects are **never** touched — your registered repos stay
+registered. Threads with a session still `active` are skipped too, so pruning
+mid-task can't orphan a running agent. The file is vacuumed afterwards, so the
+space is actually reclaimed rather than just marked free.
+
+Deletion is irreversible; `cp ~/.hmf/hmf.db ~/.hmf/hmf.db.bak` first if you
+want the history back.
 
 ## Troubleshooting
 

@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"database/sql"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -109,6 +110,81 @@ func nullIfZero(i int64) any {
 		return nil
 	}
 	return i
+}
+
+// PruneResult counts what a Prune removed.
+type PruneResult struct {
+	Messages int64
+	Sessions int64
+	Todos    int64
+	Skipped  int64 // threads left alone because they are still running
+}
+
+// Prune deletes task history. olderThan == 0 removes everything; otherwise
+// only threads whose last activity is older than that.
+//
+// Never touches workspaces or projects — the registry outlives history — and
+// never removes a thread with a running session, which would orphan a live
+// agent's replies.
+func (s *Store) Prune(olderThan time.Duration) (PruneResult, error) {
+	var res PruneResult
+	tx, err := s.db.Begin()
+	if err != nil {
+		return res, err
+	}
+	defer tx.Rollback()
+
+	// A thread is prunable when nothing on it is still running and its most
+	// recent message is past the cutoff.
+	cutoff := "1970-01-01"
+	if olderThan > 0 {
+		cutoff = time.Now().UTC().Add(-olderThan).Format("2006-01-02 15:04:05")
+	}
+	const liveThreads = `SELECT DISTINCT root_thread_id FROM sessions
+	                     WHERE status='active' AND root_thread_id IS NOT NULL`
+	keep := `SELECT root FROM (
+	           SELECT IFNULL(thread_id, id) AS root, MAX(ts) AS last FROM messages GROUP BY root
+	         ) WHERE last >= ? OR root IN (` + liveThreads + `)`
+
+	if olderThan > 0 {
+		tx.QueryRow(`SELECT COUNT(*) FROM (`+keep+`)`, cutoff).Scan(&res.Skipped)
+	} else {
+		tx.QueryRow(`SELECT COUNT(*) FROM (` + liveThreads + `)`).Scan(&res.Skipped)
+		keep = liveThreads
+	}
+
+	del := func(query string, args ...any) (int64, error) {
+		r, err := tx.Exec(query, args...)
+		if err != nil {
+			return 0, err
+		}
+		n, _ := r.RowsAffected()
+		return n, nil
+	}
+
+	args := []any{}
+	if olderThan > 0 {
+		args = append(args, cutoff)
+	}
+	if res.Todos, err = del(`DELETE FROM todos WHERE thread_id NOT IN (`+keep+`)`, args...); err != nil {
+		return res, err
+	}
+	if res.Sessions, err = del(
+		`DELETE FROM sessions WHERE status != 'active'
+		   AND (root_thread_id IS NULL OR root_thread_id NOT IN (`+keep+`))`, args...); err != nil {
+		return res, err
+	}
+	if res.Messages, err = del(
+		`DELETE FROM messages WHERE IFNULL(thread_id, id) NOT IN (`+keep+`)`, args...); err != nil {
+		return res, err
+	}
+	if err := tx.Commit(); err != nil {
+		return res, err
+	}
+	// Deleted pages stay allocated until reclaimed, so a prune alone leaves the
+	// file its old size. VACUUM cannot run inside a transaction.
+	s.db.Exec(`VACUUM`)
+	return res, nil
 }
 
 // RunRetention deletes messages older than 90 days. Runs in a transaction:

@@ -177,14 +177,14 @@ func TestShim_ReadThreadShape(t *testing.T) {
 	if err := json.Unmarshal(result, &msgs); err != nil {
 		t.Fatalf("unmarshal []MessageOutput: %v", err)
 	}
-	if len(msgs) != 2 {
-		t.Fatalf("got %d messages, want 2 (root + done)", len(msgs))
+	if len(msgs) != 3 {
+		t.Fatalf("got %d messages, want 3 (root + ack + done)", len(msgs))
 	}
-	if msgs[0].Content != "task" || msgs[1].Content != "done" || msgs[1].Status != "done" {
+	if msgs[0].Content != "task" || msgs[1].Status != "ack" || msgs[2].Content != "done" || msgs[2].Status != "done" {
 		t.Errorf("messages: got %+v", msgs)
 	}
-	if msgs[1].ThreadID != threadID {
-		t.Errorf("reply thread_id: got %d want %d", msgs[1].ThreadID, threadID)
+	if msgs[2].ThreadID != threadID {
+		t.Errorf("reply thread_id: got %d want %d", msgs[2].ThreadID, threadID)
 	}
 }
 

@@ -1471,3 +1471,133 @@ func TestHandle_Post_OutboundDenied(t *testing.T) {
 		}
 	})
 }
+
+// A thread opened from an unregistered directory carries a non-project
+// identity (e.g. "dir:ledger"). Auto-filling that as a reply's recipient
+// would fail the post, since it can't resolve to a registered project.
+func TestHandle_ReplyDoesNotAutoFillNonProjectSender(t *testing.T) {
+	d := setupDaemon(t)
+	d.Registry.AddWorkspace("companyA")
+	userDir := t.TempDir()
+	os.WriteFile(filepath.Join(userDir, "mouse.yaml"),
+		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n  allow_outbound: true\n"), 0644)
+	d.Registry.AddProject("companyA", "user-service", userDir)
+
+	// Root dispatched from a plain directory, not a registered project.
+	d.Store.db.Exec(`INSERT INTO messages(id, channel_id, thread_id, from_project, to_project, content, status, ts)
+		VALUES(800, 1, NULL, 'dir:ledger', 'companyA/user-service', 'task', 'message', datetime('now'))`)
+
+	params, _ := json.Marshal(map[string]any{
+		"channel": 1, "thread_id": 800, "from": "companyA/user-service",
+		"status": "in_progress", "content": "progress note",
+	})
+	resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: params, ID: 1})
+	if resp.Error != nil {
+		t.Fatalf("reply should post cleanly, got %q", resp.Error.Message)
+	}
+	var to string
+	d.Store.db.QueryRow(`SELECT IFNULL(to_project,'') FROM messages WHERE thread_id=800`).Scan(&to)
+	if to != "" {
+		t.Errorf("to_project = %q; a non-project sender must not be auto-filled", to)
+	}
+}
+
+// Two projects working one parent task: the wake guard must be scoped to the
+// project being addressed. A thread-wide guard silently swallowed the second
+// project's spawn, which forced every delegation onto its own root thread and
+// left related work looking like unrelated parents.
+func TestHandle_SecondProjectOnSameThreadStillWakes(t *testing.T) {
+	d := setupDaemon(t)
+	d.Registry.AddWorkspace("companyA")
+	const yaml = "agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n  allow_outbound: true\n"
+	for _, name := range []string{"backend", "frontend"} {
+		dir := t.TempDir()
+		os.WriteFile(filepath.Join(dir, "mouse.yaml"), []byte(yaml), 0644)
+		d.Registry.AddProject("companyA", name, dir)
+	}
+
+	// Root thread 900 with backend already working on it.
+	d.Store.db.Exec(`INSERT INTO messages(id, channel_id, thread_id, from_project, to_project, content, status, ts)
+		VALUES(900, 1, NULL, 'dir:lab', 'companyA/backend', 'do the backend half', 'message', datetime('now'))`)
+	d.Store.db.Exec(`INSERT INTO sessions(project_id, agent_binary, model, status, pid, created_at, task_msg_id, root_thread_id)
+		VALUES((SELECT id FROM projects WHERE name='backend'), 'opencode', 'default', 'active', 0, datetime('now'), 900, 900)`)
+
+	// The other half of the same task, on the same thread.
+	params, _ := json.Marshal(map[string]any{
+		"channel": 1, "thread_id": 900, "from": "dir:lab",
+		"to": "companyA/frontend", "content": "do the frontend half",
+	})
+	if resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: params, ID: 1}); resp.Error != nil {
+		t.Fatalf("post: %s", resp.Error.Message)
+	}
+	var frontendSessions int
+	d.Store.db.QueryRow(`SELECT count(*) FROM sessions
+		WHERE root_thread_id=900 AND project_id=(SELECT id FROM projects WHERE name='frontend')`).Scan(&frontendSessions)
+	if frontendSessions != 1 {
+		t.Fatalf("frontend sessions on thread 900 = %d, want 1 — a busy sibling project must not suppress its wake", frontendSessions)
+	}
+
+	// Same project twice while it is working is still suppressed: that guard
+	// exists to stop duplicate spawns, and must survive the rescoping.
+	dup, _ := json.Marshal(map[string]any{
+		"channel": 1, "thread_id": 900, "from": "dir:lab",
+		"to": "companyA/backend", "content": "nudge",
+	})
+	d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: dup, ID: 2})
+	var backendSessions int
+	d.Store.db.QueryRow(`SELECT count(*) FROM sessions
+		WHERE root_thread_id=900 AND project_id=(SELECT id FROM projects WHERE name='backend')`).Scan(&backendSessions)
+	if backendSessions != 1 {
+		t.Errorf("backend sessions = %d, want 1 — a project already working must not be re-spawned", backendSessions)
+	}
+}
+
+// TestHandle_AckReplyOnSpawn: the daemon posts a pickup notice as soon as the
+// agent process starts, so a caller can tell "spawned and quiet" from "never
+// spawned" without waiting on the agent to say anything. The ack must not
+// register as completion.
+func TestHandle_AckReplyOnSpawn(t *testing.T) {
+	d := setupDaemon(t)
+	d.Registry.AddWorkspace("companyA")
+	userDir := t.TempDir()
+	os.WriteFile(filepath.Join(userDir, "mouse.yaml"), []byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n"), 0644)
+	d.Registry.AddProject("companyA", "user-service", userDir)
+
+	params, _ := json.Marshal(map[string]any{
+		"from":    "companyA/payment-service",
+		"to":      "companyA/user-service",
+		"content": "add field payment_status",
+	})
+	resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: params, ID: 1})
+	if resp.Error != nil {
+		t.Fatalf("post failed: %s", resp.Error.Message)
+	}
+	var pr PostResult
+	json.Unmarshal(resp.Result, &pr)
+
+	var content, from string
+	err := d.Store.db.QueryRow(
+		`SELECT content, from_project FROM messages WHERE thread_id=? AND status='ack'`,
+		pr.MessageID).Scan(&content, &from)
+	if err != nil {
+		t.Fatalf("no ack reply on thread %d: %v", pr.MessageID, err)
+	}
+	if !strings.Contains(content, "working on it") {
+		t.Errorf("ack content = %q, want a pickup notice", content)
+	}
+	if from != "companyA/user-service" {
+		t.Errorf("ack from = %q, want the project doing the work", from)
+	}
+
+	// An ack is not a done reply — task_status must still report incomplete.
+	sp, _ := json.Marshal(map[string]any{"message_id": pr.MessageID})
+	sresp := d.Handle(context.Background(), protocol.Request{Method: "task_status", Params: sp, ID: 2})
+	var st TaskStatusResult
+	json.Unmarshal(sresp.Result, &st)
+	if st.HasDone {
+		t.Error("ack reply counted as completion")
+	}
+	if st.LastUpdate == "" {
+		t.Error("ack should surface as last_update so the caller sees pickup immediately")
+	}
+}

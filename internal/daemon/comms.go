@@ -45,8 +45,10 @@ func (c *Comms) PostMessage(channelID, threadID int64, from, to, content, status
 
 func (c *Comms) ReadChannel(channelID int64, since time.Time) ([]Message, error) {
 	rows, err := c.Store.db.Query(
+		// Acks are harness bookkeeping aimed at whoever dispatched the thread,
+		// not lobby content — excluded here, still visible via read_thread.
 		`SELECT id, channel_id, IFNULL(thread_id,0), from_project, IFNULL(to_project,''), content, status, ts
-		 FROM messages WHERE channel_id=? AND ts > ? ORDER BY ts ASC`, channelID, since.UTC())
+		 FROM messages WHERE channel_id=? AND ts > ? AND status != 'ack' ORDER BY ts ASC`, channelID, since.UTC())
 	if err != nil {
 		return nil, err
 	}

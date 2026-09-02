@@ -34,6 +34,7 @@ func NewRootCmd() *cobra.Command {
 	root.AddCommand(taskCmd())
 	root.AddCommand(watchCmd())
 	root.AddCommand(monitorCmd())
+	root.AddCommand(pruneCmd())
 	return root
 }
 
@@ -401,6 +402,54 @@ func atoi64(s string) int64 {
 }
 
 // sessionCmd groups session subcommands (currently just `list`).
+func pruneCmd() *cobra.Command {
+	var olderThan string
+	var yes bool
+	c := &cobra.Command{
+		Use:   "prune",
+		Short: "Delete task history (messages, sessions, todos). Registry is never touched",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			var hours float64
+			scope := "ALL task history"
+			if olderThan != "" {
+				d, err := time.ParseDuration(olderThan)
+				if err != nil {
+					return fmt.Errorf("--older-than: %w", err)
+				}
+				hours = d.Hours()
+				scope = "task history older than " + olderThan
+			}
+			if !yes {
+				fmt.Printf("This permanently deletes %s.\n", scope)
+				fmt.Println("Workspaces and projects are kept; running tasks are skipped.")
+				fmt.Print("Type 'yes' to continue: ")
+				var answer string
+				fmt.Scanln(&answer)
+				if answer != "yes" {
+					fmt.Println("aborted")
+					return nil
+				}
+			}
+			result, err := protocol.Call("prune", map[string]any{"older_than_hours": hours})
+			if err != nil {
+				return err
+			}
+			var res daemon.PruneResult
+			if err := json.Unmarshal(result, &res); err != nil {
+				return fmt.Errorf("parse: %w", err)
+			}
+			fmt.Printf("pruned %d messages, %d sessions, %d todos\n", res.Messages, res.Sessions, res.Todos)
+			if res.Skipped > 0 {
+				fmt.Printf("kept %d thread(s) still running or newer than the cutoff\n", res.Skipped)
+			}
+			return nil
+		},
+	}
+	c.Flags().StringVar(&olderThan, "older-than", "", "only prune history older than this (e.g. 24h, 168h). Default: everything")
+	c.Flags().BoolVarP(&yes, "yes", "y", false, "skip the confirmation prompt")
+	return c
+}
+
 func sessionCmd() *cobra.Command {
 	c := &cobra.Command{Use: "session", Short: "Manage hmf sessions"}
 	list := &cobra.Command{

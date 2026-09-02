@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -44,25 +45,94 @@ type todoItem struct {
 	State   string
 }
 
+// monitorRow is one parent task: the thread you dispatched, plus every
+// session spawned under it. A task can involve several projects (a backend
+// agent delegating to a frontend one) and several attempts (a retry or
+// resume), and all of that belongs to the same parent.
 type monitorRow struct {
-	Name       string
-	Project    string
-	Status     string
 	ThreadID   int64
-	CreatedAt  string
-	FinishedAt string
+	Task       string // the dispatched instruction (thread root)
+	From       string // who dispatched it — the parent
+	Status     string // aggregate across attempts
+	CreatedAt  string // first attempt started
+	FinishedAt string // last attempt ended; empty while any is running
+	Attempts   []attempt
 	TodosDone  int
 	TodosTotal int
 	Todos      []todoItem
 	LastUpdate string
-	Replies    []threadReply
+	Events     []convEvent
 }
 
-type threadReply struct {
-	From    string
-	Status  string
-	Content string
+// attempt is one spawned session working on a parent task.
+type attempt struct {
+	Name       string
+	Project    string
+	Status     string
+	CreatedAt  string
+	FinishedAt string
 }
+
+// Projects lists the distinct projects that worked on this task, in the order
+// they first appear.
+func (r monitorRow) Projects() []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, a := range r.Attempts {
+		if !seen[a.Project] {
+			seen[a.Project] = true
+			out = append(out, a.Project)
+		}
+	}
+	return out
+}
+
+// FromLabel names the parent that dispatched this conversation.
+func (r monitorRow) FromLabel() string { return shortIdentity(r.From) }
+
+// shortIdentity renders who someone is in one column's width:
+// "workspace/project" → project, "dir:name" → name/, unknown → you.
+func shortIdentity(id string) string {
+	switch {
+	case id == "":
+		return "you"
+	case strings.HasPrefix(id, "dir:"):
+		return strings.TrimPrefix(id, "dir:") + "/" // trailing / marks a plain directory
+	default:
+		if i := strings.IndexByte(id, '/'); i >= 0 {
+			return id[i+1:] // drop the workspace prefix; it is noise here
+		}
+		return id
+	}
+}
+
+func (r monitorRow) ProjectLabel() string {
+	p := r.Projects()
+	switch len(p) {
+	case 0:
+		return "-"
+	case 1:
+		return p[0]
+	default:
+		return fmt.Sprintf("%s +%d", p[0], len(p)-1)
+	}
+}
+
+// convEvent is one message in a parent↔child conversation.
+type convEvent struct {
+	TS       string
+	From     string // empty = a human working from an unregistered dir
+	To       string
+	Status   string
+	Content  string
+	Dispatch bool
+}
+
+// Dispatch is set when the parent sent this message (asking for work) rather
+// than a worker replying. It cannot be inferred from `to` alone: replies also
+// carry a `to`, since hmf auto-fills it back to the originator.
+
+func (e convEvent) Who() string { return shortIdentity(e.From) }
 
 // Current is the work item the child is on — the first one not done.
 func (r monitorRow) Current() string {
@@ -75,11 +145,15 @@ func (r monitorRow) Current() string {
 }
 
 func monitorCmd() *cobra.Command {
-	var all bool
+	var activeOnly bool
 	c := &cobra.Command{
 		Use:   "monitor",
 		Short: "Live view of delegated tasks and their progress",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Shows everything by default: filtering to active-only greets you
+			// with "nothing running" most of the time, since tasks finish fast.
+			// Running work sorts to the top instead, and `a` filters.
+			all := !activeOnly
 			// No terminal (piped, redirected, CI) — bubbletea can't run, so
 			// print one plain snapshot instead of failing.
 			if !isTerminal(os.Stdout) {
@@ -89,7 +163,7 @@ func monitorCmd() *cobra.Command {
 			return err
 		},
 	}
-	c.Flags().BoolVar(&all, "all", false, "include finished sessions (default: active only)")
+	c.Flags().BoolVar(&activeOnly, "active", false, "show only tasks still running")
 	return c
 }
 
@@ -260,22 +334,31 @@ func (m monitorModel) View() string {
 }
 
 func (m monitorModel) header(help string) string {
-	scope := "active"
-	if m.all {
-		scope = "all"
+	scope := "tasks"
+	if !m.all {
+		scope = "running"
 	}
-	status := ""
+	working := 0
+	for _, r := range m.rows {
+		if r.Status == "active" {
+			working++
+		}
+	}
+	summary := fmt.Sprintf("· %d %s", len(m.rows), scope)
+	if m.all && working > 0 {
+		summary += fmt.Sprintf(" · %d working", working)
+	}
 	if m.loading {
-		status = " · refreshing"
+		summary += " · refreshing"
 	}
 	return styTitle.Render("hmf monitor") + " " +
-		styDim.Render(fmt.Sprintf("· %d %s%s · %s", len(m.rows), scope, status, time.Now().Format("15:04:05"))) +
+		styDim.Render(summary+" · "+time.Now().Format("15:04:05")) +
 		"\n" + styDim.Render(help) + "\n\n"
 }
 
 func (m monitorModel) listView() string {
 	help := keyHelp(
-		"↑↓", "move", "enter", "open", "a", "all/active", "r", "refresh", "q", "quit",
+		"↑↓", "move", "enter", "open", "a", "filter", "r", "refresh", "q", "quit",
 	)
 	var b strings.Builder
 	b.WriteString(m.header(help))
@@ -285,19 +368,22 @@ func (m monitorModel) listView() string {
 		return b.String()
 	}
 	if len(m.rows) == 0 {
-		b.WriteString(styDim.Render("nothing running") + "\n")
+		b.WriteString(styDim.Render("no tasks yet — dispatch one with post_message") + "\n")
 		return b.String()
 	}
 
-	projW := len("PROJECT")
-	idW := len("ID")
+	idW, fromW := len("ID"), len("FROM")
 	for _, r := range m.rows {
-		projW = max(projW, lipgloss.Width(r.Project))
 		idW = max(idW, len(fmt.Sprint(r.ThreadID)))
+		fromW = max(fromW, lipgloss.Width(r.FromLabel()))
 	}
+	// Whatever is left goes to the task summary — the one field that actually
+	// tells rows apart. Who did the work can be several projects, so that
+	// lives in the detail view rather than being flattened into a column.
+	taskW := max(20, m.w-(idW+fromW+7+9+6+12))
 
-	b.WriteString(styLabel.Render(fmt.Sprintf("  %-*s  %-7s  %-*s  %-9s  %s",
-		idW, "ID", "STATUS", projW, "PROJECT", "ELAPSED", "TODOS")) + "\n")
+	b.WriteString(styLabel.Render(fmt.Sprintf("  %-*s  %-7s  %-*s  %-9s  %-5s  %s",
+		idW, "ID", "STATUS", fromW, "FROM", "ELAPSED", "TODOS", "TASK")) + "\n")
 
 	// One line per row: details belong in the detail view, not here.
 	visible := max(1, m.h-7)
@@ -306,13 +392,14 @@ func (m monitorModel) listView() string {
 
 	for i := start; i < end; i++ {
 		r := m.rows[i]
-		todos := styDim.Render(" – ")
+		todos := styDim.Render(padTo("–", 5))
 		if r.TodosTotal > 0 {
-			todos = fmt.Sprintf("%d/%d", r.TodosDone, r.TodosTotal)
+			todos = padTo(fmt.Sprintf("%d/%d", r.TodosDone, r.TodosTotal), 5)
 		}
-		line := fmt.Sprintf("%-*d  %s  %-*s  %-9s  %s",
-			idW, r.ThreadID, statusLabel(r.Status), projW, r.Project,
-			elapsed(r.CreatedAt, r.FinishedAt, r.Status == "active"), todos)
+		line := fmt.Sprintf("%-*d  %s  %-*s  %-9s  %s  %s",
+			idW, r.ThreadID, statusLabel(r.Status), fromW, r.FromLabel(),
+			elapsed(r.CreatedAt, r.FinishedAt, r.Status == "active"),
+			todos, truncate(firstLine(r.Task), taskW))
 
 		if i == m.cursor {
 			b.WriteString(stySel.Render("▸ ") + lipgloss.NewStyle().Bold(true).Render(line) + "\n")
@@ -330,8 +417,8 @@ func (m monitorModel) listView() string {
 func (m monitorModel) detailView() string {
 	r := m.rows[m.detail]
 	help := keyHelp("↑↓", "scroll", "esc", "back", "r", "refresh", "q", "quit")
-	head := styTitle.Render(r.Project) + " " +
-		styDim.Render("· "+r.Status+" · "+elapsed(r.CreatedAt, r.FinishedAt, r.Status == "active")+" · thread "+fmt.Sprint(r.ThreadID)) +
+	head := styTitle.Render(fmt.Sprintf("thread %d", r.ThreadID)) + " " +
+		styDim.Render("· "+r.Status+" · "+elapsed(r.CreatedAt, r.FinishedAt, r.Status == "active")) +
 		"\n" + styDim.Render(help) + "\n\n"
 	if !m.vpReady {
 		return head + m.detailBody()
@@ -347,8 +434,46 @@ func (m monitorModel) detailBody() string {
 	}
 	r := m.rows[m.detail]
 	var b strings.Builder
+	width := max(40, m.w-4)
 
-	b.WriteString(styLabel.Render("session ") + r.Name + "\n\n")
+	// Who dispatched this — the parent. Empty means a human from an
+	// unregistered directory rather than another project's agent.
+	from := r.From
+	switch {
+	case from == "":
+		from = "you (unregistered dir)"
+	case strings.HasPrefix(from, "dir:"):
+		from = strings.TrimPrefix(from, "dir:") + "/ " + styDim.Render("(unregistered dir)")
+	}
+	// Name every worker here rather than a "+N" summary — the detail view is
+	// exactly where the full list belongs.
+	workers := strings.Join(r.Projects(), ", ")
+	if workers == "" {
+		workers = "-"
+	}
+	b.WriteString(styLabel.Render("from ") + from + styDim.Render("  →  ") + workers + "\n\n")
+
+	if r.Task != "" {
+		b.WriteString(styLabel.Render("task") + "\n")
+		for _, line := range wrapText(r.Task, width-4) {
+			b.WriteString("  " + styDim.Render(line) + "\n")
+		}
+		b.WriteString("\n")
+	}
+
+	// Attempts: a task can be retried, resumed, or handed between projects —
+	// the list view collapses that to one line, so show it in full here.
+	if len(r.Attempts) > 1 || (len(r.Attempts) == 1 && len(r.Projects()) > 1) {
+		b.WriteString(styLabel.Render(fmt.Sprintf("attempts · %d", len(r.Attempts))) + "\n")
+		for i, a := range r.Attempts {
+			b.WriteString(fmt.Sprintf("  %d. %s  %s  %s\n",
+				i+1, statusLabel(a.Status), a.Project,
+				styDim.Render(elapsed(a.CreatedAt, a.FinishedAt, a.Status == "active"))))
+		}
+		b.WriteString("\n")
+	} else if len(r.Attempts) == 1 {
+		b.WriteString(styLabel.Render("session ") + r.Attempts[0].Name + "\n\n")
+	}
 
 	if r.TodosTotal == 0 {
 		b.WriteString(styDim.Render("no work items posted yet") + "\n\n")
@@ -367,24 +492,40 @@ func (m monitorModel) detailBody() string {
 		b.WriteString("\n")
 	}
 
-	if len(r.Replies) == 0 {
-		b.WriteString(styDim.Render("no replies yet") + "\n")
+	if len(r.Events) == 0 {
+		b.WriteString(styDim.Render("no messages yet") + "\n")
 		return b.String()
 	}
-	b.WriteString(styLabel.Render("thread") + "\n")
-	width := max(40, m.w-4)
-	for _, rep := range r.Replies {
-		who := rep.From
-		if who == "" {
-			who = "task"
+
+	// The exchange itself, oldest first: who asked whom, and what came back.
+	// Dispatches are indented left, replies right, so the direction reads at
+	// a glance without hunting through the text.
+	b.WriteString(styLabel.Render("conversation") + "\n")
+	for _, e := range r.Events {
+		when := ""
+		if t, ok := parseDaemonTime(e.TS); ok {
+			when = styDim.Render(t.Local().Format("15:04:05") + " ")
 		}
-		tag := ""
-		if rep.Status == "done" {
-			tag = " " + styWorking.Render("[done]")
+		var head, indent string
+		if e.Dispatch {
+			head = when + styKey.Render(e.Who()) + styDim.Render(" → ") + e.To
+			indent = "  "
+		} else {
+			tag := ""
+			switch e.Status {
+			case "done":
+				tag = " " + styWorking.Render("[done]")
+			case "ack":
+				// Harness-generated, not the agent talking — label it so a
+				// pickup notice is never mistaken for the child's own reply.
+				tag = " " + styDim.Render("[hmf]")
+			}
+			head = when + styWorking.Render(e.Who()) + styDim.Render(" ↩") + tag
+			indent = "      "
 		}
-		b.WriteString("\n  " + styKey.Render(who) + tag + "\n")
-		for _, line := range wrapText(rep.Content, width-4) {
-			b.WriteString("    " + line + "\n")
+		b.WriteString("\n" + indent + head + "\n")
+		for _, line := range wrapText(e.Content, max(20, width-len(indent)-2)) {
+			b.WriteString(indent + "  " + line + "\n")
 		}
 	}
 	return b.String()
@@ -432,47 +573,85 @@ func collectMonitorRows(all bool) ([]monitorRow, error) {
 		return nil, fmt.Errorf("parse sessions: %w", err)
 	}
 
-	// One row per task, not per spawn. A retried or resumed task has several
-	// sessions on the same thread; session_list is newest-first, so the first
-	// one we see is the current state.
-	seen := map[int64]bool{}
-	var rows []monitorRow
+	// Group by parent task. One thread can carry several attempts and several
+	// projects (one agent delegating to another); they are all the same task,
+	// so they belong on one row rather than as unrelated siblings.
+	order := []int64{}
+	byThread := map[int64]*monitorRow{}
 	for _, s := range sessions {
-		if !all && s.Status != "active" {
-			continue
+		if s.ParentID == 0 {
+			continue // no thread to group under
 		}
-		if s.ParentID != 0 {
-			if seen[s.ParentID] {
+		row := byThread[s.ParentID]
+		if row == nil {
+			if len(order) >= monitorMaxRows {
 				continue
 			}
-			seen[s.ParentID] = true
+			row = &monitorRow{ThreadID: s.ParentID}
+			byThread[s.ParentID] = row
+			order = append(order, s.ParentID)
 		}
-		if len(rows) >= monitorMaxRows {
-			break
-		}
-		row := monitorRow{
+		row.Attempts = append(row.Attempts, attempt{
 			Name: s.Name, Project: s.Project, Status: s.Status,
-			ThreadID: s.ParentID, CreatedAt: s.CreatedAt, FinishedAt: s.FinishedAt,
-		}
-		if s.ParentID != 0 {
-			row.Todos = fetchTodos(s.ParentID)
-			for _, t := range row.Todos {
-				row.TodosTotal++
-				if t.State == "done" {
-					row.TodosDone++
-				}
+			CreatedAt: s.CreatedAt, FinishedAt: s.FinishedAt,
+		})
+	}
+
+	var rows []monitorRow
+	for _, id := range order {
+		row := byThread[id]
+		// session_list is newest-first; attempts read better oldest-first.
+		slices.Reverse(row.Attempts)
+		summariseAttempts(row)
+
+		row.Todos = fetchTodos(id)
+		for _, t := range row.Todos {
+			row.TodosTotal++
+			if t.State == "done" {
+				row.TodosDone++
 			}
-			row.Replies = fetchReplies(s.ParentID)
-			for i := len(row.Replies) - 1; i >= 0; i-- {
-				row.LastUpdate = firstLine(row.Replies[i].Content)
+		}
+		row.Task, row.From, row.Events = fetchConversation(id)
+		for i := len(row.Events) - 1; i >= 0; i-- {
+			if !row.Events[i].Dispatch {
+				row.LastUpdate = firstLine(row.Events[i].Content)
 				break
 			}
 		}
-		rows = append(rows, row)
+		if !all && row.Status != "active" {
+			continue
+		}
+		rows = append(rows, *row)
 	}
-	// Newest first — the thing you just dispatched should be at the top.
-	sort.Slice(rows, func(i, j int) bool { return rows[i].CreatedAt > rows[j].CreatedAt })
+	// Running work first, then newest. With everything on screen, the tasks
+	// still in flight are what you opened this for — they must never be
+	// buried under finished history.
+	sort.SliceStable(rows, func(i, j int) bool {
+		ai, aj := rows[i].Status == "active", rows[j].Status == "active"
+		if ai != aj {
+			return ai
+		}
+		return rows[i].CreatedAt > rows[j].CreatedAt
+	})
 	return rows, nil
+}
+
+// summariseAttempts rolls a task's attempts into one status and span: it is
+// running if any attempt is, and its duration covers the first start to the
+// last finish.
+func summariseAttempts(row *monitorRow) {
+	if len(row.Attempts) == 0 {
+		return
+	}
+	row.CreatedAt = row.Attempts[0].CreatedAt
+	last := row.Attempts[len(row.Attempts)-1]
+	row.Status, row.FinishedAt = last.Status, last.FinishedAt
+	for _, a := range row.Attempts {
+		if a.Status == "active" {
+			row.Status, row.FinishedAt = "active", "" // still running
+			break
+		}
+	}
 }
 
 func fetchTodos(threadID int64) []todoItem {
@@ -494,30 +673,37 @@ func fetchTodos(threadID int64) []todoItem {
 	return out
 }
 
-// fetchReplies returns the thread's replies, oldest first. The root is the
-// dispatcher's own task text and is skipped — it says nothing about progress.
-func fetchReplies(threadID int64) []threadReply {
+// fetchConversation returns the whole parent↔child exchange on a thread,
+// oldest first: the dispatches the parent sent and the replies children made.
+func fetchConversation(threadID int64) (task, from string, events []convEvent) {
 	result, err := protocol.Call("read_thread", map[string]any{"message_id": threadID})
 	if err != nil {
-		return nil
+		return "", "", nil
 	}
 	var msgs []struct {
 		ThreadID    int64  `json:"thread_id"`
 		FromProject string `json:"from_project"`
+		ToProject   string `json:"to_project"`
 		Status      string `json:"status"`
 		Content     string `json:"content"`
+		TS          string `json:"ts"`
 	}
 	if json.Unmarshal(result, &msgs) != nil {
-		return nil
+		return "", "", nil
 	}
-	var out []threadReply
-	for _, msg := range msgs {
-		if msg.ThreadID == 0 {
-			continue // thread root
-		}
-		out = append(out, threadReply{From: msg.FromProject, Status: msg.Status, Content: msg.Content})
+	if len(msgs) > 0 {
+		task, from = msgs[0].Content, msgs[0].FromProject // the opening request
 	}
-	return out
+	for _, m := range msgs {
+		events = append(events, convEvent{
+			TS: m.TS, From: m.FromProject, To: m.ToProject,
+			Status: m.Status, Content: m.Content,
+			// The parent is whoever opened the thread; anyone else is a worker
+			// reporting back. Follow-ups from the parent stay dispatches.
+			Dispatch: m.FromProject == from,
+		})
+	}
+	return task, from, events
 }
 
 // ============================================
@@ -585,6 +771,15 @@ func humanDuration(d time.Duration) string {
 	}
 }
 
+// padTo pads to a visible width. Style the result, never the input: escape
+// codes count toward fmt's width and would skew every column after it.
+func padTo(s string, w int) string {
+	if n := len([]rune(s)); n < w {
+		return s + strings.Repeat(" ", w-n)
+	}
+	return s
+}
+
 func truncate(s string, max int) string {
 	if r := []rune(strings.TrimSpace(s)); len(r) > max && max > 1 {
 		return string(r[:max-1]) + "…"
@@ -630,22 +825,22 @@ func printMonitorSnapshot(out io.Writer, all bool) error {
 	if err != nil {
 		return err
 	}
-	scope := "active"
-	if all {
-		scope = "all"
+	scope := "tasks"
+	if !all {
+		scope = "running"
 	}
 	fmt.Fprintf(out, "hmf monitor · %d %s · %s\n\n", len(rows), scope, time.Now().Format("15:04:05"))
 	if len(rows) == 0 {
-		fmt.Fprintln(out, "nothing running")
+		fmt.Fprintln(out, "no tasks")
 		return nil
 	}
-	projW, idW := len("PROJECT"), len("ID")
+	idW, fromW := len("ID"), len("FROM")
 	for _, r := range rows {
-		projW = max(projW, len(r.Project))
 		idW = max(idW, len(fmt.Sprint(r.ThreadID)))
+		fromW = max(fromW, len(r.FromLabel()))
 	}
-	fmt.Fprintf(out, "%-*s  %-7s  %-*s  %-9s  %s\n",
-		idW, "ID", "STATUS", projW, "PROJECT", "ELAPSED", "TODOS")
+	fmt.Fprintf(out, "%-*s  %-7s  %-*s  %-9s  %-5s  %s\n",
+		idW, "ID", "STATUS", fromW, "FROM", "ELAPSED", "TODOS", "TASK")
 	for _, r := range rows {
 		todos := "-"
 		if r.TodosTotal > 0 {
@@ -655,8 +850,10 @@ func printMonitorSnapshot(out io.Writer, all bool) error {
 		if status == "" {
 			status = r.Status
 		}
-		fmt.Fprintf(out, "%-*d  %-7s  %-*s  %-9s  %s\n",
-			idW, r.ThreadID, status, projW, r.Project, elapsed(r.CreatedAt, r.FinishedAt, r.Status == "active"), todos)
+		fmt.Fprintf(out, "%-*d  %-7s  %-*s  %-9s  %-5s  %s\n",
+			idW, r.ThreadID, status, fromW, r.FromLabel(),
+			elapsed(r.CreatedAt, r.FinishedAt, r.Status == "active"),
+			todos, truncate(firstLine(r.Task), 60))
 	}
 	return nil
 }

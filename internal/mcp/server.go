@@ -10,6 +10,8 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/herdanis/his-mouse-friday/internal/config"
@@ -144,6 +146,17 @@ func resolveCaller(repoPath string) string {
 	return r.Workspace + "/" + r.Project
 }
 
+// dirIdentity names an unregistered caller by the directory it runs in. The
+// "dir:" prefix and the absence of a slash keep it distinguishable from a
+// real "workspace/project", which several code paths rely on.
+func dirIdentity(repo string) string {
+	base := filepath.Base(strings.TrimRight(repo, string(filepath.Separator)))
+	if base == "" || base == "." || base == string(filepath.Separator) {
+		return ""
+	}
+	return "dir:" + base
+}
+
 // envChannelID reads HMF_CHANNEL_ID (set when spawned by hmf engage).
 // Returns 0 if not set (user-initiated session).
 func envChannelID() int64 {
@@ -153,16 +166,15 @@ func envChannelID() int64 {
 }
 
 // resolveThreadID picks the thread a post belongs to when the caller didn't
-// name one. Addressed posts bind per recipient, not per session: two
-// delegations to different projects must start separate threads, or the
-// second collapses onto the first's thread and the daemon's wake guard
-// (active session on that thread) silently suppresses its spawn.
+// name one: everything from a session joins that session's thread, so work
+// split across several projects stays one parent task rather than becoming
+// unrelated roots.
+//
+// This is safe only because the daemon's wake guard is scoped per project —
+// a thread-wide guard would swallow the second project's spawn.
 func resolveThreadID(explicit int64, to string, byRecipient map[string]int64, current int64) int64 {
 	if explicit != 0 {
 		return explicit
-	}
-	if to != "" {
-		return byRecipient[to]
 	}
 	return current
 }
@@ -354,6 +366,11 @@ func RunServer(ctx context.Context) error {
 	if callerID == "" {
 		repo, _ := os.Getwd()
 		callerID = resolveCaller(repo)
+		if callerID == "" {
+			// Unregistered directory: still say where the work came from, so
+			// its threads are attributable instead of anonymous.
+			callerID = dirIdentity(repo)
+		}
 	}
 	if callerID != "" {
 		fmt.Fprintf(os.Stderr, "hmf: ready (caller=%s)\n", callerID)

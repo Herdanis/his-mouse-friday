@@ -23,7 +23,7 @@ func TestVerticalSlice(t *testing.T) {
 	os.MkdirAll(userDir, 0755)
 
 	// user-service allows inbound.
-	os.WriteFile(filepath.Join(userDir, "mouse.yaml"), []byte("agent:\n  primary:\n    provider: /bin/echo\na2a:\n  allow_inbound: true\n"), 0644)
+	os.WriteFile(filepath.Join(userDir, "mouse.yaml"), []byte("agent:\n  primary:\n    provider: /bin/echo\na2a:\n  allow_inbound: true\n  allow_outbound: true\n"), 0644)
 	os.WriteFile(filepath.Join(userDir, "MOUSE.md"), []byte("# user-service runbook\nowns user model\n"), 0644)
 
 	// Daemon with in-memory-ish store (temp db).
@@ -77,12 +77,19 @@ func TestVerticalSlice(t *testing.T) {
 		"status":    "done",
 	})
 
-	// payment reads the thread — gets root + in_progress + done.
+	// payment reads the thread. Root + in_progress + done, plus a spawn ack
+	// for each wake: the task wakes user-service, and the child's in_progress
+	// wakes payment back (a child posting to its parent may be asking a
+	// question, so that path stays live — only "done" is a pure notice).
 	threadResp := mustSend(t, d, "read_thread", map[string]any{"message_id": taskID})
 	var msgs []daemon.Message
 	json.Unmarshal(threadResp.Result, &msgs)
-	if len(msgs) != 3 {
-		t.Fatalf("expected 3 messages in thread, got %d", len(msgs))
+	if len(msgs) != 5 {
+		t.Fatalf("expected 5 messages in thread (root + 2 acks + in_progress + done), got %d", len(msgs))
+	}
+	// The done reply is last: it must not have woken anyone, so no ack follows.
+	if last := msgs[len(msgs)-1]; last.Status != "done" {
+		t.Errorf("done reply should end the thread, got trailing status=%q", last.Status)
 	}
 	task := msgs[0]
 	if task.FromProject != "companyA/payment-service" || task.ToProject != "companyA/user-service" {
@@ -91,7 +98,7 @@ func TestVerticalSlice(t *testing.T) {
 	if task.Content != "add payment_status field to User" {
 		t.Errorf("task content: %q", task.Content)
 	}
-	reply := msgs[2]
+	reply := msgs[len(msgs)-1]
 	if reply.FromProject != "companyA/user-service" || reply.ToProject != "companyA/payment-service" {
 		t.Errorf("reply sender: from=%q to=%q, want user-service→payment", reply.FromProject, reply.ToProject)
 	}
@@ -138,7 +145,7 @@ func TestVerticalSlice_OverSocket(t *testing.T) {
 	wsDir := t.TempDir()
 	userDir := filepath.Join(wsDir, "user-service")
 	os.MkdirAll(userDir, 0755)
-	os.WriteFile(filepath.Join(userDir, "mouse.yaml"), []byte("agent:\n  primary:\n    provider: /bin/echo\na2a:\n  allow_inbound: true\n"), 0644)
+	os.WriteFile(filepath.Join(userDir, "mouse.yaml"), []byte("agent:\n  primary:\n    provider: /bin/echo\na2a:\n  allow_inbound: true\n  allow_outbound: true\n"), 0644)
 	os.WriteFile(filepath.Join(userDir, "MOUSE.md"), []byte("# user-service\n"), 0644)
 
 	store, _ := daemon.OpenStore(filepath.Join(t.TempDir(), "sock-e2e.db"))
@@ -240,14 +247,19 @@ func TestVerticalSlice_OverSocket(t *testing.T) {
 	threadResp := send("read_thread", map[string]any{"message_id": pr.MessageID})
 	var msgs []daemon.Message
 	json.Unmarshal(threadResp.Result, &msgs)
-	if len(msgs) != 2 {
-		t.Fatalf("got %d messages want 2", len(msgs))
+	// root + spawn ack + done. A done reply must not itself wake anyone, so
+	// there is no second ack after it.
+	if len(msgs) != 3 {
+		t.Fatalf("got %d messages want 3 (root + ack + done)", len(msgs))
 	}
 	if msgs[0].FromProject != "companyA/payment-service" {
 		t.Errorf("task from: %q want payment-service", msgs[0].FromProject)
 	}
-	if msgs[1].FromProject != "companyA/user-service" || msgs[1].Status != "done" {
-		t.Errorf("reply: from=%q status=%q want user-service/done", msgs[1].FromProject, msgs[1].Status)
+	if msgs[1].Status != "ack" {
+		t.Errorf("expected spawn ack, got status=%q", msgs[1].Status)
+	}
+	if msgs[2].FromProject != "companyA/user-service" || msgs[2].Status != "done" {
+		t.Errorf("reply: from=%q status=%q want user-service/done", msgs[2].FromProject, msgs[2].Status)
 	}
 	conn.Close()
 

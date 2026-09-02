@@ -267,6 +267,8 @@ func (d *Daemon) Handle(ctx context.Context, req protocol.Request) protocol.Resp
 		return d.handleStatus(req)
 	case "session_list":
 		return d.handleSessionList(req)
+	case "prune":
+		return d.handlePrune(req)
 	case "todo_add", "todo_update", "todo_list", "todo_threads":
 		return d.handleTodo(req)
 	case "shutdown":
@@ -323,18 +325,28 @@ func (d *Daemon) resolveToProject(to string) (string, error) {
 	}
 }
 
-// threadSessionActive reports whether the thread's latest session is still
-// running. Queries root_thread_id (not task_msg_id) to catch reply-wakes too.
-func (d *Daemon) threadSessionActive(threadID int64) bool {
+// threadSessionActive reports whether toProject already has a session running
+// on this thread. Scoped per project, not per thread: several projects can
+// work on one parent task at once, and a thread-wide check would silently
+// swallow the second project's wake.
+func (d *Daemon) threadSessionActive(threadID int64, toProject string) bool {
 	if threadID == 0 {
+		return false
+	}
+	parts := strings.SplitN(toProject, "/", 2)
+	if len(parts) != 2 {
 		return false
 	}
 	var status string
 	err := d.Store.db.QueryRow(
-		`SELECT status FROM sessions WHERE root_thread_id=? ORDER BY id DESC LIMIT 1`,
-		threadID).Scan(&status)
+		`SELECT s.status FROM sessions s
+		 JOIN projects p ON s.project_id=p.id
+		 JOIN workspaces w ON p.workspace_id=w.id
+		 WHERE s.root_thread_id=? AND w.name=? AND p.name=?
+		 ORDER BY s.id DESC LIMIT 1`,
+		threadID, parts[0], parts[1]).Scan(&status)
 	if err != nil {
-		return false // no session → not active
+		return false // this project has no session on the thread
 	}
 	return status == "active"
 }
@@ -365,7 +377,10 @@ func (d *Daemon) handlePost(ctx context.Context, req protocol.Request) protocol.
 			if other == "" || other == p.From {
 				other = root.FromProject
 			}
-			if other != "" && other != p.From {
+			// Only ever auto-fill a real "workspace/project". A thread opened
+			// from an unregistered directory carries a non-project identity
+			// there, and resolving that as a recipient would fail the post.
+			if other != "" && other != p.From && strings.Contains(other, "/") {
 				p.To = other
 			}
 		}
@@ -385,8 +400,15 @@ func (d *Daemon) handlePost(ctx context.Context, req protocol.Request) protocol.
 	}
 	// Wake to-addressed messages unless the thread's agent is still running.
 	// A prior done reply IS re-wakeable — follow-up resumes the prior session.
-	if p.To != "" {
-		if d.threadSessionActive(p.ThreadID) {
+	//
+	// A "done" never wakes: it is the worker announcing it finished, and
+	// spawning the originator to receive that is a whole agent process doing
+	// nothing. The originator learns via task_status, not a wake. Guarding
+	// only the `to` auto-fill above misses this — `hmf done` sets `to`
+	// explicitly from HMF_FROM, so every completed task spawned a pointless
+	// parent-side agent.
+	if p.To != "" && p.Status != "done" {
+		if d.threadSessionActive(p.ThreadID, p.To) {
 			// Agent still running — no new wake.
 		} else {
 			if err := d.wakeAgent(ctx, p, msg); err != nil {
@@ -548,6 +570,14 @@ func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error
 	}
 	d.Sessions.SetPID(tmpSess.ID, pid)
 	d.Sessions.SetStatus(tmpSess.ID, "active")
+	// Acknowledge the pickup from the daemon, not the agent. An LLM asked to
+	// "reply that you started" can't report the failure where it never ran, so
+	// the one signal that distinguishes "never spawned" from "working quietly"
+	// has to come from the side that knows the process exists.
+	ack := fmt.Sprintf("working on it — agent spawned as %s (pid %d)", spawnCfg.SessionName, pid)
+	if _, err := d.Comms.PostMessage(msg.ChannelID, parentID, msg.ToProject, msg.FromProject, ack, "ack"); err != nil {
+		log.Printf("ack reply for thread %d: %v", parentID, err)
+	}
 	if spawnCfg.AgentSessionID != "" {
 		// Resume: ocID already known, set directly — no capture needed.
 		if err := d.Sessions.SetAgentSessionID(tmpSess.ID, spawnCfg.AgentSessionID); err != nil {
@@ -931,6 +961,25 @@ func (d *Daemon) handleSessionList(req protocol.Request) protocol.Response {
 		out = []SessionListItem{}
 	}
 	result, _ := json.Marshal(out)
+	return protocol.Response{ID: req.ID, Result: result}
+}
+
+// handlePrune clears task history. Sessions still running are left alone, so a
+// prune during live work cannot orphan an agent mid-task.
+func (d *Daemon) handlePrune(req protocol.Request) protocol.Response {
+	var p struct {
+		OlderThanHours float64 `json:"older_than_hours"`
+	}
+	if len(req.Params) > 0 {
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			return errResp(req.ID, err.Error())
+		}
+	}
+	res, err := d.Store.Prune(time.Duration(p.OlderThanHours * float64(time.Hour)))
+	if err != nil {
+		return errResp(req.ID, err.Error())
+	}
+	result, _ := json.Marshal(res)
 	return protocol.Response{ID: req.ID, Result: result}
 }
 
