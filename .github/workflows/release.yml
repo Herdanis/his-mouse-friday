@@ -49,11 +49,12 @@ jobs:
           set -euo pipefail
 
           # Commits since previous tag; fall back to last 30 if this is the first tag.
+          # Subjects + full bodies (squash merges carry the PR title + #number here).
           PREV=$(git tag --sort=-creatordate | sed -n 2p)
           if [ -n "$PREV" ]; then
-            LOG=$(git log --no-merges --format='- %s (%h)' "$PREV..${GITHUB_REF_NAME}")
+            LOG=$(git log --no-merges --format='- %h %s%n%b' "$PREV..${GITHUB_REF_NAME}")
           else
-            LOG=$(git log --no-merges --format='- %s (%h)' -30)
+            LOG=$(git log --no-merges --format='- %h %s%n%b' -30)
           fi
 
           if [ -z "$OPENAI_API_KEY" ] || [ -z "$LOG" ]; then
@@ -85,7 +86,9 @@ jobs:
           NOTES_PATH: ${{ steps.notes.outputs.path }}
         run: |
           if [ -n "$NOTES_PATH" ] && [ -s "$NOTES_PATH" ]; then
-            gh release create "${GITHUB_REF_NAME}" --title "${GITHUB_REF_NAME}" --notes-file "$NOTES_PATH" dist/*
+            gh release create "${GITHUB_REF_NAME}" --title "${GITHUB_REF_NAME}" --notes-file "$NOTES_PATH" dist/*.tar.gz dist/checksums.txt \
+              || gh release upload "${GITHUB_REF_NAME}" --clobber dist/*.tar.gz dist/checksums.txt
           else
-            gh release create "${GITHUB_REF_NAME}" --title "${GITHUB_REF_NAME}" --generate-notes dist/*
+            gh release create "${GITHUB_REF_NAME}" --title "${GITHUB_REF_NAME}" --generate-notes dist/*.tar.gz dist/checksums.txt \
+              || gh release upload "${GITHUB_REF_NAME}" --clobber dist/*.tar.gz dist/checksums.txt
           fi
