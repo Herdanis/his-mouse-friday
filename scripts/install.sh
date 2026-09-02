@@ -4,8 +4,12 @@ set -euo pipefail
 # ============================================
 # his-mouse-friday installer (macOS / Linux)
 # ============================================
-# Ensures Go, `go install`s hmf + hmf-mcp, then drops
-# the opencode plugin + slash commands into ~/.config/opencode.
+# Full setup: Go, hmf + hmf-mcp binaries, opencode
+# plugin/commands/agent, MCP wiring, daemon start.
+# Pass --no-daemon to skip starting the daemon.
+
+NO_DAEMON=0
+for arg in "$@"; do [ "$arg" = "--no-daemon" ] && NO_DAEMON=1; done
 
 GO_VERSION="1.26.5"
 MODULE_PATH="github.com/herdanis/his-mouse-friday/cmd/..."
@@ -17,6 +21,7 @@ OPENCODE_CONFIG="${OPENCODE_CONFIG:-$HOME/.config/opencode}"
 
 info() { printf '\033[36m▸\033[0m %s\n' "$1"; }
 ok()   { printf '\033[32m✓\033[0m %s\n' "$1"; }
+warn() { printf '\033[33m!\033[0m %s\n' "$1"; }
 die()  { printf '\033[31m✗ %s\033[0m\n' "$1" >&2; exit 1; }
 
 # ============================================
@@ -112,37 +117,77 @@ fetch "examples/agents/hmf-worker.md"         "$OPENCODE_CONFIG/agents/hmf-worke
 ok "plugin + commands + agent → $OPENCODE_CONFIG"
 
 # ============================================
-# Path + next-steps
+# Path
 # ============================================
 case ":$PATH:" in
   *":$gobin:"*) ;;
-  *) printf '\033[33m! add to your shell profile:\033[0m export PATH="%s:$PATH"\n' "$gobin" ;;
+  *) warn "add to your shell profile: export PATH=\"$gobin:\$PATH\"" ;;
 esac
 if [ "$need_go" -eq 1 ]; then
-  printf '\033[33m! add to your shell profile:\033[0m export PATH="%s/bin:$PATH"\n' "$GO_INSTALL_DIR"
+  warn "add to your shell profile: export PATH=\"$GO_INSTALL_DIR/bin:\$PATH\""
+fi
+
+# ============================================
+# Wire MCP server into opencode config
+# ============================================
+MCP_ENTRY='{"type":"local","command":["hmf-mcp"],"enabled":true,"timeout":330000}'
+MERGE='.mcp.hmf = {"type":"local","command":["hmf-mcp"],"enabled":true,"timeout":330000}'
+CFG="$OPENCODE_CONFIG/opencode.json"
+
+wire_mcp_manual() {
+  warn "jq not available — add this to $CFG manually:"
+  printf '  {"mcp": {"hmf": %s}}\n' "$MCP_ENTRY"
+}
+
+mkdir -p "$OPENCODE_CONFIG"
+if ! command -v jq >/dev/null 2>&1; then
+  wire_mcp_manual
+elif [ -f "$CFG" ] && jq -e '.mcp.hmf' "$CFG" >/dev/null 2>&1; then
+  ok "MCP server already wired in $CFG"
+elif [ -f "$CFG" ]; then
+  if jq "$MERGE" "$CFG" > "$CFG.tmp" 2>/dev/null; then
+    mv "$CFG.tmp" "$CFG"
+    ok "MCP server wired into $CFG"
+  else
+    warn "could not parse $CFG (jsonc/comments?) — wire the MCP server manually"
+    printf '  {"mcp": {"hmf": %s}}\n' "$MCP_ENTRY"
+  fi
+else
+  jq -n "$MERGE" > "$CFG"
+  ok "created $CFG with MCP server"
+fi
+
+# ============================================
+# Start daemon
+# ============================================
+HMF_STATE="${HMF_STATE_DIR:-$HOME/.hmf}"
+SOCKET_PATH="$HMF_STATE/daemon.sock"
+
+if [ "$NO_DAEMON" -eq 1 ]; then
+  info "skipping daemon start (--no-daemon)"
+elif [ -S "$SOCKET_PATH" ]; then
+  ok "daemon already running ($SOCKET_PATH)"
+else
+  info "starting daemon in background (log: $HMF_STATE/daemon.log)"
+  mkdir -p "$HMF_STATE"
+  nohup "$gobin/hmf" up > "$HMF_STATE/daemon.log" 2>&1 &
+  sleep 2
+  if [ -S "$SOCKET_PATH" ]; then
+    ok "daemon running"
+  else
+    warn "daemon may still be starting — verify with 'hmf status', log: $HMF_STATE/daemon.log"
+  fi
 fi
 
 cat <<EOF
 
-Next: wire the MCP server into opencode by adding this to
-$OPENCODE_CONFIG/opencode.json:
+Next steps:
+  1. Verify the daemon:        hmf status
+  2. Register a workspace:     hmf workspace add /path/to/workspace
+  3. Register a project:       hmf project add /path/to/repo
+  4. In any registered repo:   hmf init  (creates mouse.yaml + MOUSE.md)
 
-  {
-    "mcp": {
-      "hmf": {
-        "type": "local",
-        "command": ["hmf-mcp"],
-        "enabled": true,
-        "timeout": 330000
-      }
-    }
-  }
-
-The "timeout" is required: task_status blocks up to 5min waiting on a
-delegated agent, and opencode's MCP client defaults to 5s — without it
-every status check fails with "MCP error -32001: Request timed out".
-
-Then start the daemon:  hmf up
+Stop the daemon later with:   hmf down
 EOF
 
 ok "done"
