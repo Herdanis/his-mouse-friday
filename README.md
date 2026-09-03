@@ -143,13 +143,16 @@ After `make install`, in any opencode session:
    and paths named in a bash command.
 
    **Cross-project access is read-only.** A parent may look inside a registered
-   project it doesn't own — `cat`, `ls`, `rg`, `git log`/`status`/`diff`, and
-   the native `read`/`grep`/`glob` tools all work — so it can verify a child's
+   project it doesn't own — `cat`, `ls`, `rg`, `find`, `git log`/`status`/`diff`,
+   and the native `read`/`grep`/`glob` tools all work — so it can verify a child's
    work itself. Anything that changes or runs that project (`edit`, writes,
    redirects, `sed -i`, `rm`, `git commit`, `go test`, `npm run`, ...) is still
    blocked; it belongs to that project's agent, reached with `post_message`.
    The command allowlist is conservative: anything it doesn't recognise counts
-   as a write. The target's own `permissions.fs` deny/ask list still applies to
+   as a write, and tools that can escape to a shell are excluded outright
+   (`awk`, `sed`, `less`) or have their escape flags rejected (`find -delete`
+   / `-exec`, `fd -x`, `rg --pre`, `sort -o`, `git -c`, `go env -w`,
+   `$(...)`, backticks, `<(...)`, `xargs`). The target's own `permissions.fs` deny/ask list still applies to
    those reads, so a child's secrets are not readable just because the caller
    is a parent.
 

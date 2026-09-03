@@ -291,13 +291,27 @@ export function extractPathCandidates(cmd: string, cwd: string, mustExist = true
 
 // A parent may LOOK inside a registered project to verify a child's work; it
 // may never change it. Everything here only reads.
+// Excludes anything with a shell escape or scripting engine: no awk (system(),
+// getline "cmd"|), no sed (`e`, `w`), no pagers (less/more take `!cmd`).
 const READ_ONLY_BINARIES = new Set([
-  "cat", "head", "tail", "less", "more", "ls", "tree", "find", "fd", "stat",
+  "cat", "head", "tail", "ls", "tree", "find", "fd", "stat",
   "file", "wc", "du", "diff", "cmp", "sort", "uniq", "cut", "column",
-  "grep", "egrep", "fgrep", "rg", "ag", "ack", "jq", "yq", "awk", "sed",
+  "grep", "egrep", "fgrep", "rg", "ag", "ack", "jq", "yq",
   "basename", "dirname", "realpath", "readlink", "echo", "pwd", "date",
   "git", "go", "npm", "bun",
 ]);
+
+// Flags that make an otherwise read-only binary write a file or run a command.
+const FORBIDDEN_FLAGS: Record<string, RegExp> = {
+  find: /^-(delete|exec|execdir|ok|okdir|fprint|fprintf|fprint0|fls)$/,
+  fd: /^(-x|-X|--exec|--exec-batch)$/,
+  rg: /^(--pre|--hostname-bin|--pre-glob)$/,
+  sort: /^(-o|--output)/,
+  // `-c core.pager=…` / `-c alias.…` / `-c core.sshCommand=…` all run commands;
+  // `-O` hands git grep a pager command.
+  git: /^(-c|--config-env|--exec-path|--upload-pack|--receive-pack|-O|--open-files-in-pager)/,
+  go: /^-w$/, // `go env -w` writes the go env config
+};
 
 // Subcommand allowlists for tools whose other subcommands write or execute.
 const READ_ONLY_SUBCOMMANDS: Record<string, Set<string>> = {
@@ -314,14 +328,19 @@ export function isReadOnlyCommand(cmd: string): boolean {
   // Output redirection writes wherever it points; `-i` edits in place.
   if (/(^|[^0-9<>])>{1,2}[^>]/.test(cmd) || />\s*$/.test(cmd)) return false;
   if (/(^|\s)-i(\s|$)|(^|\s)--in-place(\s|$)/.test(cmd)) return false;
-  if (/[`$]\(/.test(cmd)) return false; // command substitution hides the real command
+  // Command substitution and process substitution hide the real command.
+  if (cmd.includes("$(") || cmd.includes("`") || cmd.includes("<(")) return false;
   const segments = cmd.split(/\|\||&&|[|;]/);
   for (const seg of segments) {
     const words = seg.trim().split(/\s+/).filter(Boolean);
     if (words.length === 0) continue;
-    let bin = words[0].split("/").pop() ?? "";
-    if (bin === "sudo" || bin === "env" || bin === "command") return false;
+    const bin = words[0].split("/").pop() ?? "";
+    if (bin === "sudo" || bin === "env" || bin === "command" || bin === "xargs") return false;
     if (!READ_ONLY_BINARIES.has(bin)) return false;
+    const forbidden = FORBIDDEN_FLAGS[bin];
+    if (forbidden && words.slice(1).some((w) => forbidden.test(w))) return false;
+    // `uniq in out` writes its second positional; one input only.
+    if (bin === "uniq" && words.slice(1).filter((w) => !w.startsWith("-")).length > 1) return false;
     const subs = READ_ONLY_SUBCOMMANDS[bin];
     if (subs) {
       // First non-flag word after the binary is the subcommand. `git -C <dir>`

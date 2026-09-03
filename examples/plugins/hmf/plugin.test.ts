@@ -118,7 +118,9 @@ test("read-only commands are recognised", () => {
 test("anything that writes or runs code is not read-only", () => {
   for (const cmd of [
     "echo x > ../other/file.go",
-    "sed -i 's/a/b/' ../other/main.go",
+    "sed -n '1,5p' ../other/main.go",
+    "awk '{print}' ../other/main.go",
+    "less ../other/main.go",
     "rm ../other/main.go",
     "go test ./...",
     "npm run build",
@@ -150,4 +152,37 @@ test("read rules come from the project the file lives in", () => {
       - "*.go"
 `);
   expect(pathMatchesPattern(join(child, "src", "app.go"), parent, "*.go")).toBe(false);
+});
+
+// Escapes that a name-only allowlist would wave through.
+test("shell escapes inside allowlisted tools are not read-only", () => {
+  for (const cmd of [
+    "find ../other -name '*.go' -delete",
+    "find ../other -type f -exec rm {} ;",
+    "fd -x rm {} . ../other",
+    "rg --pre ./evil.sh foo ../other",
+    "sort -o ../other/main.go ../other/main.go",
+    "uniq ../other/a.txt ../other/b.txt",
+    "git -c core.pager='rm -rf /' log",
+    "git -c alias.x='!sh -c evil' log",
+    "git grep -O./evil.sh foo",
+    "go env -w GOFLAGS=-mod=mod",
+    "xargs rm < list.txt",
+    "cat `rm -rf x`",
+    "diff <(rm x) y",
+  ]) {
+    expect(isReadOnlyCommand(cmd)).toBe(false);
+  }
+});
+
+test("plain forms of the same tools still read", () => {
+  for (const cmd of [
+    "find ../other -name '*.go'",
+    "git -C ../other grep -n 'func main'",
+    "sort ../other/a.txt",
+    "uniq -c",
+    "go env GOPATH",
+  ]) {
+    expect(isReadOnlyCommand(cmd)).toBe(true);
+  }
 });
