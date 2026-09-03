@@ -4,6 +4,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
+
+	"github.com/charmbracelet/lipgloss"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -240,4 +243,70 @@ func TestEsc_ClearsTaskConfirm(t *testing.T) {
 	if got.(monitorModel).confirmTask {
 		t.Error("esc left the task confirm armed")
 	}
+}
+
+// TestListEntry_ColumnsAlign: ids are padded and the bar has a fixed width, so
+// the name on line 1 and the task text on line 2 each start at one column no
+// matter how wide the id is or whether the task has work items. A drifting
+// column is what made the old list look broken.
+func TestListEntry_ColumnsAlign(t *testing.T) {
+	m := monitorModel{w: 100, detail: -1, rows: []monitorRow{
+		{ThreadID: 621, From: "dir:ledger", Status: "exited", Task: "no work items here"},
+		{ThreadID: 40, From: "haydn/his-mouse-friday", Status: "exited", TodosDone: 2, TodosTotal: 2, Task: "full bar"},
+		{ThreadID: 1, From: "dir:s2s-vpn", Status: "active", TodosDone: 4, TodosTotal: 9, Task: "partial bar"},
+	}}
+	nameCol, taskCol := -1, -1
+	for i, want := range []struct{ name, task string }{
+		{"ledger/", "no work items here"},
+		{"his-mouse-friday", "full bar"},
+		{"s2s-vpn/", "partial bar"},
+	} {
+		lines := strings.Split(m.listEntry(i, 60), "\n")
+		if len(lines) < 2 {
+			t.Fatalf("row %d: want two lines, got %q", i, lines)
+		}
+		n, k := runeCol(lines[0], want.name), runeCol(lines[1], want.task)
+		if n < 0 || k < 0 {
+			t.Fatalf("row %d: missing name or task\n%s", i, m.listEntry(i, 60))
+		}
+		if nameCol == -1 {
+			nameCol, taskCol = n, k
+			continue
+		}
+		if n != nameCol {
+			t.Errorf("row %d name starts at %d, want %d (ids not padded)", i, n, nameCol)
+		}
+		if k != taskCol {
+			t.Errorf("row %d task starts at %d, want %d (bar width drifts)", i, k, taskCol)
+		}
+	}
+}
+
+// Every bar state must occupy the same number of cells — an empty track, not
+// a different glyph, when there are no work items. A short bar would shift the
+// counts and task text on that row only.
+func TestProgressBar_ConstantWidth(t *testing.T) {
+	want := lipgloss.Width(progressBar(0, 0, 5))
+	if want != 5 {
+		t.Fatalf("bar is %d cells wide, want 5", want)
+	}
+	for _, b := range []string{progressBar(2, 2, 5), progressBar(4, 9, 5), progressBar(0, 9, 5), progressBar(1, 100, 5)} {
+		if got := lipgloss.Width(b); got != want {
+			t.Errorf("bar %q is %d cells, want %d", b, got, want)
+		}
+	}
+	// Any progress at all has to show, even when it rounds to zero cells.
+	if !strings.Contains(progressBar(1, 100, 5), "▰") {
+		t.Error("1/100 renders as an empty bar — progress is invisible")
+	}
+}
+
+// runeCol is where sub starts in display columns, not bytes: the status marks
+// and the selection bar are multibyte, so byte offsets would compare nonsense.
+func runeCol(line, sub string) int {
+	i := strings.Index(line, sub)
+	if i < 0 {
+		return -1
+	}
+	return utf8.RuneCountInString(line[:i])
 }

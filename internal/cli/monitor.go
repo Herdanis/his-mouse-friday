@@ -769,7 +769,7 @@ func (m monitorModel) listEntry(i, w int) string {
 	// and does not change when the task fans out. The worker is named in the
 	// detail header, which the narrow layout drops.
 	who := r.FromLabel()
-	head := fmt.Sprintf("#%d  %s", r.ThreadID, who)
+	head := fmt.Sprintf("%s  %s", padTo(fmt.Sprintf("#%d", r.ThreadID), m.idWidth()), who)
 	headW := max(4, inner-2-lipgloss.Width(el)-1)
 	head = padTo(truncate(head, headW), headW)
 	line1 := lead + markSty.Render(mark) + " " + name.Render(head) + " " + styDim.Render(el)
@@ -778,23 +778,28 @@ func (m monitorModel) listEntry(i, w int) string {
 	if r.TodosTotal > 0 {
 		counts = fmt.Sprintf("%d/%d", r.TodosDone, r.TodosTotal)
 	}
-	counts = padTo(counts, 5)
+	counts = padTo(counts, 4)
 	// A task reads as running while one of its agents has already failed —
 	// say so here rather than only inside the session tree.
 	fail := ""
 	if n := r.FailedAttempts(); n > 0 && r.Status != "failed" {
 		fail = styFailed.Render(fmt.Sprintf("✗%d ", n))
 	}
-	task := truncate(firstLine(r.Task), max(4, inner-12-lipgloss.Width(fail)))
-	line2 := lead + progressBar(r.TodosDone, r.TodosTotal, 5) + " " +
-		styDim.Render(counts) + " " + fail + styDim.Render(task)
+	task := truncate(firstLine(r.Task), max(4, inner-13-lipgloss.Width(fail)))
+	line2 := lead + progressBar(r.TodosDone, r.TodosTotal, 5) + "  " +
+		styDim.Render(counts) + "  " + fail + styDim.Render(task)
 
 	return line1 + "\n" + line2
 }
 
+// progressBar renders exactly w cells, always: an empty track rather than a
+// different glyph when there are no work items, so every row is the same shape
+// and the columns after it cannot drift. ▰/▱ are East-Asian-Ambiguous — the
+// two-space gap that follows the bar is what keeps them off the counts on a
+// terminal that draws them wide.
 func progressBar(done, total, w int) string {
 	if total <= 0 {
-		return styRule.Render(strings.Repeat("·", w))
+		return styRule.Render(strings.Repeat("▱", w))
 	}
 	filled := clamp(done*w/total, 0, w)
 	if done > 0 && filled == 0 {
@@ -802,6 +807,17 @@ func progressBar(done, total, w int) string {
 	}
 	return styWorking.Render(strings.Repeat("▰", filled)) +
 		styRule.Render(strings.Repeat("▱", w-filled))
+}
+
+// idWidth keeps "#12" and "#3" in one column so the names below them line up.
+func (m monitorModel) idWidth() int {
+	w := 0
+	for _, r := range m.rows {
+		if n := len(fmt.Sprintf("#%d", r.ThreadID)); n > w {
+			w = n
+		}
+	}
+	return w
 }
 
 func statusMark(s string) (string, lipgloss.Style) {
