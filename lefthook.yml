@@ -1,5 +1,5 @@
 # ============================================
-# Pre-commit hooks: go vet, go test, gitleaks
+# Pre-commit hooks: go vet, go test, bun test, gitleaks
 # ============================================
 pre-commit:
   parallel: true
@@ -10,5 +10,8 @@ pre-commit:
     go-test:
       glob: "*.go"
       run: go test ./...
+    plugin-test:
+      glob: "examples/plugins/hmf/*.ts"
+      run: bun test examples/plugins/hmf/
     gitleaks:
       run: gitleaks protect --staged --redact --no-banner

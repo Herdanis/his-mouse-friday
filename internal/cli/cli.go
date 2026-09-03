@@ -243,8 +243,9 @@ func initCmd() *cobra.Command {
     provider: opencode
     model: default
   # secondary:              # fallback when primary unavailable
-  #   provider: claude
-  #   model: default
+  #   provider: claude      # NOTE: the permissions below are enforced by the
+  #   model: default        # opencode plugin. A claude spawn loads no plugin
+  #                         # and enforces none of them.
 permissions:
   fs:
     deny:

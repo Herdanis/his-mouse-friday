@@ -112,6 +112,13 @@ agent session (`HMF_CHANNEL_ID` must be set).
   `mouse.yaml` (the source of truth); hand edits drift and get overwritten.
   `commands.ask` is deliberately not mirrored — the plugin
   (`examples/plugins/hmf/plugin.ts`) enforces that tier.
+- `permissions.fs` is plugin-only: native `edit` is a bare string with no path
+  patterns, so nothing can mirror it. The plugin checks fs globs against edit
+  targets and against paths named in bash commands, and falls back to
+  `~/.hmf/mouse.yaml` when a directory has no `mouse.yaml` of its own.
+  Plugin tests: `bun test examples/plugins/hmf/` (wired into `lefthook.yml`).
+- Every mouse.yaml guardrail is an opencode plugin. `provider: claude` spawns
+  `claude -p`, which loads no plugin and therefore enforces none of it.
 - `.opencode/` is machine-managed runtime state (goals, sessions, locks).
   Do not hand-edit.
 

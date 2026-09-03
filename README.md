@@ -135,6 +135,21 @@ After `make install`, in any opencode session:
    `commands.ask` is not mirrored: it is plugin-enforced only, because the
    daemon spawns agents with `--auto` and a native `ask` is auto-approved
    there (and in a TTY it would prompt only for the plugin to throw anyway).
+   `permissions.fs` is plugin-enforced only too — opencode's native `edit`
+   permission is a plain `allow`/`ask`/`deny` string with no path patterns, so
+   there is nothing to mirror it into. The plugin matches fs patterns
+   gitignore-style (no-slash patterns match at any depth, `*` stops at `/`,
+   a trailing `/` covers a directory's contents) against both edit targets and
+   paths named in a bash command.
+
+   In a directory with no `mouse.yaml`, the plugin falls back to
+   `~/.hmf/mouse.yaml` (same rule as the daemon's `config.ResolveMouse`), so
+   the global defaults `hmf init` writes apply everywhere, not just inside
+   registered repos.
+
+   **All of this is an opencode plugin.** A project whose `mouse.yaml` selects
+   `provider: claude` is spawned as `claude -p` and loads no plugin, so it gets
+   no command rules, no fs rules, and no cross-project edit protection.
 
 4. Open opencode in a registered repo. The agent now has 6 tools:
    `post_message`, `task_status`, `report_progress`, `read_channel`,
