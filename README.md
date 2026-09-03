@@ -399,7 +399,44 @@ space is actually reclaimed rather than just marked free.
 Deletion is irreversible; `cp ~/.hmf/hmf.db ~/.hmf/hmf.db.bak` first if you
 want the history back.
 
+## Logs
+
+The daemon writes a verbose event log to `~/.hmf/hmf.log`:
+
+```bash
+tail -f ~/.hmf/hmf.log
+```
+
+Every RPC (params + result, truncated at 2000 bytes), every post decision
+(channel, `to` auto-fill, registry resolve, message id), every wake step
+(registry hit, inbound/outbound consent, resolved agent + model, session row,
+resume id, the exact `exec` argv and dir), spawn pid or failure, agent
+stdout/stderr, exit code, and the safety-net `BLOCKED` post.
+
+Agent output is the useful part: without it, a runtime error (bad model, dead
+`-s` session id, auth prompt) is invisible and looks like an agent that simply
+never replies.
+
+The file is capped at 40MB. At the cap it rotates to `~/.hmf/hmf.log.1`,
+dropping the previous backup — at most two files, ~80MB total. `hmf up` prints
+the path on start and mirrors its own stderr into it, so a backgrounded daemon
+loses nothing.
+
 ## Troubleshooting
+
+**One project replies, a second one on the same thread never does.**
+Check the log for the second project's spawn line:
+
+```bash
+grep '\[spawn\]' ~/.hmf/hmf.log
+```
+
+If its argv carries `run -s <id>` and that `<id>` also appears on another
+project's session in `hmf session list`, it resumed a session that only exists
+in the *other* project's directory, so it hangs forever without replying. Fixed
+— the resume lookup is scoped to `project_id`, not just the thread. An agent
+already stuck this way stays `active` until you `kill <pid>` it (pid is in
+`hmf session list`).
 
 **`MCP error -32001: Request timed out` on every `task_status` call.**
 The `hmf` MCP server has no `timeout` set, so opencode is using its 5-second
@@ -455,6 +492,9 @@ sqlite3 ~/.hmf/hmf.db "UPDATE sessions SET status='failed', exit_code=-1 WHERE i
   (`in_progress`/`done`) when auto-spawned by `engage_project_agent` vs
   running `opencode run` manually. Likely prompt-engineering — the task
   prompt needs explicit instructions to use hmf tools.
+  One cause is fixed: a second project on the same thread used to resume the
+  first project's opencode session id and hang. Use `~/.hmf/hmf.log` to tell
+  a real prompt problem from a spawn problem.
 
 - [x] **Thread `to` field through `post_message` auto-fill.** Fixed in
   `internal/daemon/daemon.go:handlePost` — a reply that omits `to` now

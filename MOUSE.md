@@ -10,7 +10,8 @@ of editing foreign code directly.
 - Go 1.26.5, module `github.com/herdanis/his-mouse-friday`
 - CLI: cobra. MCP: modelcontextprotocol/go-sdk. Storage: modernc.org/sqlite.
 - Install: `go install ./cmd/hmf` and `go install ./cmd/hmf-mcp`
-- No test/lint command defined yet (greenfield).
+- Verify: `go vet ./...` and `go test ./...` (also run by lefthook pre-commit).
+- Daemon event log: `~/.hmf/hmf.log` — start debugging there.
 - Commit style: Conventional Commits.
 
 ## Dependencies
@@ -26,7 +27,8 @@ of editing foreign code directly.
 - Rule: if unsure, ask the user before making changes outside src/.
 
 ## Escalation
-- If the task requires changes in another registered project, use
-  `engage_project_agent` to delegate to that project's agent.
+- If the task requires changes in another registered project, delegate with
+  `post_message` (`to` = that project, no `thread_id`); `list_project_agents`
+  says who owns what.
 - If the task is unclear or crosses ownership boundaries, ask the user.
 - If a denied command is needed, ask the user to run it manually.

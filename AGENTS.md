@@ -66,7 +66,16 @@ Two binaries over one daemon:
 - `internal/config` — `MouseConfig` (yaml) + `ResolveMouse(repoPath)` (falls
   back to `~/.hmf/mouse.yaml` for unregistered dirs).
 
-State lives under `~/.hmf/` (`daemon.sock`, `hmf.db`, global `mouse.yaml`).
+State lives under `~/.hmf/` (`daemon.sock`, `hmf.db`, global `mouse.yaml`,
+`hmf.log`).
+
+`internal/daemon/logging.go` owns the event log: verbose, every RPC and every
+wake/spawn/exit step, plus spawned-agent stdout/stderr. 40MB cap, rotates to
+`hmf.log.1` (one backup). `logf(event, format, ...)` is the entry point;
+`LogWriter()` is the io.Writer `hmf up` hands to stdlib `log` and the launcher
+hands to the child process. Never let a logging failure fail a caller — writes
+swallow their errors on purpose. Debugging an agent that never replied starts
+with `tail -f ~/.hmf/hmf.log`, not with reading the DB.
 Tests override via `HMF_STATE_DIR` (temp dir) — required because macOS socket
 path length is capped; test helpers `spinDaemon`/`spinCLIDaemon` set this up.
 
@@ -131,8 +140,6 @@ agent session (`HMF_CHANNEL_ID` must be set).
   the hmf env vars the launcher sets (`HMF_CHANNEL_ID`, `HMF_TASK_MSG_ID`,
   `HMF_PROJECT`, `HMF_FROM`) so the child can call `hmf done` and post
   replies on the right thread.
-- `MOUSE.md` here is also slightly stale (claims "greenfield", "no test/lint
-  command defined yet") — both false. Trust this file for current commands.
 - **Delegate intent, not a diff.** Don't grep/read inside the target project
   before delegating — state the goal and constraints and let its agent locate
   the code. Pre-researching file paths and line numbers spends your context on
@@ -190,6 +197,12 @@ agent session (`HMF_CHANNEL_ID` must be set).
   `exited`/`failed`/`no_agent` (safety-net BLOCKED message should already be
   posted in that case). Real tasks (migration + codegen + build) run several
   minutes — one short poll timing out is not evidence the agent is stuck.
+- **Thread-scoped session queries need a project scope too.** Several projects
+  legitimately work one thread at once. Both the resume lookup and
+  `threadSessionActive` filter on `root_thread_id` AND the project — dropping
+  either one lets project B resume project A's opencode session id (dead in
+  B's directory: the agent hangs and never replies) or swallows B's wake
+  entirely. Same class of bug twice; keep the scope.
 - Known open issues in `README.md` TODOs: auto-spawn reliability, session
   resume, real 3+ agent scenario. Edit-protection and `to` field auto-fill on
   replies are fixed — see `README.md` TODOs for details. Don't claim the

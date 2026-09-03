@@ -97,6 +97,10 @@ func (l *Launcher) Spawn(ctx context.Context, cfg SpawnConfig) (int, error) {
 	}
 	cmd := exec.CommandContext(spawnCtx, bin, args...)
 	cmd.Dir = cfg.Dir
+	// Otherwise discarded — only place a runtime error would surface.
+	out := prefixWriter{prefix: fmt.Sprintf("agent#%d %s", cfg.SessionID, cfg.SessionName)}
+	cmd.Stdout, cmd.Stderr = out, out
+	logf("spawn", "session %d: exec %s %q dir=%s watchdog=%s", cfg.SessionID, bin, args, cfg.Dir, watchdog)
 	// opencode reads $PWD (not getcwd) for project scoping — sync to cfg.Dir
 	// or the session lands in the daemon's cwd's project, invisible to capture.
 	cmd.Env = append(os.Environ(),

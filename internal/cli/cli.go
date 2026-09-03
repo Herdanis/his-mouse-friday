@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -48,6 +50,10 @@ func upCmd() *cobra.Command {
 			if err := os.MkdirAll(protocol.StateDir(), 0755); err != nil {
 				return fmt.Errorf("create state dir: %w", err)
 			}
+			// Background starts discard stderr — mirror stdlib log into the file.
+			log.SetOutput(io.MultiWriter(os.Stderr, daemon.LogWriter()))
+			log.SetFlags(log.LstdFlags | log.Lmicroseconds)
+			fmt.Fprintln(os.Stderr, "log:", daemon.LogPath())
 			d, err := daemon.NewDaemon(protocol.SocketPath(), protocol.DBPath())
 			if err != nil {
 				return err

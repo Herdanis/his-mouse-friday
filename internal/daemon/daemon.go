@@ -252,8 +252,21 @@ type SessionListItem struct {
 // Method dispatch
 // ============================================
 
-// Handle dispatches a single request.
+// Handle dispatches a single request, logging both ends of it.
 func (d *Daemon) Handle(ctx context.Context, req protocol.Request) protocol.Response {
+	start := time.Now()
+	logf("rpc", "recv id=%d method=%s params=%s", req.ID, req.Method, trunc(string(req.Params), 2000))
+	resp := d.dispatch(ctx, req)
+	switch {
+	case resp.Error != nil:
+		logf("rpc", "send id=%d method=%s dur=%s ERROR: %s", req.ID, req.Method, time.Since(start).Round(time.Millisecond), resp.Error.Message)
+	default:
+		logf("rpc", "send id=%d method=%s dur=%s result=%s", req.ID, req.Method, time.Since(start).Round(time.Millisecond), trunc(string(resp.Result), 2000))
+	}
+	return resp
+}
+
+func (d *Daemon) dispatch(ctx context.Context, req protocol.Request) protocol.Response {
 	switch req.Method {
 	case "post_message":
 		return d.handlePost(ctx, req)
@@ -402,6 +415,7 @@ func (d *Daemon) handlePost(ctx context.Context, req protocol.Request) protocol.
 			// there, and resolving that as a recipient would fail the post.
 			if other != "" && other != p.From && strings.Contains(other, "/") {
 				p.To = other
+				logf("post", "autofilled to=%s from thread %d root", p.To, p.ThreadID)
 			}
 		}
 	}
@@ -410,14 +424,21 @@ func (d *Daemon) handlePost(ctx context.Context, req protocol.Request) protocol.
 	if p.To != "" {
 		resolved, err := d.resolveToProject(p.To)
 		if err != nil {
+			logf("post", "resolve to=%q failed: %v", p.To, err)
 			return errResp(req.ID, err.Error())
+		}
+		if resolved != p.To {
+			logf("post", "resolved to=%q -> %s", p.To, resolved)
 		}
 		p.To = resolved
 	}
 	msg, err := d.Comms.PostMessage(chID, p.ThreadID, p.From, p.To, p.Content, p.Status)
 	if err != nil {
+		logf("post", "PostMessage channel=%d thread=%d from=%s to=%s failed: %v", chID, p.ThreadID, p.From, p.To, err)
 		return errResp(req.ID, err.Error())
 	}
+	logf("post", "msg id=%d channel=%d thread=%d from=%s to=%s status=%q content=%q",
+		msg.ID, chID, p.ThreadID, p.From, p.To, p.Status, trunc(p.Content, 500))
 	// Wake to-addressed messages unless the thread's agent is still running.
 	// A prior done reply IS re-wakeable — follow-up resumes the prior session.
 	//
@@ -427,13 +448,14 @@ func (d *Daemon) handlePost(ctx context.Context, req protocol.Request) protocol.
 	// only the `to` auto-fill above misses this — `hmf done` sets `to`
 	// explicitly from HMF_FROM, so every completed task spawned a pointless
 	// parent-side agent.
-	if p.To != "" && p.Status != "done" {
-		if d.threadSessionActive(p.ThreadID, p.To) {
-			// Agent still running — no new wake.
-		} else {
-			if err := d.wakeAgent(ctx, p, msg); err != nil {
-				return errResp(req.ID, "wake: "+err.Error())
-			}
+	if p.To == "" || p.Status == "done" {
+		logf("wake", "msg %d: no wake (to=%q status=%q)", msg.ID, p.To, p.Status)
+	} else if d.threadSessionActive(p.ThreadID, p.To) {
+		logf("wake", "msg %d: suppressed — %s already has an active session on thread %d", msg.ID, p.To, p.ThreadID)
+	} else {
+		if err := d.wakeAgent(ctx, p, msg); err != nil {
+			logf("wake", "msg %d to=%s FAILED: %v", msg.ID, p.To, err)
+			return errResp(req.ID, "wake: "+err.Error())
 		}
 	}
 	result, _ := json.Marshal(PostResult{MessageID: msg.ID})
@@ -468,6 +490,7 @@ func (d *Daemon) checkOutboundAllowed(fromProject string) error {
 // wakeAgent spawns the addressed project agent so it can read the thread and
 // reply. Serverless: boot per mention, handle, reply in-thread, exit.
 func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error {
+	logf("wake", "msg %d: start to=%s from=%s thread=%d", msg.ID, msg.ToProject, msg.FromProject, msg.ThreadID)
 	parts := strings.SplitN(msg.ToProject, "/", 2)
 	if len(parts) != 2 {
 		return fmt.Errorf("to must be workspace/project, got %q", msg.ToProject)
@@ -476,6 +499,7 @@ func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error
 	if err != nil {
 		// Unregistered recipient — post but don't wake (mailbox semantics).
 		if errors.Is(err, sql.ErrNoRows) {
+			logf("wake", "msg %d: %s not registered — mailbox only, no spawn", msg.ID, msg.ToProject)
 			return nil
 		}
 		return fmt.Errorf("project %s not found: %w", msg.ToProject, err)
@@ -495,7 +519,7 @@ func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error
 		return fmt.Errorf("project %s does not allow inbound engagement", msg.ToProject)
 	}
 	binary, model, agentName := d.resolveAgent(mouse)
-	logCapture(0, "wake %s: agent=%s model=%s name=%s", msg.ToProject, binary, model, agentName)
+	logf("wake", "msg %d: project=%s dir=%s agent=%s model=%s name=%s", msg.ID, msg.ToProject, proj.Path, binary, model, agentName)
 	runbook, _ := os.ReadFile(filepath.Join(proj.Path, "MOUSE.md"))
 	// parentID: explicit (cross-project delegation), else msg.ID (root) or
 	// msg.ThreadID (reply wake).
@@ -522,13 +546,12 @@ func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error
 	if err != nil {
 		return fmt.Errorf("session: %w", err)
 	}
-	// Resume prior session on this thread — scoped to the resolved binary, so
-	// a runtime fallback (e.g. opencode -> claude) never resumes a foreign
-	// runtime's session id.
+	logf("wake", "msg %d: session %d created name=%s root_thread=%d", msg.ID, tmpSess.ID, name, parentID)
+	// Resume scoped to binary + project: another project's session id doesn't exist in this dir.
 	var priorOcID sql.NullString
 	err = d.Store.db.QueryRow(
-		`SELECT opencode_session_id FROM sessions WHERE root_thread_id=? AND agent_binary=? AND opencode_session_id IS NOT NULL AND opencode_session_id != '' ORDER BY id DESC LIMIT 1`,
-		parentID, binary).Scan(&priorOcID)
+		`SELECT opencode_session_id FROM sessions WHERE root_thread_id=? AND agent_binary=? AND project_id=? AND opencode_session_id IS NOT NULL AND opencode_session_id != '' ORDER BY id DESC LIMIT 1`,
+		parentID, binary, proj.ID).Scan(&priorOcID)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("resume lookup: %w", err)
 	}
@@ -565,6 +588,7 @@ func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error
 		SessionName:    name,
 		AgentSessionID: priorOcID.String,
 		OnExit: func(code int) {
+			logf("exit", "session %d (%s, %s): process exited code=%d", tmpSess.ID, name, msg.ToProject, code)
 			var doneCount int
 			d.Store.db.QueryRow(
 				`SELECT count(*) FROM messages WHERE thread_id=? AND status='done'`, parentID).Scan(&doneCount)
@@ -583,9 +607,11 @@ func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error
 			// Conditional insert, not the doneCount read above: the agent may
 			// post its real reply between that read and this write.
 			if doneCount == 0 {
+				logf("exit", "session %d: no done reply on thread %d — posting safety-net BLOCKED", tmpSess.ID, parentID)
 				content := fmt.Sprintf("BLOCKED: agent exited (code=%d) without posting a done reply", code)
 				if _, err := d.Comms.PostBlockedIfNoDone(msg.ChannelID, parentID, msg.ToProject, msg.FromProject, content); err != nil {
 					log.Printf("synthetic done reply for thread %d: %v", parentID, err)
+					logf("exit", "session %d: safety-net post failed: %v", tmpSess.ID, err)
 				}
 			}
 		},
@@ -593,10 +619,12 @@ func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error
 	pid, err := d.Launcher.Spawn(ctx, spawnCfg)
 	if err != nil {
 		d.Sessions.SetStatus(tmpSess.ID, "failed")
+		logf("spawn", "session %d (%s): FAILED: %v", tmpSess.ID, name, err)
 		return fmt.Errorf("spawn: %w", err)
 	}
 	d.Sessions.SetPID(tmpSess.ID, pid)
 	d.Sessions.SetStatus(tmpSess.ID, "active")
+	logf("spawn", "session %d (%s): pid=%d resume=%q", tmpSess.ID, name, pid, spawnCfg.AgentSessionID)
 	// Acknowledge the pickup from the daemon, not the agent. An LLM asked to
 	// "reply that you started" can't report the failure where it never ran, so
 	// the one signal that distinguishes "never spawned" from "working quietly"
@@ -642,15 +670,9 @@ func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error
 	return nil
 }
 
-// logCapture appends a debug line to <state dir>/capture.log. Best-effort.
+// logCapture logs a session-scoped debug line into the daemon event log.
 func logCapture(sessionID int64, format string, args ...any) {
-	f, err := os.OpenFile(filepath.Join(protocol.StateDir(), "capture.log"),
-		os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0640)
-	if err != nil {
-		return
-	}
-	defer f.Close()
-	fmt.Fprintf(f, "session %d: "+format+"\n", append([]any{sessionID}, args...)...)
+	logf("capture", "session %d: "+format, append([]any{sessionID}, args...)...)
 }
 
 // taskStatusWait is how long a task_status call blocks before reporting back.

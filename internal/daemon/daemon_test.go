@@ -1331,6 +1331,59 @@ func TestWakeAgent_ResumeScopedToBinary(t *testing.T) {
 	}
 }
 
+// Second project on a thread must not resume the first project's session id.
+func TestWakeAgent_ResumeScopedToProject(t *testing.T) {
+	d := setupDaemon(t)
+	d.Registry.AddWorkspace("companyA")
+	mouse := []byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n")
+	dirA, dirB := t.TempDir(), t.TempDir()
+	os.WriteFile(filepath.Join(dirA, "mouse.yaml"), mouse, 0644)
+	os.WriteFile(filepath.Join(dirB, "mouse.yaml"), mouse, 0644)
+	d.Registry.AddProject("companyA", "proj-a", dirA)
+	d.Registry.AddProject("companyA", "proj-b", dirB)
+
+	d.LookPath = func(string) (string, error) { return "/usr/bin/x", nil }
+	d.CaptureAgentSessionID = func(SpawnConfig) (string, error) { return "ses_projA123", nil }
+	params, _ := json.Marshal(map[string]any{
+		"from": "companyA/orchestrator", "to": "companyA/proj-a", "content": "task for A",
+	})
+	resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: params, ID: 1})
+	var pr PostResult
+	json.Unmarshal(resp.Result, &pr)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		var ocID sql.NullString
+		d.Store.db.QueryRow(`SELECT opencode_session_id FROM sessions WHERE task_msg_id=?`, pr.MessageID).Scan(&ocID)
+		if ocID.String == "ses_projA123" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for proj-a session id capture")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	var spawnedSessionID, spawnedDir string
+	d.Launcher = &Launcher{SpawnFn: func(cfg SpawnConfig) (int, error) {
+		spawnedSessionID, spawnedDir = cfg.AgentSessionID, cfg.Dir
+		return 1, nil
+	}}
+	params2, _ := json.Marshal(map[string]any{
+		"thread_id": pr.MessageID, "from": "companyA/orchestrator", "to": "companyA/proj-b", "content": "task for B",
+	})
+	resp = d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: params2, ID: 2})
+	if resp.Error != nil {
+		t.Fatal(resp.Error.Message)
+	}
+	if spawnedDir != dirB {
+		t.Fatalf("second wake spawned in %q, want proj-b dir %q", spawnedDir, dirB)
+	}
+	if spawnedSessionID != "" {
+		t.Fatalf("proj-b resumed %q — resume must be scoped to project_id", spawnedSessionID)
+	}
+}
+
 // A terminal task_status returns instantly (nothing to wait for), so the
 // result must tell the caller to stop — a passive has_done bool let parents
 // spin at full speed re-polling a finished task.
