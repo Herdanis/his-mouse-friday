@@ -72,7 +72,7 @@ edit your config file).
 
 ## Wire the MCP server into opencode
 
-`hmf-mcp` exposes the 5 orchestration tools to opencode agents. The install
+`hmf-mcp` exposes the 9 orchestration tools to opencode agents. The install
 step prints the snippet above; add it to `~/.config/opencode/opencode.json`
 (global) or a repo's `opencode.json`. See `examples/opencode.json` for a
 version with bash permission rules too.
@@ -103,7 +103,7 @@ request timeout, so without this setting every `task_status` call dies with:
 
 **Option A — Slash command (recommended):**
 
-After `make install`, in any opencode session:
+After installing, in any opencode session:
 
 - `/hmf-setup` — full guided setup (workspace, project, config files, tailored MOUSE.md)
 - `/hmf-register` — fast registration (one question, minimal config)
@@ -165,10 +165,10 @@ After `make install`, in any opencode session:
    `provider: claude` is spawned as `claude -p` and loads no plugin, so it gets
    no command rules, no fs rules, and no cross-project edit protection.
 
-4. Open opencode in a registered repo. The agent now has 6 tools:
+4. Open opencode in a registered repo. The agent now has 9 tools:
    `post_message`, `task_status`, `report_progress`, `read_channel`,
-   `read_thread`, `list_project_agents`. The `from` field is auto-detected
-   from cwd.
+   `read_thread`, `list_project_agents`, `todo_add`, `todo_update`,
+   `todo_list`. The `from` field is auto-detected from cwd.
 
 ## Config (per repo)
 
@@ -525,13 +525,18 @@ sqlite3 ~/.hmf/hmf.db "UPDATE sessions SET status='failed', exit_code=-1 WHERE i
   allowed on purpose (see *Config*) — the block is on changing and running,
   not on looking.
 
-- [ ] **Fix auto-spawn reliability.** Engaged agent sometimes doesn't post back
-  (`in_progress`/`done`) when auto-spawned by `engage_project_agent` vs
-  running `opencode run` manually. Likely prompt-engineering — the task
-  prompt needs explicit instructions to use hmf tools.
-  One cause is fixed: a second project on the same thread used to resume the
-  first project's opencode session id and hang. Use `~/.hmf/hmf.log` to tell
-  a real prompt problem from a spawn problem.
+- [ ] **Confirm auto-spawn reliability under real load.** Engaged agents used
+  to sometimes never post back (`in_progress`/`done`) when auto-spawned rather
+  than run manually. The suspected causes are all addressed now: the spawn
+  entrypoint (`internal/daemon/daemon.go`) names every hmf tool the child needs
+  (`read_thread`, the `todo_*` tools, `report_progress`, the `done` reply) and
+  the launcher appends a REPLY RULE; the daemon posts a pickup `ack` the moment
+  the process spawns; `reconcileOrphanedSessions` + `PostBlockedIfNoDone` turn
+  a silent death into a visible `BLOCKED`; a watchdog reaps hung resumed
+  sessions; and the resume lookup is scoped to `project_id`, so a second
+  project on the same thread no longer resumes the first project's opencode
+  session and hangs. What's left is observation over enough real runs to call
+  it fixed. Use `~/.hmf/hmf.log` to tell a prompt problem from a spawn one.
 
 - [x] **Thread `to` field through `post_message` auto-fill.** Fixed in
   `internal/daemon/daemon.go:handlePost` — a reply that omits `to` now
@@ -539,8 +544,14 @@ sqlite3 ~/.hmf/hmf.db "UPDATE sessions SET status='failed', exit_code=-1 WHERE i
   skipped for `status=done` to avoid waking the originator back on a
   worker's completion notice.
 
-- [ ] **Session resume.** User should be able to reopen any spawned agent's
-  session (`hmf session attach <id>`) and continue directly.
+- [ ] **`hmf session attach <id>`.** The underlying resume already works: the
+  daemon captures each spawn's `opencode_session_id` and reuses it (scoped to
+  thread + binary + project) when the same project is woken again. What's
+  missing is the shortcut — today reopening a session by hand means
+  `cd <project> && opencode -s <id>`, which `hmf monitor` prints for you.
+  `hmf session list` shows the ids; there is no `attach` subcommand yet.
 
 - [ ] **Real multi-agent scenario.** 3+ agents coordinating (payment →
-  user-service → frontend) to prove the full team model.
+  user-service → frontend) to prove the full team model. Nothing in the repo
+  exercises this yet — the monitor renders a hand-off tree, but no test or
+  example drives one.

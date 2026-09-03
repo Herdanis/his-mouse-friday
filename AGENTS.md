@@ -173,26 +173,24 @@ agent session (`HMF_CHANNEL_ID` must be set).
   already holds — read the specific files whose correctness you actually need
   to confirm, or `post_message` a follow-up on the same thread, where the child
   still has the context and answers cheaply.
-- **Polling a spawned agent.** Prefer `task_status(message_id, wait_seconds=120)`
-  over a manual sleep loop — the daemon blocks server-side (cheap local
-  polling, zero LLM tokens) and returns the moment `has_done` flips or the
-  agent reaches a terminal state, capped at 120s (2min). Cap is 120, not
-  higher: some MCP clients (opencode, observed) impose their own tool-call
-  timeout and error with `-32001 Request timed out` on a longer wait —
-  passing `wait_seconds` above 120 doesn't get you a longer wait, it risks
-  the call erroring instead of returning. One call replaces a
-  sleep→check→sleep→check round; if it returns with `has_done` still false,
-  just call again with the same `message_id` — every call blocks for its full
-  wait, so the loop paces itself and needs no `sleep` between calls. (Needs a recent
-  `hmf-mcp` — MCP tool schemas are negotiated once at connection time, so a
-  session already running when `hmf-mcp` was rebuilt won't see
-  `wait_seconds` until it reconnects. Fall back to a manual sleep-and-recheck
-  loop only if the tool schema doesn't show it. Also: a *resumed* opencode
-  session that's been running long enough to have its own `sleep`-then-check
-  precedent baked into its conversation history may keep imitating that
-  pattern even once `wait_seconds` is available — that's in-context habit,
-  not a missing capability; a fresh conversation is the real fix, not more
-  instructions.)
+- **Polling a spawned agent.** Call `task_status(message_id)` — never wrap it in
+  a sleep loop. It takes `message_id` and nothing else: the wait is fixed
+  server-side at 5 minutes (`taskStatusWait` in `internal/daemon/daemon.go`)
+  and is deliberately not caller-tunable, since a shorter wait only produces
+  more round trips for the same answer. The daemon blocks (cheap local polling,
+  zero LLM tokens) and returns the moment `has_done` flips or the agent reaches
+  a terminal state. One call replaces a whole sleep→check→sleep→check round; if
+  it returns with `has_done` still false, just call again with the same
+  `message_id` — every call blocks for its full wait, so the loop paces itself
+  and needs no `sleep` between calls.
+
+  This requires `"timeout": 330000` on the `hmf` MCP entry in `opencode.json`.
+  opencode's MCP client defaults to a 5-second request timeout, so without it
+  every call dies with `MCP error -32001: Request timed out`. MCP config is read
+  at connection time — restart the session after changing it. A *resumed*
+  opencode session carrying a `sleep`-then-check precedent in its history may
+  keep imitating that pattern anyway; that's in-context habit, and a fresh
+  conversation is the fix, not more instructions.
 
   Once dispatched, don't self-initiate a verification loop unless the task
   actually needs the result before you can continue — `post_message` (with
