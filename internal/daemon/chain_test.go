@@ -129,8 +129,12 @@ func TestChain_ThreeProjectDelegation(t *testing.T) {
 		t.Fatalf("session_list = %d rows, want 3", len(items))
 	}
 	engagedBy := map[string]string{}
+	sessID := map[string]int64{}
+	engagedBySession := map[string]int64{}
 	for _, it := range items {
 		engagedBy[it.Project] = it.EngagedBy
+		sessID[it.Project] = it.ID
+		engagedBySession[it.Project] = it.EngagedBySession
 		if it.ParentID != root {
 			t.Errorf("%s parent_id=%d, want root %d", it.Project, it.ParentID, root)
 		}
@@ -144,6 +148,21 @@ func TestChain_ThreeProjectDelegation(t *testing.T) {
 		if engagedBy[proj] != from {
 			t.Errorf("%s engaged_by=%q, want %q", proj, engagedBy[proj], from)
 		}
+	}
+	// engaged_by narrowed to the exact session: the monitor nests each agent
+	// under the session that engaged it, and a project name cannot tell two
+	// sessions of one project apart.
+	if engagedBySession["svc-a"] != 0 {
+		t.Errorf("svc-a engaged_by_session=%d, want 0 — a human dispatcher owns no session",
+			engagedBySession["svc-a"])
+	}
+	if engagedBySession["svc-b"] != sessID["svc-a"] {
+		t.Errorf("svc-b engaged_by_session=%d, want svc-a's session %d",
+			engagedBySession["svc-b"], sessID["svc-a"])
+	}
+	if engagedBySession["svc-c"] != sessID["svc-b"] {
+		t.Errorf("svc-c engaged_by_session=%d, want svc-b's session %d",
+			engagedBySession["svc-c"], sessID["svc-b"])
 	}
 
 	// Each replies done on the shared root, deepest first.

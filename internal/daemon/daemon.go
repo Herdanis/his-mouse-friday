@@ -231,6 +231,7 @@ type StatusResult struct {
 
 // SessionListItem is a row for the session_list RPC.
 type SessionListItem struct {
+	ID             int64  `json:"id"`
 	Name           string `json:"name"`
 	Project        string `json:"project"`
 	Status         string `json:"status"`
@@ -242,7 +243,12 @@ type SessionListItem struct {
 	// message that spawned it. On a chain (A engages B, B engages C) every
 	// session shares one root thread, so this edge is what recovers the shape.
 	EngagedBy string `json:"engaged_by,omitempty"`
-	PID       int    `json:"pid,omitempty"`
+	// EngagedBySession narrows that to the exact session: one project can run
+	// twice on a thread for two different engagers, and the project name alone
+	// cannot tell those apart. 0 when the engager owns no session on the
+	// thread (a human dispatcher) or predates task_msg_id being recorded.
+	EngagedBySession int64 `json:"engaged_by_session,omitempty"`
+	PID              int   `json:"pid,omitempty"`
 	// Dir is the project path. opencode resumes per-directory, so the session
 	// id alone is not enough to reopen a session.
 	Dir string `json:"dir,omitempty"`
@@ -1019,10 +1025,23 @@ func (d *Daemon) handleStatus(req protocol.Request) protocol.Response {
 
 // handleSessionList returns all sessions joined to project, newest first.
 // IFNULL coerces NULL ocID/root to ""/0 so the CLI renders clean dashes.
+//
+// engaged_by_session resolves the engager down to one session: the newest
+// session of the sending project on this thread that already existed when
+// this one was created (ids are monotonic, so id < s.id is that ordering —
+// created_at only has second granularity). Derived on read rather than stored
+// at spawn, so old rows recover their parent too.
 func (d *Daemon) handleSessionList(req protocol.Request) protocol.Response {
 	rows, err := d.Store.db.Query(
-		`SELECT IFNULL(s.name,'-'), p.name, s.status, IFNULL(s.opencode_session_id,'') AS session_id, IFNULL(s.root_thread_id,0) AS parent_id, IFNULL(s.created_at,''), IFNULL(s.finished_at,''),
-		        IFNULL(m.from_project,''), IFNULL(s.pid,0), p.path
+		`SELECT s.id, IFNULL(s.name,'-'), p.name, s.status, IFNULL(s.opencode_session_id,'') AS session_id, IFNULL(s.root_thread_id,0) AS parent_id, IFNULL(s.created_at,''), IFNULL(s.finished_at,''),
+		        IFNULL(m.from_project,''), IFNULL(s.pid,0), p.path,
+		        IFNULL((SELECT ps.id FROM sessions ps
+		                JOIN projects pp ON ps.project_id=pp.id
+		                JOIN workspaces pw ON pp.workspace_id=pw.id
+		                WHERE ps.root_thread_id = s.root_thread_id
+		                  AND ps.id < s.id
+		                  AND pw.name || '/' || pp.name = m.from_project
+		                ORDER BY ps.id DESC LIMIT 1), 0) AS engaged_by_session
 		 FROM sessions s JOIN projects p ON s.project_id=p.id
 		 LEFT JOIN messages m ON m.id = s.task_msg_id
 		 ORDER BY s.id DESC`)
@@ -1033,7 +1052,7 @@ func (d *Daemon) handleSessionList(req protocol.Request) protocol.Response {
 	var out []SessionListItem
 	for rows.Next() {
 		var it SessionListItem
-		if err := rows.Scan(&it.Name, &it.Project, &it.Status, &it.AgentSessionID, &it.ParentID, &it.CreatedAt, &it.FinishedAt, &it.EngagedBy, &it.PID, &it.Dir); err != nil {
+		if err := rows.Scan(&it.ID, &it.Name, &it.Project, &it.Status, &it.AgentSessionID, &it.ParentID, &it.CreatedAt, &it.FinishedAt, &it.EngagedBy, &it.PID, &it.Dir, &it.EngagedBySession); err != nil {
 			return errResp(req.ID, err.Error())
 		}
 		out = append(out, it)

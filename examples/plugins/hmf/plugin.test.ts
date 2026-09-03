@@ -1,7 +1,7 @@
 // Run with: bun test examples/plugins/hmf/
 
 import { test, expect } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readMouseYaml, pathMatchesPattern, commandMatchesPattern, isReadOnlyCommand, scopeForPath } from "./plugin";
@@ -185,4 +185,103 @@ test("plain forms of the same tools still read", () => {
   ]) {
     expect(isReadOnlyCommand(cmd)).toBe(true);
   }
+});
+
+// ============================================
+// Search guard (grep / glob)
+// ============================================
+
+import { enforceSearchPath, filterSearchOutput, fsBlocked, makeRegistry } from "./plugin";
+
+function searchFixture(): string {
+  const dir = fixture(`permissions:
+  fs:
+    deny:
+      - ".env"
+    ask:
+      - "secrets/"
+`);
+  mkdirSync(join(dir, "secrets"));
+  mkdirSync(join(dir, "src"));
+  writeFileSync(join(dir, ".env"), "TOKEN=x");
+  writeFileSync(join(dir, "src", "app.go"), "package main");
+  return dir;
+}
+
+test("a grep/glob root the target project denies is blocked", () => {
+  const child = searchFixture();
+  expect(() => enforceSearchPath(join(child, ".env"), "grep")).toThrow(/denied in mouse.yaml/);
+  expect(() => enforceSearchPath(join(child, "secrets"), "glob")).toThrow(/requires approval/);
+  expect(() => enforceSearchPath(join(child, "secrets", "deep"), "grep")).toThrow(/requires approval/);
+  // Roots with nothing denied about them still search.
+  expect(() => enforceSearchPath(join(child, "src"), "grep")).not.toThrow();
+  expect(() => enforceSearchPath(child, "glob")).not.toThrow();
+});
+
+test("denied files are stripped from grep and glob results", () => {
+  const child = searchFixture();
+  const grepOut = [
+    "Found 2 matches",
+    `${join(child, ".env")}:`,
+    "  Line 1: TOKEN=x",
+    "",
+    `${join(child, "src", "app.go")}:`,
+    "  Line 1: package main",
+  ].join("\n");
+  const g = filterSearchOutput(grepOut, fsBlocked);
+  expect(g.hidden).toBe(1);
+  expect(g.output).not.toContain("TOKEN=x");
+  expect(g.output).toContain("package main");
+
+  const globOut = [join(child, ".env"), join(child, "src", "app.go")].join("\n");
+  const b = filterSearchOutput(globOut, fsBlocked);
+  expect(b.hidden).toBe(1);
+  expect(b.output).toContain("app.go");
+  expect(b.output.split("\n").some((l) => l.endsWith("/.env"))).toBe(false);
+});
+
+test("a clean result set is passed through untouched", () => {
+  const child = searchFixture();
+  const out = `Found 1 matches\n${join(child, "src", "app.go")}:\n  Line 1: package main`;
+  expect(filterSearchOutput(out, fsBlocked)).toEqual({ output: out, hidden: 0 });
+});
+
+// read must keep behaving exactly as before: the file's own project decides.
+test("read is unchanged by the search guard", () => {
+  const child = searchFixture();
+  const scope = scopeForPath(join(child, ".env"))!;
+  expect(scope.root).toBe(child);
+  expect(fsBlocked(join(child, ".env"))).toBe(true);
+  expect(fsBlocked(join(child, "src", "app.go"))).toBe(false);
+});
+
+// ============================================
+// Registry self-heal
+// ============================================
+
+test("an empty registry is retried, a populated one is not", () => {
+  const proj = { workspace: "w", name: "n", path: "/p" };
+  let calls = 0;
+  const flaky = () => {
+    calls++;
+    return calls === 1 ? [] : [proj]; // daemon down at setup, up afterwards
+  };
+  const reg = makeRegistry(flaky, 0);
+  expect(calls).toBe(1);
+  expect(reg()).toEqual([proj]); // self-heals on the next permission check
+  expect(calls).toBe(2);
+  reg();
+  reg();
+  expect(calls).toBe(2); // populated: never re-queried
+});
+
+test("a still-empty registry backs off instead of reloading per call", () => {
+  let calls = 0;
+  const reg = makeRegistry(() => {
+    calls++;
+    return [];
+  }, 60_000);
+  reg();
+  reg();
+  expect(calls).toBe(1);
 });

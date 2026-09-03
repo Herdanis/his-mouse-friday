@@ -84,15 +84,19 @@ type monitorRow struct {
 
 // attempt is one spawned session working on a parent task.
 type attempt struct {
+	ID         int64 // hmf session row id — identity for the engaged-by edge
 	Name       string
 	Project    string
 	Status     string
 	CreatedAt  string
 	FinishedAt string
 	EngagedBy  string // who asked for this work
-	PID        int
-	SessionID  string // opencode session id — what `opencode -s` takes
-	Dir        string // project path; opencode resumes per-directory
+	// EngagedBySession is the engager's own session row, 0 when the engager
+	// ran no session on this thread (a human) or the daemon could not resolve one.
+	EngagedBySession int64
+	PID              int
+	SessionID        string // opencode session id — what `opencode -s` takes
+	Dir              string // project path; opencode resumes per-directory
 }
 
 // Projects lists the distinct projects that worked on this task, in the order
@@ -294,6 +298,7 @@ func (m monitorModel) Init() tea.Cmd {
 // separately, and you cannot.
 type agentRun struct {
 	attempt
+	IDs    []int64 // every session row collapsed into this run
 	Runs   int
 	Failed int
 	Total  time.Duration
@@ -323,6 +328,9 @@ func groupRuns(as []attempt) []agentRun {
 			i = len(out) - 1
 		}
 		g := &out[i]
+		if a.ID != 0 {
+			g.IDs = append(g.IDs, a.ID)
+		}
 		g.Runs++
 		if a.Status == "failed" {
 			g.Failed++
@@ -783,7 +791,8 @@ func (m monitorModel) listBody(w, h int) string {
 
 	var b strings.Builder
 	for i := start; i < end; i++ {
-		b.WriteString(m.listEntry(i, w) + "\n")
+		b.WriteString(m.listEntry(i, w))
+		b.WriteString("\n")
 	}
 	if len(m.rows) > visible {
 		b.WriteString(styDim.Render(fmt.Sprintf(" %d–%d of %d", start+1, end, len(m.rows))))
@@ -896,41 +905,53 @@ func statusLabel(s string) string {
 // (A engages B, B engages C) reads as a chain rather than a flat list of
 // unrelated attempts.
 //
-// ponytail: two agents in the same project share a key, so the second nests
-// under the first's parent. Per-session parent ids would fix it; the daemon
-// records engaged_by by project, and one project working a thread twice in
-// parallel has not happened yet.
+// The edge is per session, not per project: one project can run twice on a
+// thread for two different engagers, and a project-keyed tree hung the second
+// run's children under the first. Rows the daemon could not resolve a session
+// for (a human dispatcher, pre-task_msg_id history) fall back to the engaging
+// project's first run — the old behaviour, which the common chain never left.
 func sessionTree(runs []agentRun, root string) []string {
-	known := map[string]bool{root: true}
-	for _, g := range runs {
-		known[g.Project] = true
+	const dispatcher = -1
+	owner := map[int64]int{}           // session row id -> the run that ran it
+	firstOfProject := map[string]int{} // fallback when no session id is known
+	for i, g := range runs {
+		for _, id := range g.IDs {
+			owner[id] = i
+		}
+		if _, ok := firstOfProject[g.Project]; !ok {
+			firstOfProject[g.Project] = i
+		}
 	}
 	// An engager nobody recognises (or an agent naming itself) hangs off the
 	// dispatcher — better a flat entry than a session dropped from the tree.
-	kids := map[string][]int{}
+	kids := map[int][]int{}
 	for i, g := range runs {
-		p := shortIdentity(g.EngagedBy)
-		if p == "" || p == g.Project || !known[p] {
-			p = root
+		p := dispatcher
+		if j, ok := owner[g.EngagedBySession]; ok && j != i {
+			p = j
+		} else if by := shortIdentity(g.EngagedBy); by != root && by != g.Project {
+			if j, ok := firstOfProject[by]; ok && j != i {
+				p = j
+			}
 		}
 		kids[p] = append(kids[p], i)
 	}
 
 	var out []string
 	seen := make([]bool, len(runs))
-	var walk func(key string, depth int)
-	walk = func(key string, depth int) {
-		list := kids[key]
+	var walk func(parent, depth int)
+	walk = func(parent, depth int) {
+		list := kids[parent]
 		for n, i := range list {
 			if seen[i] {
 				continue
 			}
 			seen[i] = true
 			out = append(out, sessionLine(runs[i], i+1, depth, n == len(list)-1))
-			walk(runs[i].Project, depth+1)
+			walk(i, depth+1)
 		}
 	}
-	walk(root, 1)
+	walk(dispatcher, 1)
 	// A cycle in engaged_by must not swallow a session.
 	for i := range runs {
 		if !seen[i] {
@@ -1014,9 +1035,12 @@ func (m monitorModel) detailBody() string {
 	width := m.bodyWidth()
 
 	if r.Task != "" {
-		b.WriteString(styLabel.Render("task") + "\n")
+		b.WriteString(styLabel.Render("task"))
+		b.WriteString("\n")
 		for _, line := range wrapText(r.Task, width-2) {
-			b.WriteString("  " + styText.Render(line) + "\n")
+			b.WriteString("  ")
+			b.WriteString(styText.Render(line))
+			b.WriteString("\n")
 		}
 		b.WriteString("\n")
 	}
@@ -1026,24 +1050,32 @@ func (m monitorModel) detailBody() string {
 	// shares one thread, so without the engaged-by edge the chain reads as a
 	// flat list of unrelated attempts.
 	if runs := groupRuns(r.Attempts); len(runs) > 0 {
-		b.WriteString(styLabel.Render(fmt.Sprintf("sessions · %d", len(runs))) + "\n")
-		b.WriteString("  " + styKey.Render(shortIdentity(r.From)) + styDim.Render("  (dispatcher)") + "\n")
+		b.WriteString(styLabel.Render(fmt.Sprintf("sessions · %d", len(runs))))
+		b.WriteString("\n  ")
+		b.WriteString(styKey.Render(shortIdentity(r.From)))
+		b.WriteString(styDim.Render("  (dispatcher)"))
+		b.WriteString("\n")
 		for _, line := range sessionTree(runs, shortIdentity(r.From)) {
-			b.WriteString(line + "\n")
+			b.WriteString(line)
+			b.WriteString("\n")
 		}
 		if a := firstResumable(r.Attempts); a != nil {
-			b.WriteString("\n  " + styDim.Render("open one:  cd "+a.Dir+" && opencode -s <session id>") + "\n")
+			b.WriteString("\n  ")
+			b.WriteString(styDim.Render("open one:  cd " + a.Dir + " && opencode -s <session id>"))
+			b.WriteString("\n")
 		}
 		b.WriteString("\n")
 	}
 
 	if r.TodosTotal == 0 {
-		b.WriteString(styDim.Render("no work items posted yet") + "\n\n")
+		b.WriteString(styDim.Render("no work items posted yet"))
+		b.WriteString("\n\n")
 	} else {
 		head := fmt.Sprintf("work items · %d/%d done", r.TodosDone, r.TodosTotal)
 		b.WriteString(styLabel.Render(head))
 		if m.pickTodo {
-			b.WriteString("  " + styKey.Render("↑↓ select · d delete · esc cancel"))
+			b.WriteString("  ")
+			b.WriteString(styKey.Render("↑↓ select · d delete · esc cancel"))
 		}
 		b.WriteString("\n")
 		current := r.Current() // only the item being worked on gets the marker
@@ -1058,27 +1090,39 @@ func (m monitorModel) detailBody() string {
 			if m.pickTodo && i == m.todoIdx {
 				cursor, text = stySel.Render("▎")+" ", styText.Render(t.Content)
 			}
-			b.WriteString(cursor + mark + " " + text + "\n")
+			b.WriteString(cursor)
+			b.WriteString(mark)
+			b.WriteString(" ")
+			b.WriteString(text)
+			b.WriteString("\n")
 		}
 		if m.confirmDel && m.todoIdx < len(r.Todos) {
-			b.WriteString("\n  " + styFailed.Render("delete this work item?") + styDim.Render("  y / esc") + "\n")
-			b.WriteString("  " + styDim.Render(r.Todos[m.todoIdx].Content) + "\n")
+			b.WriteString("\n  ")
+			b.WriteString(styFailed.Render("delete this work item?"))
+			b.WriteString(styDim.Render("  y / esc"))
+			b.WriteString("\n  ")
+			b.WriteString(styDim.Render(r.Todos[m.todoIdx].Content))
+			b.WriteString("\n")
 		}
 		if m.notice != "" {
-			b.WriteString("\n  " + styAttn.Render(m.notice) + "\n")
+			b.WriteString("\n  ")
+			b.WriteString(styAttn.Render(m.notice))
+			b.WriteString("\n")
 		}
 		b.WriteString("\n")
 	}
 
 	if len(r.Events) == 0 {
-		b.WriteString(styDim.Render("no messages yet") + "\n")
+		b.WriteString(styDim.Render("no messages yet"))
+		b.WriteString("\n")
 		return b.String()
 	}
 
 	// The exchange itself, oldest first: who asked whom, and what came back.
 	// Dispatches are indented left, replies right, so the direction reads at
 	// a glance without hunting through the text.
-	b.WriteString(styLabel.Render("conversation") + "\n")
+	b.WriteString(styLabel.Render("conversation"))
+	b.WriteString("\n")
 	for _, e := range groupConversation(r.Events) {
 		when := ""
 		if t, ok := parseDaemonTime(e.TS); ok {
@@ -1103,9 +1147,15 @@ func (m monitorModel) detailBody() string {
 			head = when + styWorking.Render(e.Who()) + styDim.Render(" ↩") + tag
 			indent = "      "
 		}
-		b.WriteString("\n" + indent + head + "\n")
+		b.WriteString("\n")
+		b.WriteString(indent)
+		b.WriteString(head)
+		b.WriteString("\n")
 		for _, line := range wrapText(e.Content, max(20, width-len(indent)-2)) {
-			b.WriteString(indent + "  " + styText.Render(line) + "\n")
+			b.WriteString(indent)
+			b.WriteString("  ")
+			b.WriteString(styText.Render(line))
+			b.WriteString("\n")
 		}
 	}
 	return b.String()
@@ -1122,16 +1172,18 @@ func collectMonitorRows(all bool) ([]monitorRow, error) {
 		return nil, err
 	}
 	var sessions []struct {
-		Name       string `json:"name"`
-		Project    string `json:"project"`
-		Status     string `json:"status"`
-		ParentID   int64  `json:"parent_id"`
-		CreatedAt  string `json:"created_at"`
-		FinishedAt string `json:"finished_at"`
-		EngagedBy  string `json:"engaged_by"`
-		PID        int    `json:"pid"`
-		SessionID  string `json:"session_id"`
-		Dir        string `json:"dir"`
+		ID               int64  `json:"id"`
+		Name             string `json:"name"`
+		Project          string `json:"project"`
+		Status           string `json:"status"`
+		ParentID         int64  `json:"parent_id"`
+		CreatedAt        string `json:"created_at"`
+		FinishedAt       string `json:"finished_at"`
+		EngagedBy        string `json:"engaged_by"`
+		EngagedBySession int64  `json:"engaged_by_session"`
+		PID              int    `json:"pid"`
+		SessionID        string `json:"session_id"`
+		Dir              string `json:"dir"`
 	}
 	if err := json.Unmarshal(result, &sessions); err != nil {
 		return nil, fmt.Errorf("parse sessions: %w", err)
@@ -1156,9 +1208,9 @@ func collectMonitorRows(all bool) ([]monitorRow, error) {
 			order = append(order, s.ParentID)
 		}
 		row.Attempts = append(row.Attempts, attempt{
-			Name: s.Name, Project: s.Project, Status: s.Status,
+			ID: s.ID, Name: s.Name, Project: s.Project, Status: s.Status,
 			CreatedAt: s.CreatedAt, FinishedAt: s.FinishedAt,
-			EngagedBy: s.EngagedBy, PID: s.PID,
+			EngagedBy: s.EngagedBy, EngagedBySession: s.EngagedBySession, PID: s.PID,
 			SessionID: s.SessionID, Dir: s.Dir,
 		})
 	}

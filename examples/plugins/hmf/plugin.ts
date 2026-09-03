@@ -6,12 +6,14 @@
 //   2. Bash tool: checks commands against mouse.yaml deny/ask lists, and
 //      blocks anything but reads from touching another registered project.
 //   3. All tools: checks target paths against the fs deny/ask lists of the
-//      mouse.yaml that owns that path, so secrets stay unreadable.
+//      mouse.yaml that owns that path, so secrets stay unreadable. For
+//      grep/glob that means the search root up front, plus a filter over the
+//      results so a directory search can't surface a denied file.
 //
 // Zero context cost — runs as code, AI never sees instructions.
 
 import type { Plugin } from "@opencode-ai/plugin";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, statSync } from "node:fs";
 import { join, resolve, relative, dirname } from "node:path";
 import { homedir } from "node:os";
 import { execSync } from "node:child_process";
@@ -106,8 +108,6 @@ function loadProjectsFromDB(): ProjectInfo[] {
   }
 }
 
-// Run once at session start (plugin setup). Session-lifetime list.
-// ponytail: no self-heal within session; restart opencode if daemon was down at start.
 function loadProjects(): ProjectInfo[] {
   // Primary: read the DB directly (no daemon dependency).
   let items = loadProjectsFromDB();
@@ -123,6 +123,26 @@ function loadProjects(): ProjectInfo[] {
     }
   }
   return items;
+}
+
+// Session-lifetime cache with self-heal: an empty list means the daemon was
+// down or the DB unreadable, which would silently disable cross-project
+// protection for the whole session. Retry it — but at most once per retryMs,
+// so a genuinely empty registry doesn't shell out on every tool call. A
+// populated list is never re-queried.
+export function makeRegistry(
+  load: () => ProjectInfo[],
+  retryMs = 30_000,
+): () => ProjectInfo[] {
+  let items = load();
+  let last = Date.now();
+  return () => {
+    if (items.length === 0 && Date.now() - last >= retryMs) {
+      last = Date.now();
+      items = load();
+    }
+    return items;
+  };
 }
 
 // ============================================
@@ -225,20 +245,85 @@ export function commandMatchesPattern(cmd: string, pattern: string): boolean {
 // FS guard (shared by edit + bash)
 // ============================================
 
+function fsRule(
+  abs: string,
+  scope: MouseScope | null,
+): { kind: "deny" | "ask"; pattern: string } | null {
+  if (!scope) return null;
+  for (const pattern of scope.perms.fs.deny) {
+    if (pathMatchesPattern(abs, scope.root, pattern)) return { kind: "deny", pattern };
+  }
+  for (const pattern of scope.perms.fs.ask) {
+    if (pathMatchesPattern(abs, scope.root, pattern)) return { kind: "ask", pattern };
+  }
+  return null;
+}
+
+// True when the file's own project forbids reading it.
+export function fsBlocked(abs: string): boolean {
+  return fsRule(abs, scopeForPath(abs)) !== null;
+}
+
 // Throws if abs is covered by an fs deny/ask pattern. `how` names the caller
 // so the agent's BLOCKED reply says which tool it was.
 function enforceFS(abs: string, scope: MouseScope | null, how: string): void {
-  if (!scope) return;
-  for (const pattern of scope.perms.fs.deny) {
-    if (pathMatchesPattern(abs, scope.root, pattern)) {
-      throw new Error(`hmf: blocked ${how} of ${abs} (denied in mouse.yaml fs: "${pattern}").`);
-    }
+  const hit = fsRule(abs, scope);
+  if (!hit) return;
+  if (hit.kind === "deny") {
+    throw new Error(`hmf: blocked ${how} of ${abs} (denied in mouse.yaml fs: "${hit.pattern}").`);
   }
-  for (const pattern of scope.perms.fs.ask) {
-    if (pathMatchesPattern(abs, scope.root, pattern)) {
-      throw new Error(`hmf: ${how} of ${abs} requires approval (ask in mouse.yaml fs: "${pattern}").`);
-    }
+  throw new Error(`hmf: ${how} of ${abs} requires approval (ask in mouse.yaml fs: "${hit.pattern}").`);
+}
+
+// ============================================
+// Search guard (grep / glob)
+// ============================================
+
+function isDir(p: string): boolean {
+  try {
+    return statSync(p).isDirectory();
+  } catch {
+    return false;
   }
+}
+
+// grep/glob take a search root (`path`, default cwd); grep's may be a single
+// file. The root itself is judged exactly like a read — by the mouse.yaml of
+// the project it lives in. A directory root can still *contain* denied files;
+// those are stripped from the results by filterSearchOutput, because a
+// before-hook can only allow or block the call as a whole.
+export function enforceSearchPath(abs: string, how: string): void {
+  enforceFS(abs, loadMouseYaml(isDir(abs) ? abs : dirname(abs)), how);
+}
+
+// Drops result groups whose path its own project denies. grep prints
+// "<abs path>:" followed by indented "  Line N:" rows and a blank separator;
+// glob prints one absolute path per line. Both are absolute, so a line
+// starting with "/" opens a new group.
+export function filterSearchOutput(
+  text: string,
+  denied: (abs: string) => boolean,
+): { output: string; hidden: number } {
+  const kept: string[] = [];
+  let dropping = false;
+  let hidden = 0;
+  for (const line of text.split("\n")) {
+    if (line.startsWith("/")) {
+      dropping = denied(line.endsWith(":") ? line.slice(0, -1) : line);
+      if (dropping) {
+        hidden++;
+        continue;
+      }
+    } else if (dropping) {
+      if (line.trim() === "") dropping = false; // blank line closes the group
+      continue;
+    }
+    kept.push(line);
+  }
+  if (hidden > 0) {
+    kept.push("", `(${hidden} result(s) hidden by hmf — denied in the owning project's mouse.yaml fs rules)`);
+  }
+  return { output: kept.join("\n"), hidden };
 }
 
 // ============================================
@@ -360,7 +445,7 @@ export function isReadOnlyCommand(cmd: string): boolean {
 // ============================================
 
 export const HmfProtection: Plugin = async ({ directory }) => {
-  const projects = loadProjects();   // runs once, session-lifetime
+  const registry = makeRegistry(loadProjects); // loads now, retries only if empty
   return {
     "tool.execute.before": async (input, output) => {
       // ============================================
@@ -368,8 +453,6 @@ export const HmfProtection: Plugin = async ({ directory }) => {
       // ============================================
       // Reading another registered project is allowed (a parent verifying a
       // child's work), but that project's own fs deny/ask list still applies.
-      // ponytail: `read` only — a `grep` over a directory can still surface a
-      // denied file's lines; tighten if that matters.
       if (input.tool === "read") {
         const filePath = (output.args as { filePath?: string; path?: string })?.filePath
           ?? (output.args as { filePath?: string; path?: string })?.path
@@ -377,6 +460,17 @@ export const HmfProtection: Plugin = async ({ directory }) => {
         if (!filePath) return;
         const abs = resolve(filePath);
         enforceFS(abs, scopeForPath(abs), "read of");
+        return;
+      }
+
+      // ============================================
+      // Search protection
+      // ============================================
+      // Same fs rules as read, applied to the search root. Matches under a
+      // directory root are filtered in tool.execute.after.
+      if (input.tool === "grep" || input.tool === "glob") {
+        const search = (output.args as { path?: string })?.path;
+        enforceSearchPath(resolve(process.cwd(), search ?? "."), input.tool);
         return;
       }
 
@@ -398,6 +492,7 @@ export const HmfProtection: Plugin = async ({ directory }) => {
 
         // Only guard edits INTO a registered project — unregistered targets
         // (scratch files, /tmp, unrelated clones) are always allowed.
+        const projects = registry();
         const targetProject = findProjectFor(abs, projects);
         if (!targetProject) return;
 
@@ -424,6 +519,7 @@ export const HmfProtection: Plugin = async ({ directory }) => {
         // Same rule as edit, with one exception: reading another registered
         // project is allowed, so a parent can verify a child's work. Anything
         // that could change or run it is still the owning agent's job.
+        const projects = registry();
         const myProject = findProjectFor(cwd, projects);
         const readOnly = isReadOnlyCommand(cmd);
         for (const abs of extractPathCandidates(cmd, cwd)) {
@@ -468,6 +564,16 @@ export const HmfProtection: Plugin = async ({ directory }) => {
           }
         }
       }
+    },
+
+    // A directory search legitimately spans files the owning project denies.
+    // Blocking the whole call would make grep/glob useless inside any project
+    // with fs rules (the global fallback denies ".env"/"*.key" everywhere), so
+    // the denied paths are stripped from the results instead.
+    "tool.execute.after": async (input, output) => {
+      if (input.tool !== "grep" && input.tool !== "glob") return;
+      const filtered = filterSearchOutput(output.output ?? "", fsBlocked);
+      if (filtered.hidden > 0) output.output = filtered.output;
     },
   };
 };

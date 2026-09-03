@@ -125,6 +125,51 @@ func TestDetailBody_SessionTree(t *testing.T) {
 	}
 }
 
+// TestDetailBody_SameProjectTwiceOnOneThread: one project can be engaged
+// twice on a thread by two different agents. Each of its sessions must carry
+// its own children — keying the tree by project alone pooled them, so work
+// the first session handed out was drawn under the second one.
+func TestDetailBody_SameProjectTwiceOnOneThread(t *testing.T) {
+	m := monitorModel{detail: 0, w: 100, rows: []monitorRow{{
+		ThreadID: 9,
+		From:     "haydn/his-mouse-friday",
+		Status:   "active",
+		Attempts: []attempt{
+			// penny #1, engaged by the dispatcher.
+			{ID: 1, Name: "a1-penny", Project: "penny-pincher", Status: "exited",
+				EngagedBy: "haydn/his-mouse-friday", SessionID: "ses_penny001"},
+			// penny #1 hands work to mouse...
+			{ID: 2, Name: "a1-mouse", Project: "mouse-for-sale", Status: "exited",
+				EngagedBy: "haydn/penny-pincher", EngagedBySession: 1, SessionID: "ses_mouse002"},
+			// ...which engages penny a second time (a fresh session).
+			{ID: 3, Name: "a1-penny", Project: "penny-pincher", Status: "exited",
+				EngagedBy: "haydn/mouse-for-sale", EngagedBySession: 2, SessionID: "ses_penny003"},
+			// Then penny #1 — not #2 — engages ledger.
+			{ID: 4, Name: "a1-ledger", Project: "ledger", Status: "active", PID: 7,
+				EngagedBy: "haydn/penny-pincher", EngagedBySession: 1, SessionID: "ses_ledger004"},
+		},
+	}}}
+	out := m.detailBody()
+	at := map[string]int{}
+	for _, n := range []string{"1. ", "2. ", "3. ", "4. "} {
+		i := strings.Index(out, n)
+		if i < 0 {
+			t.Fatalf("session %q missing from the tree:\n%s", n, out)
+		}
+		at[n] = indentOf(out, i)
+	}
+	if at["2. "] <= at["1. "] {
+		t.Errorf("mouse-for-sale should sit under the penny session that engaged it:\n%s", out)
+	}
+	if at["3. "] <= at["2. "] {
+		t.Errorf("penny's second session should sit under mouse-for-sale:\n%s", out)
+	}
+	if at["4. "] != at["2. "] {
+		t.Errorf("ledger was engaged by penny's first session, so it is a sibling of mouse-for-sale (indent %d, want %d):\n%s",
+			at["4. "], at["2. "], out)
+	}
+}
+
 // indentOf counts leading spaces on the line containing offset i.
 func indentOf(s string, i int) int {
 	start := strings.LastIndex(s[:i], "\n") + 1
