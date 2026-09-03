@@ -2,20 +2,37 @@
   "$schema": "https://opencode.ai/config.json",
   "mcp": {
     "hmf": {
-      "type": "local",
-      "command": ["hmf-mcp"],
+      "command": [
+        "hmf-mcp"
+      ],
       "enabled": true,
-      "timeout": 330000
+      "timeout": 330000,
+      "type": "local"
     }
   },
   "permission": {
     "bash": {
-      "kubectl delete": "deny",
-      "kubectl apply": "deny",
-      "gcloud * delete": "deny",
+      "*": "ask",
       "aws * delete": "deny",
-      "kubectl scale": "ask",
-      "*": "ask"
-    }
+      "az * delete": "deny",
+      "chmod -R 777": "deny",
+      "dd if=": "deny",
+      "gcloud * create": "deny",
+      "gcloud * delete": "deny",
+      "git clean -fd": "deny",
+      "git clean -xfd": "deny",
+      "git push --force": "deny",
+      "git push -f": "deny",
+      "git reset --hard": "deny",
+      "kubectl apply": "deny",
+      "kubectl delete": "deny",
+      "mkfs": "deny",
+      "reboot": "deny",
+      "rm -rf /": "deny",
+      "rm -rf ~": "deny",
+      "shutdown": "deny",
+      "sudo": "deny"
+    },
+    "edit": "allow"
   }
 }

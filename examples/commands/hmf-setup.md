@@ -291,8 +291,10 @@ If it does NOT exist, write `opencode.json` with this exact structure:
 }
 ```
 
-Do NOT put the Step 5 deny/ask patterns here as `"deny"`/`"ask"` values, and do
-NOT set `bash` to a blanket `"allow"`. Two separate mechanisms already cover it:
+Do NOT hand-write the Step 5 deny/ask patterns here, and do NOT set `bash` to a
+blanket `"allow"`. The deny tier is mirrored in by `hmf sync` (run it after this
+step, and again whenever `mouse.yaml`'s deny list changes) — hand-editing is
+what lets the two files drift. The ask tier never crosses over:
 
 - **Interactive sessions** have a TTY, so `"ask"` is answerable and correct.
 - **hmf-spawned agents** run headless, where an unanswerable `ask` would hang —
@@ -304,6 +306,11 @@ NOT set `bash` to a blanket `"allow"`. Two separate mechanisms already cover it:
 
 A blanket `bash: "*": "allow"` would defeat all of this and was flagged by a
 security review — don't reintroduce it.
+
+Then run `hmf sync` in the repo. It rewrites `permission.bash` from
+`mouse.yaml`'s `commands.deny` (the map is fully managed — stale denies are
+dropped, every other key in the file is preserved) and leaves the `"*"`
+catch-all and `edit` alone.
 
 After writing, report ONLY this line (listing only files you wrote):
 

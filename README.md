@@ -127,9 +127,14 @@ After `make install`, in any opencode session:
    Both are enforced and both default to false when omitted, so a repo that
    declares neither can neither be engaged nor delegate.
    `mouse.yaml` declares command + filesystem permissions (gitignore-style:
-   deny / ask / allow). `/hmf-setup` auto-generates `opencode.json` from it,
-   so opencode enforces the policy natively — agents physically cannot run
-   denied commands (e.g. `kubectl delete`, `gcloud * delete`).
+   deny / ask / allow) and is the single source of truth for them.
+   `/hmf-setup` writes a baseline `opencode.json`; `hmf sync` then mirrors
+   `mouse.yaml`'s `commands.deny` into its `permission.bash` map, so opencode
+   also enforces the deny tier natively — a backstop for the case where the
+   plugin fails to load. Re-run `hmf sync` after editing the deny list.
+   `commands.ask` is not mirrored: it is plugin-enforced only, because the
+   daemon spawns agents with `--auto` and a native `ask` is auto-approved
+   there (and in a TTY it would prompt only for the plugin to throw anyway).
 
 4. Open opencode in a registered repo. The agent now has 6 tools:
    `post_message`, `task_status`, `report_progress`, `read_channel`,

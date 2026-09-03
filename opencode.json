@@ -2,11 +2,24 @@
   "$schema": "https://opencode.ai/config.json",
   "permission": {
     "bash": {
-      "*": "ask"
+      "*": "ask",
+      "chmod -R 777": "deny",
+      "dd if=": "deny",
+      "git clean -fd": "deny",
+      "git clean -xfd": "deny",
+      "git push --force": "deny",
+      "git push -f": "deny",
+      "git reset --hard": "deny",
+      "mkfs": "deny",
+      "reboot": "deny",
+      "rm -rf /": "deny",
+      "rm -rf ~": "deny",
+      "shutdown": "deny",
+      "sudo": "deny"
     },
     "edit": "allow",
-    "read": "allow",
     "glob": "allow",
-    "grep": "allow"
+    "grep": "allow",
+    "read": "allow"
   }
 }

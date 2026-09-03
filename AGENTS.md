@@ -102,11 +102,16 @@ agent session (`HMF_CHANNEL_ID` must be set).
 
 ## OpenCode config at root (`opencode.json`)
 
-- `bash`, `edit`, `read`, `glob`, `grep` permissions → `allow`. `bash` was
-  `ask` (every shell command prompted) until headless hmf spawns into this
-  repo silently did nothing on the first bash/edit call — no TTY to answer
-  the prompt. Rely on the hmf plugin (`examples/plugins/hmf/plugin.ts`) and
-  `mouse.yaml` for guardrails instead of opencode's blanket ask.
+- `edit`, `read`, `glob`, `grep` → `allow`; `bash` is `{"*": "ask"}` plus one
+  `"deny"` entry per pattern in `mouse.yaml`'s `commands.deny`. The `ask`
+  catch-all does NOT hang headless spawns: the daemon passes `--auto`
+  (`internal/daemon/runtime_opencode.go`), which auto-approves anything not
+  explicitly denied. Do not "fix" it to a blanket `allow` — a security review
+  already flagged that.
+- Do not hand-edit the `permission.bash` map. `hmf sync` regenerates it from
+  `mouse.yaml` (the source of truth); hand edits drift and get overwritten.
+  `commands.ask` is deliberately not mirrored — the plugin
+  (`examples/plugins/hmf/plugin.ts`) enforces that tier.
 - `.opencode/` is machine-managed runtime state (goals, sessions, locks).
   Do not hand-edit.
 
