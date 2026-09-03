@@ -229,7 +229,7 @@ agent session (`HMF_CHANNEL_ID` must be set).
   either one lets project B resume project A's opencode session id (dead in
   B's directory: the agent hangs and never replies) or swallows B's wake
   entirely. Same class of bug twice; keep the scope.
-- Known open issues in `README.md` TODOs: auto-spawn reliability, session
-  resume, real 3+ agent scenario. Edit-protection and `to` field auto-fill on
-  replies are fixed — see `README.md` TODOs for details. Don't claim the
-  remaining ones are solved.
+- A spawned agent that replied `done` can still sit `active` until the watchdog
+  reaps it (up to 60min) — the tail of a delegation chain usually does. That row
+  blocks `hmf prune` for its thread. `has_done` is the completion signal, never
+  `agent_status`.
