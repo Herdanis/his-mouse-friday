@@ -283,6 +283,8 @@ func (d *Daemon) Handle(ctx context.Context, req protocol.Request) protocol.Resp
 		return d.handleStatus(req)
 	case "session_list":
 		return d.handleSessionList(req)
+	case "thread_delete":
+		return d.handleThreadDelete(req)
 	case "prune":
 		return d.handlePrune(req)
 	case "report_progress":
@@ -1055,6 +1057,24 @@ var etaPattern = regexp.MustCompile(`\(eta ~(\d+)min\)`)
 
 // handlePrune clears task history. Sessions still running are left alone, so a
 // prune during live work cannot orphan an agent mid-task.
+func (d *Daemon) handleThreadDelete(req protocol.Request) protocol.Response {
+	var p struct {
+		ThreadID int64 `json:"thread_id"`
+	}
+	if err := json.Unmarshal(req.Params, &p); err != nil {
+		return errResp(req.ID, "bad params: "+err.Error())
+	}
+	if p.ThreadID == 0 {
+		return errResp(req.ID, "thread_id required")
+	}
+	res, err := d.Store.DeleteThread(p.ThreadID)
+	if err != nil {
+		return errResp(req.ID, err.Error())
+	}
+	result, _ := json.Marshal(res)
+	return protocol.Response{ID: req.ID, Result: result}
+}
+
 func (d *Daemon) handlePrune(req protocol.Request) protocol.Response {
 	var p struct {
 		OlderThanHours float64 `json:"older_than_hours"`

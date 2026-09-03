@@ -118,3 +118,71 @@ func TestStore_PruneOlderThan(t *testing.T) {
 		t.Errorf("kept %q, want the recent message", content)
 	}
 }
+
+// ============================================
+// DeleteThread
+// ============================================
+
+func deleteThreadFixture(t *testing.T) *Store {
+	t.Helper()
+	s, _ := OpenStore(filepath.Join(t.TempDir(), "test.db"))
+	t.Cleanup(func() { s.Close() })
+	s.db.Exec(`INSERT INTO workspaces(id, name) VALUES(1, 'ws')`)
+	s.db.Exec(`INSERT INTO projects(id, workspace_id, name, path) VALUES(1, 1, 'p', '/tmp/p')`)
+	s.db.Exec(`INSERT INTO channels(id, workspace_id, name, type) VALUES(1, 1, 'dm', 'dm')`)
+	// Thread 1: finished, one reply, one todo, one exited session.
+	// Thread 3: unrelated, must survive.
+	s.db.Exec(`INSERT INTO messages(id, channel_id, from_project, content, ts) VALUES(1, 1, 'a/b', 'drop me', datetime('now'))`)
+	s.db.Exec(`INSERT INTO messages(id, channel_id, thread_id, from_project, content, ts) VALUES(2, 1, 1, 'a/b', 'reply', datetime('now'))`)
+	s.db.Exec(`INSERT INTO messages(id, channel_id, from_project, content, ts) VALUES(3, 1, 'a/b', 'keep me', datetime('now'))`)
+	s.db.Exec(`INSERT INTO todos(thread_id, content, updated_at) VALUES(1, 'gone', datetime('now'))`)
+	s.db.Exec(`INSERT INTO todos(thread_id, content, updated_at) VALUES(3, 'stays', datetime('now'))`)
+	s.db.Exec(`INSERT INTO sessions(project_id, agent_binary, status, created_at, root_thread_id) VALUES(1, 'opencode', 'exited', datetime('now'), 1)`)
+	return s
+}
+
+func TestStore_DeleteThread(t *testing.T) {
+	s := deleteThreadFixture(t)
+
+	res, err := s.DeleteThread(1)
+	if err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if res.Messages != 2 || res.Sessions != 1 || res.Todos != 1 {
+		t.Errorf("counts = %+v, want 2 messages / 1 session / 1 todo", res)
+	}
+
+	var msgs, todos, sessions, projects int
+	s.db.QueryRow("SELECT count(*) FROM messages").Scan(&msgs)
+	s.db.QueryRow("SELECT count(*) FROM todos").Scan(&todos)
+	s.db.QueryRow("SELECT count(*) FROM sessions").Scan(&sessions)
+	s.db.QueryRow("SELECT count(*) FROM projects").Scan(&projects)
+	if msgs != 1 || todos != 1 || sessions != 0 {
+		t.Errorf("unrelated thread not preserved: %d msgs, %d todos, %d sessions", msgs, todos, sessions)
+	}
+	if projects != 1 {
+		t.Errorf("delete took out the registry: %d projects left", projects)
+	}
+}
+
+// Deleting a thread with a live agent would orphan the process — its replies
+// would have no thread to land on. Same invariant Prune holds.
+func TestStore_DeleteThreadRefusesWhileAgentRuns(t *testing.T) {
+	s := deleteThreadFixture(t)
+	s.db.Exec(`INSERT INTO sessions(project_id, agent_binary, status, created_at, root_thread_id) VALUES(1, 'opencode', 'active', datetime('now'), 1)`)
+
+	if _, err := s.DeleteThread(1); err == nil {
+		t.Fatal("deleted a thread with a running agent")
+	}
+	var msgs int
+	s.db.QueryRow("SELECT count(*) FROM messages").Scan(&msgs)
+	if msgs != 3 {
+		t.Errorf("refused delete still removed rows: %d messages left, want 3", msgs)
+	}
+}
+
+func TestStore_DeleteThreadUnknown(t *testing.T) {
+	if _, err := deleteThreadFixture(t).DeleteThread(9999); err == nil {
+		t.Fatal("want an error for a thread that does not exist")
+	}
+}

@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"database/sql"
+	"fmt"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -118,6 +119,57 @@ type PruneResult struct {
 	Sessions int64
 	Todos    int64
 	Skipped  int64 // threads left alone because they are still running
+}
+
+// DeleteThread removes one task thread outright: its messages, sessions and
+// todos. Refuses while an agent is still running on it — deleting then would
+// orphan a live process whose replies have nowhere to land, the same
+// invariant Prune holds.
+func (s *Store) DeleteThread(root int64) (PruneResult, error) {
+	var res PruneResult
+	tx, err := s.db.Begin()
+	if err != nil {
+		return res, err
+	}
+	defer tx.Rollback()
+
+	var live int64
+	if err := tx.QueryRow(
+		`SELECT COUNT(*) FROM sessions WHERE status='active' AND root_thread_id=?`,
+		root).Scan(&live); err != nil {
+		return res, err
+	}
+	if live > 0 {
+		return res, fmt.Errorf("thread %d still has %d running agent(s) — wait for it to finish", root, live)
+	}
+
+	var msgs int64
+	if err := tx.QueryRow(
+		`SELECT COUNT(*) FROM messages WHERE id=? OR thread_id=?`, root, root).Scan(&msgs); err != nil {
+		return res, err
+	}
+	if msgs == 0 {
+		return res, fmt.Errorf("no such thread: %d", root)
+	}
+
+	del := func(query string, args ...any) (int64, error) {
+		r, err := tx.Exec(query, args...)
+		if err != nil {
+			return 0, err
+		}
+		n, _ := r.RowsAffected()
+		return n, nil
+	}
+	if res.Todos, err = del(`DELETE FROM todos WHERE thread_id=?`, root); err != nil {
+		return res, err
+	}
+	if res.Sessions, err = del(`DELETE FROM sessions WHERE root_thread_id=?`, root); err != nil {
+		return res, err
+	}
+	if res.Messages, err = del(`DELETE FROM messages WHERE id=? OR thread_id=?`, root, root); err != nil {
+		return res, err
+	}
+	return res, tx.Commit()
 }
 
 // Prune deletes task history. olderThan == 0 removes everything; otherwise

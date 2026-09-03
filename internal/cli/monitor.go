@@ -234,7 +234,10 @@ type monitorModel struct {
 	pickTodo   bool
 	todoIdx    int
 	confirmDel bool
-	notice     string
+	// Whole-task delete, kept separate from confirmDel so one confirm prompt
+	// can never fire the other's action.
+	confirmTask bool
+	notice      string
 }
 
 func newMonitorModel(all bool) monitorModel {
@@ -420,6 +423,8 @@ func (m monitorModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "esc", "h", "left":
 		switch {
+		case m.confirmTask:
+			m.confirmTask = false
 		case m.confirmDel:
 			m.confirmDel = false
 		case m.pickTodo:
@@ -464,7 +469,27 @@ func (m monitorModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case "D":
+		// Whole task, not a work item: history for this thread goes away.
+		// Works from the list too — no need to open the row first.
+		if !m.confirmTask && len(m.rows) > 0 {
+			m.confirmTask, m.pickTodo, m.confirmDel, m.notice = true, false, false, ""
+			return m, m.refreshDetail()
+		}
+		return m, nil
+
 	case "y":
+		if m.confirmTask {
+			if err := deleteThread(m.targetRow().ThreadID); err != nil {
+				m.notice = "delete failed: " + err.Error()
+			} else {
+				m.notice = "deleted task"
+				m.detail, m.cursor, m.offset = -1, 0, 0
+			}
+			m.confirmTask = false
+			m.loading = true
+			return m, fetchRows(m.all)
+		}
 		if m.confirmDel && m.detail >= 0 {
 			r := m.rows[m.detail]
 			if m.todoIdx < len(r.Todos) {
@@ -666,6 +691,14 @@ func (m monitorModel) topBar() string {
 }
 
 func (m monitorModel) footer() string {
+	// The whole-task confirm replaces the key hints: D works from the list as
+	// well as the detail pane, and the footer is the one line every layout
+	// renders, so the prompt cannot end up off-screen.
+	if m.confirmTask && len(m.rows) > 0 {
+		r := m.targetRow()
+		what := fmt.Sprintf("delete task #%d (%s) and all its history?", r.ThreadID, r.FromLabel())
+		return " " + styFailed.Render(what) + styDim.Render("  y / esc")
+	}
 	scope := "active only"
 	if !m.all {
 		scope = "show all"
@@ -679,7 +712,7 @@ func (m monitorModel) footer() string {
 	default:
 		pairs = append(pairs, "enter", "open")
 	}
-	pairs = append(pairs, "d", "del item", "a", scope, "r", "refresh", "q", "quit")
+	pairs = append(pairs, "d", "del item", "D", "del task", "a", scope, "r", "refresh", "q", "quit")
 	return " " + keyHelp(pairs...)
 }
 
@@ -1150,6 +1183,21 @@ func fetchTodos(threadID int64) []todoItem {
 		out = append(out, todoItem{ID: t.ID, Content: t.Content, State: t.State})
 	}
 	return out
+}
+
+// targetRow is the row a whole-task action applies to: the open one, else
+// whatever the list cursor sits on.
+func (m monitorModel) targetRow() monitorRow {
+	i := m.detail
+	if i < 0 {
+		i = m.cursor
+	}
+	return m.rows[i]
+}
+
+func deleteThread(id int64) error {
+	_, err := protocol.Call("thread_delete", map[string]any{"thread_id": id})
+	return err
 }
 
 func deleteTodo(id int64) error {

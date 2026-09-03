@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 // A finished task must report how long it ran, not how long ago it started —
@@ -208,5 +210,34 @@ func TestListEntry_DispatcherBeforeAnySpawn(t *testing.T) {
 	}}}
 	if out := m.listEntry(0, 40); !strings.Contains(out, "his-mouse-friday") {
 		t.Errorf("list entry lost the dispatcher\n%s", out)
+	}
+}
+
+// TestFooter_ConfirmsBeforeTaskDelete: D must never delete on the keystroke.
+// The prompt lives in the footer because D works from the list too, where
+// there is no detail pane to render into.
+func TestFooter_ConfirmsBeforeTaskDelete(t *testing.T) {
+	m := monitorModel{w: 100, rows: []monitorRow{{
+		ThreadID: 62, From: "dir:ledger", Status: "exited",
+	}}}
+	if !strings.Contains(m.footer(), "del task") {
+		t.Error("footer does not advertise the D binding")
+	}
+	m.confirmTask = true
+	out := m.footer()
+	for _, want := range []string{"#62", "ledger/", "y / esc"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("confirm prompt missing %q\n%s", want, out)
+		}
+	}
+}
+
+// esc must clear the task confirm, or the next y deletes something the user
+// already backed out of.
+func TestEsc_ClearsTaskConfirm(t *testing.T) {
+	m := monitorModel{w: 100, confirmTask: true, detail: -1, rows: []monitorRow{{ThreadID: 62}}}
+	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if got.(monitorModel).confirmTask {
+		t.Error("esc left the task confirm armed")
 	}
 }
