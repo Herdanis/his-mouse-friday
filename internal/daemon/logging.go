@@ -87,12 +87,33 @@ func logf(event, format string, args ...any) {
 		time.Now().Format("2006-01-02T15:04:05.000Z07:00"), event, fmt.Sprintf(format, args...))
 }
 
+// logErrf marks a failure. Every problem carries the ERROR token, so
+// `grep ERROR ~/.hmf/hmf.log` is the whole list.
+func logErrf(event, format string, args ...any) {
+	logf(event, "ERROR "+format, args...)
+}
+
 // prefixWriter tags each write with a source label — used for agent output.
 type prefixWriter struct{ prefix string }
 
+// Write logs one entry per line: a multi-line chunk would otherwise hide its
+// tail from a grep.
 func (w prefixWriter) Write(p []byte) (int, error) {
-	logf(w.prefix, "%s", strings.TrimRight(string(p), "\n"))
+	for _, line := range strings.Split(strings.TrimRight(string(p), "\n"), "\n") {
+		if strings.TrimSpace(line) != "" {
+			logf(w.prefix, "%s", line)
+		}
+	}
 	return len(p), nil
+}
+
+// threadKey is the root thread a message belongs to — the id every line of one
+// task shares, so `grep thread=N` replays it.
+func threadKey(threadID, msgID int64) int64 {
+	if threadID != 0 {
+		return threadID
+	}
+	return msgID
 }
 
 // trunc caps a logged value so one huge message can't dominate the file.

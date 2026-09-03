@@ -3,6 +3,7 @@ package daemon
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -121,26 +122,84 @@ type PruneResult struct {
 	Skipped  int64 // threads left alone because they are still running
 }
 
+// ReapDeadSessions marks 'active' rows whose process is gone as exited. A
+// daemon restart loses the exit watcher, so such a row would otherwise block
+// deletes and wakes on its thread forever.
+func (s *Store) ReapDeadSessions() error {
+	rows, err := s.db.Query(`SELECT id, pid FROM sessions WHERE status='active'`)
+	if err != nil {
+		return err
+	}
+	var dead []int64
+	for rows.Next() {
+		var id int64
+		var pid sql.NullInt64
+		if err := rows.Scan(&id, &pid); err != nil {
+			rows.Close()
+			return err
+		}
+		// pid 0/NULL = spawn still in flight (Create precedes SetPID) — leave it.
+		if pid.Valid && pid.Int64 > 0 && !processAlive(pid.Int64) {
+			dead = append(dead, id)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	sessions := &SessionStore{Store: s}
+	for _, id := range dead {
+		if err := sessions.MarkExited(id, -1); err != nil {
+			return err
+		}
+		logf("reap", "session %d marked exited: no live process", id)
+	}
+	return nil
+}
+
+// liveSessions names the still-running agents on a thread ("<name> pid N").
+func (s *Store) liveSessions(tx *sql.Tx, root int64) ([]string, error) {
+	rows, err := tx.Query(
+		`SELECT IFNULL(name,'session '||id), IFNULL(pid,0) FROM sessions
+		 WHERE status='active' AND root_thread_id=?`, root)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var name string
+		var pid int64
+		if err := rows.Scan(&name, &pid); err != nil {
+			return nil, err
+		}
+		out = append(out, fmt.Sprintf("%s (pid %d)", name, pid))
+	}
+	return out, rows.Err()
+}
+
 // DeleteThread removes one task thread outright: its messages, sessions and
 // todos. Refuses while an agent is still running on it — deleting then would
 // orphan a live process whose replies have nowhere to land, the same
 // invariant Prune holds.
 func (s *Store) DeleteThread(root int64) (PruneResult, error) {
 	var res PruneResult
+	if err := s.ReapDeadSessions(); err != nil {
+		return res, err
+	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return res, err
 	}
 	defer tx.Rollback()
 
-	var live int64
-	if err := tx.QueryRow(
-		`SELECT COUNT(*) FROM sessions WHERE status='active' AND root_thread_id=?`,
-		root).Scan(&live); err != nil {
+	live, err := s.liveSessions(tx, root)
+	if err != nil {
 		return res, err
 	}
-	if live > 0 {
-		return res, fmt.Errorf("thread %d still has %d running agent(s) — wait for it to finish", root, live)
+	if len(live) > 0 {
+		return res, fmt.Errorf("thread %d still has %d running agent(s): %s — wait for it, or kill the pid",
+			root, len(live), strings.Join(live, ", "))
 	}
 
 	var msgs int64
@@ -180,6 +239,9 @@ func (s *Store) DeleteThread(root int64) (PruneResult, error) {
 // agent's replies.
 func (s *Store) Prune(olderThan time.Duration) (PruneResult, error) {
 	var res PruneResult
+	if err := s.ReapDeadSessions(); err != nil {
+		return res, err
+	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return res, err

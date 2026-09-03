@@ -181,6 +181,23 @@ func TestStore_DeleteThreadRefusesWhileAgentRuns(t *testing.T) {
 	}
 }
 
+// An 'active' row left behind by a daemon restart (pid long dead) must not
+// block the delete forever.
+func TestStore_DeleteThreadReapsDeadSession(t *testing.T) {
+	s := deleteThreadFixture(t)
+	deadPID := 0x7FFFFFF0 // out of pid range: guaranteed not running
+	s.db.Exec(`INSERT INTO sessions(project_id, agent_binary, status, pid, created_at, root_thread_id) VALUES(1, 'opencode', 'active', ?, datetime('now'), 1)`, deadPID)
+
+	if _, err := s.DeleteThread(1); err != nil {
+		t.Fatalf("delete blocked by a dead session: %v", err)
+	}
+	var msgs int
+	s.db.QueryRow("SELECT count(*) FROM messages").Scan(&msgs)
+	if msgs != 1 {
+		t.Errorf("%d messages left, want 1 (the unrelated thread)", msgs)
+	}
+}
+
 func TestStore_DeleteThreadUnknown(t *testing.T) {
 	if _, err := deleteThreadFixture(t).DeleteThread(9999); err == nil {
 		t.Fatal("want an error for a thread that does not exist")

@@ -401,26 +401,41 @@ want the history back.
 
 ## Logs
 
-The daemon writes a verbose event log to `~/.hmf/hmf.log`:
+Everything goes to one file, `~/.hmf/hmf.log` — daemon events, agent
+stdout/stderr, and (when backgrounded) the daemon's own stderr:
 
 ```bash
 tail -f ~/.hmf/hmf.log
 ```
 
-Every RPC (params + result, truncated at 2000 bytes), every post decision
-(channel, `to` auto-fill, registry resolve, message id), every wake step
-(registry hit, inbound/outbound consent, resolved agent + model, session row,
-resume id, the exact `exec` argv and dir), spawn pid or failure, agent
-stdout/stderr, exit code, and the safety-net `BLOCKED` post.
+Each line is `<timestamp> [<event>] key=value...`. Events are `rpc`, `post`,
+`wake`, `spawn`, `capture`, `exit`, `reap`, and `agent#<session> <name>` for the
+child process's own output.
 
-Agent output is the useful part: without it, a runtime error (bad model, dead
-`-s` session id, auth prompt) is invisible and looks like an agent that simply
-never replies.
+Three greps cover most debugging:
+
+```bash
+grep ERROR ~/.hmf/hmf.log      # every failure, one line each
+grep thread=68 ~/.hmf/hmf.log  # one task end to end, across all its agents
+grep 'agent#' ~/.hmf/hmf.log   # what the spawned agents printed
+```
+
+`thread=<id>` is on every post, wake, spawn and exit line, and it's the same id
+`task_status`/`read_thread` take — so a task id from the monitor replays the
+whole task, including a second project engaged on the same thread.
+
+Agent output is the useful part: without it a runtime error (bad model, dead
+`-s` session id, auth prompt) is invisible and just looks like an agent that
+never replied.
+
+Read-only polls (`read_thread`, `todo_list`, `task_status`, ...) log a one-line
+summary rather than full bodies — an open monitor TUI would otherwise push the
+real events out of the file.
 
 The file is capped at 40MB. At the cap it rotates to `~/.hmf/hmf.log.1`,
-dropping the previous backup — at most two files, ~80MB total. `hmf up` prints
-the path on start and mirrors its own stderr into it, so a backgrounded daemon
-loses nothing.
+dropping the previous backup — at most two files. Start a background daemon
+with `nohup hmf up >> ~/.hmf/hmf.log 2>&1 &` (what `scripts/install.sh` does)
+so panics land there too; in a terminal, `hmf up` also mirrors to stderr.
 
 ## Troubleshooting
 
@@ -437,6 +452,12 @@ in the *other* project's directory, so it hangs forever without replying. Fixed
 — the resume lookup is scoped to `project_id`, not just the thread. An agent
 already stuck this way stays `active` until you `kill <pid>` it (pid is in
 `hmf session list`).
+
+**`delete failed: thread N still has 1 running agent(s)`.**
+The error now names the session and pid. A dead pid is reaped automatically
+(delete and prune both run `ReapDeadSessions` first), so this only appears when
+a process really is alive. Either wait for it, or `kill <pid>` and delete
+again — a hung agent that will never reply is safe to kill.
 
 **`MCP error -32001: Request timed out` on every `task_status` call.**
 The `hmf` MCP server has no `timeout` set, so opencode is using its 5-second

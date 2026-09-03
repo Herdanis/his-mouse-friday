@@ -72,7 +72,7 @@ func (d *Daemon) resolveAgent(mouse *config.MouseConfig) (binary, model, agentNa
 		}
 		return c.bin, c.model, c.name
 	}
-	logCapture(0, "resolveAgent: no candidate available, using primary %s/%s", cands[0].bin, cands[0].model)
+	logf("wake", "no runtime candidate available, falling back to primary %s/%s", cands[0].bin, cands[0].model)
 	return cands[0].bin, cands[0].model, cands[0].name
 }
 
@@ -252,16 +252,31 @@ type SessionListItem struct {
 // Method dispatch
 // ============================================
 
+// Read-only polling (monitor TUI, task_status) logs one summary line instead
+// of full bodies — otherwise it drowns the wake/spawn events in the file.
+var quietMethods = map[string]bool{
+	"read_thread": true, "read_channel": true, "todo_list": true,
+	"todo_threads": true, "session_list": true, "status": true,
+	"task_status": true, "project_list": true, "workspace_list": true,
+	"list_project_agents": true,
+}
+
 // Handle dispatches a single request, logging both ends of it.
 func (d *Daemon) Handle(ctx context.Context, req protocol.Request) protocol.Response {
 	start := time.Now()
-	logf("rpc", "recv id=%d method=%s params=%s", req.ID, req.Method, trunc(string(req.Params), 2000))
+	quiet := quietMethods[req.Method]
+	if !quiet {
+		logf("rpc", "recv id=%d method=%s params=%s", req.ID, req.Method, trunc(string(req.Params), 2000))
+	}
 	resp := d.dispatch(ctx, req)
+	dur := time.Since(start).Round(time.Millisecond)
 	switch {
 	case resp.Error != nil:
-		logf("rpc", "send id=%d method=%s dur=%s ERROR: %s", req.ID, req.Method, time.Since(start).Round(time.Millisecond), resp.Error.Message)
+		logErrf("rpc", "id=%d method=%s dur=%s params=%s: %s", req.ID, req.Method, dur, trunc(string(req.Params), 500), resp.Error.Message)
+	case quiet:
+		logf("rpc", "id=%d method=%s dur=%s ok (%d bytes)", req.ID, req.Method, dur, len(resp.Result))
 	default:
-		logf("rpc", "send id=%d method=%s dur=%s result=%s", req.ID, req.Method, time.Since(start).Round(time.Millisecond), trunc(string(resp.Result), 2000))
+		logf("rpc", "send id=%d method=%s dur=%s result=%s", req.ID, req.Method, dur, trunc(string(resp.Result), 2000))
 	}
 	return resp
 }
@@ -415,7 +430,7 @@ func (d *Daemon) handlePost(ctx context.Context, req protocol.Request) protocol.
 			// there, and resolving that as a recipient would fail the post.
 			if other != "" && other != p.From && strings.Contains(other, "/") {
 				p.To = other
-				logf("post", "autofilled to=%s from thread %d root", p.To, p.ThreadID)
+				logf("post", "thread=%d autofilled to=%s from thread root", p.ThreadID, p.To)
 			}
 		}
 	}
@@ -424,7 +439,7 @@ func (d *Daemon) handlePost(ctx context.Context, req protocol.Request) protocol.
 	if p.To != "" {
 		resolved, err := d.resolveToProject(p.To)
 		if err != nil {
-			logf("post", "resolve to=%q failed: %v", p.To, err)
+			logErrf("post", "resolve to=%q: %v", p.To, err)
 			return errResp(req.ID, err.Error())
 		}
 		if resolved != p.To {
@@ -434,11 +449,11 @@ func (d *Daemon) handlePost(ctx context.Context, req protocol.Request) protocol.
 	}
 	msg, err := d.Comms.PostMessage(chID, p.ThreadID, p.From, p.To, p.Content, p.Status)
 	if err != nil {
-		logf("post", "PostMessage channel=%d thread=%d from=%s to=%s failed: %v", chID, p.ThreadID, p.From, p.To, err)
+		logErrf("post", "thread=%d channel=%d from=%s to=%s save failed: %v", p.ThreadID, chID, p.From, p.To, err)
 		return errResp(req.ID, err.Error())
 	}
-	logf("post", "msg id=%d channel=%d thread=%d from=%s to=%s status=%q content=%q",
-		msg.ID, chID, p.ThreadID, p.From, p.To, p.Status, trunc(p.Content, 500))
+	logf("post", "thread=%d msg=%d channel=%d from=%s to=%s status=%q content=%q",
+		threadKey(p.ThreadID, msg.ID), msg.ID, chID, p.From, p.To, p.Status, trunc(p.Content, 500))
 	// Wake to-addressed messages unless the thread's agent is still running.
 	// A prior done reply IS re-wakeable — follow-up resumes the prior session.
 	//
@@ -449,12 +464,12 @@ func (d *Daemon) handlePost(ctx context.Context, req protocol.Request) protocol.
 	// explicitly from HMF_FROM, so every completed task spawned a pointless
 	// parent-side agent.
 	if p.To == "" || p.Status == "done" {
-		logf("wake", "msg %d: no wake (to=%q status=%q)", msg.ID, p.To, p.Status)
+		logf("wake", "thread=%d msg=%d no wake (to=%q status=%q)", threadKey(p.ThreadID, msg.ID), msg.ID, p.To, p.Status)
 	} else if d.threadSessionActive(p.ThreadID, p.To) {
-		logf("wake", "msg %d: suppressed — %s already has an active session on thread %d", msg.ID, p.To, p.ThreadID)
+		logf("wake", "thread=%d msg=%d suppressed — %s already has an active session", p.ThreadID, msg.ID, p.To)
 	} else {
 		if err := d.wakeAgent(ctx, p, msg); err != nil {
-			logf("wake", "msg %d to=%s FAILED: %v", msg.ID, p.To, err)
+			logErrf("wake", "thread=%d msg=%d to=%s wake failed: %v", threadKey(p.ThreadID, msg.ID), msg.ID, p.To, err)
 			return errResp(req.ID, "wake: "+err.Error())
 		}
 	}
@@ -490,7 +505,20 @@ func (d *Daemon) checkOutboundAllowed(fromProject string) error {
 // wakeAgent spawns the addressed project agent so it can read the thread and
 // reply. Serverless: boot per mention, handle, reply in-thread, exit.
 func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error {
-	logf("wake", "msg %d: start to=%s from=%s thread=%d", msg.ID, msg.ToProject, msg.FromProject, msg.ThreadID)
+	// parentID: explicit (cross-project delegation), else msg.ID (root) or
+	// msg.ThreadID (reply wake). Computed first so every log line carries it.
+	parentID := msg.ID
+	if p.ParentID != 0 {
+		parentID = p.ParentID
+	} else if msg.ThreadID != 0 {
+		parentID = msg.ThreadID
+	}
+	// Every line of one wake shares these keys: `grep 'thread=68' hmf.log`
+	// replays the whole task.
+	wlog := func(format string, args ...any) {
+		logf("wake", "thread=%d msg=%d to=%s "+format, append([]any{parentID, msg.ID, msg.ToProject}, args...)...)
+	}
+	wlog("start from=%s", msg.FromProject)
 	parts := strings.SplitN(msg.ToProject, "/", 2)
 	if len(parts) != 2 {
 		return fmt.Errorf("to must be workspace/project, got %q", msg.ToProject)
@@ -499,7 +527,7 @@ func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error
 	if err != nil {
 		// Unregistered recipient — post but don't wake (mailbox semantics).
 		if errors.Is(err, sql.ErrNoRows) {
-			logf("wake", "msg %d: %s not registered — mailbox only, no spawn", msg.ID, msg.ToProject)
+			wlog("not registered — mailbox only, no spawn")
 			return nil
 		}
 		return fmt.Errorf("project %s not found: %w", msg.ToProject, err)
@@ -519,16 +547,8 @@ func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error
 		return fmt.Errorf("project %s does not allow inbound engagement", msg.ToProject)
 	}
 	binary, model, agentName := d.resolveAgent(mouse)
-	logf("wake", "msg %d: project=%s dir=%s agent=%s model=%s name=%s", msg.ID, msg.ToProject, proj.Path, binary, model, agentName)
+	wlog("dir=%s agent=%s model=%s agent_name=%s", proj.Path, binary, model, agentName)
 	runbook, _ := os.ReadFile(filepath.Join(proj.Path, "MOUSE.md"))
-	// parentID: explicit (cross-project delegation), else msg.ID (root) or
-	// msg.ThreadID (reply wake).
-	parentID := msg.ID
-	if p.ParentID != 0 {
-		parentID = p.ParentID
-	} else if msg.ThreadID != 0 {
-		parentID = msg.ThreadID
-	}
 	// Prefix: lookup an existing one for this root (inherit), else generate.
 	var prefix string
 	var existingName sql.NullString
@@ -546,7 +566,7 @@ func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error
 	if err != nil {
 		return fmt.Errorf("session: %w", err)
 	}
-	logf("wake", "msg %d: session %d created name=%s root_thread=%d", msg.ID, tmpSess.ID, name, parentID)
+	wlog("session=%d created name=%s", tmpSess.ID, name)
 	// Resume scoped to binary + project: another project's session id doesn't exist in this dir.
 	var priorOcID sql.NullString
 	err = d.Store.db.QueryRow(
@@ -588,7 +608,7 @@ func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error
 		SessionName:    name,
 		AgentSessionID: priorOcID.String,
 		OnExit: func(code int) {
-			logf("exit", "session %d (%s, %s): process exited code=%d", tmpSess.ID, name, msg.ToProject, code)
+			logf("exit", "thread=%d session=%d to=%s name=%s process exited code=%d", parentID, tmpSess.ID, msg.ToProject, name, code)
 			var doneCount int
 			d.Store.db.QueryRow(
 				`SELECT count(*) FROM messages WHERE thread_id=? AND status='done'`, parentID).Scan(&doneCount)
@@ -607,11 +627,10 @@ func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error
 			// Conditional insert, not the doneCount read above: the agent may
 			// post its real reply between that read and this write.
 			if doneCount == 0 {
-				logf("exit", "session %d: no done reply on thread %d — posting safety-net BLOCKED", tmpSess.ID, parentID)
+				logf("exit", "thread=%d session=%d no done reply — posting safety-net BLOCKED", parentID, tmpSess.ID)
 				content := fmt.Sprintf("BLOCKED: agent exited (code=%d) without posting a done reply", code)
 				if _, err := d.Comms.PostBlockedIfNoDone(msg.ChannelID, parentID, msg.ToProject, msg.FromProject, content); err != nil {
-					log.Printf("synthetic done reply for thread %d: %v", parentID, err)
-					logf("exit", "session %d: safety-net post failed: %v", tmpSess.ID, err)
+					logErrf("exit", "thread=%d session=%d safety-net post failed: %v", parentID, tmpSess.ID, err)
 				}
 			}
 		},
@@ -619,24 +638,24 @@ func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error
 	pid, err := d.Launcher.Spawn(ctx, spawnCfg)
 	if err != nil {
 		d.Sessions.SetStatus(tmpSess.ID, "failed")
-		logf("spawn", "session %d (%s): FAILED: %v", tmpSess.ID, name, err)
+		logErrf("spawn", "thread=%d session=%d name=%s spawn failed: %v", parentID, tmpSess.ID, name, err)
 		return fmt.Errorf("spawn: %w", err)
 	}
 	d.Sessions.SetPID(tmpSess.ID, pid)
 	d.Sessions.SetStatus(tmpSess.ID, "active")
-	logf("spawn", "session %d (%s): pid=%d resume=%q", tmpSess.ID, name, pid, spawnCfg.AgentSessionID)
+	logf("spawn", "thread=%d session=%d name=%s pid=%d resume=%q", parentID, tmpSess.ID, name, pid, spawnCfg.AgentSessionID)
 	// Acknowledge the pickup from the daemon, not the agent. An LLM asked to
 	// "reply that you started" can't report the failure where it never ran, so
 	// the one signal that distinguishes "never spawned" from "working quietly"
 	// has to come from the side that knows the process exists.
 	ack := fmt.Sprintf("working on it — agent spawned as %s (pid %d)", spawnCfg.SessionName, pid)
 	if _, err := d.Comms.PostMessage(msg.ChannelID, parentID, msg.ToProject, msg.FromProject, ack, "ack"); err != nil {
-		log.Printf("ack reply for thread %d: %v", parentID, err)
+		logErrf("wake", "thread=%d ack post failed: %v", parentID, err)
 	}
 	if spawnCfg.AgentSessionID != "" {
 		// Resume: ocID already known, set directly — no capture needed.
 		if err := d.Sessions.SetAgentSessionID(tmpSess.ID, spawnCfg.AgentSessionID); err != nil {
-			log.Printf("resume SetAgentSessionID session %d: %v", tmpSess.ID, err)
+			logErrf("wake", "thread=%d session=%d resume SetAgentSessionID: %v", parentID, tmpSess.ID, err)
 		}
 		return nil
 	}
@@ -658,13 +677,13 @@ func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error
 			}
 		}
 		// Debug log to file — daemon stderr may be discarded by ensureDaemon.
-		logCapture(tmpSess.ID, "name=%q binary=%q dir=%q ocID=%q err=%v",
-			spawnCfg.SessionName, spawnCfg.Binary, spawnCfg.Dir, ocID, err)
+		logf("capture", "thread=%d session=%d name=%s agent_session=%q err=%v",
+			parentID, tmpSess.ID, spawnCfg.SessionName, ocID, err)
 		if err != nil || ocID == "" {
 			return
 		}
 		if err := d.Sessions.SetAgentSessionID(tmpSess.ID, ocID); err != nil {
-			logCapture(tmpSess.ID, "SetAgentSessionID error: %v", err)
+			logErrf("capture", "thread=%d session=%d SetAgentSessionID: %v", parentID, tmpSess.ID, err)
 		}
 	}()
 	return nil

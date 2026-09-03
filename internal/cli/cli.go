@@ -50,8 +50,13 @@ func upCmd() *cobra.Command {
 			if err := os.MkdirAll(protocol.StateDir(), 0755); err != nil {
 				return fmt.Errorf("create state dir: %w", err)
 			}
-			// Background starts discard stderr — mirror stdlib log into the file.
-			log.SetOutput(io.MultiWriter(os.Stderr, daemon.LogWriter()))
+			// Backgrounded: stderr is already redirected into the same file, so
+			// writing there too would double every line.
+			out := io.Writer(daemon.LogWriter())
+			if fi, err := os.Stderr.Stat(); err == nil && fi.Mode()&os.ModeCharDevice != 0 {
+				out = io.MultiWriter(os.Stderr, out)
+			}
+			log.SetOutput(out)
 			log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 			fmt.Fprintln(os.Stderr, "log:", daemon.LogPath())
 			d, err := daemon.NewDaemon(protocol.SocketPath(), protocol.DBPath())

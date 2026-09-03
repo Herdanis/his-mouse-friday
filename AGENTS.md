@@ -69,13 +69,26 @@ Two binaries over one daemon:
 State lives under `~/.hmf/` (`daemon.sock`, `hmf.db`, global `mouse.yaml`,
 `hmf.log`).
 
-`internal/daemon/logging.go` owns the event log: verbose, every RPC and every
-wake/spawn/exit step, plus spawned-agent stdout/stderr. 40MB cap, rotates to
-`hmf.log.1` (one backup). `logf(event, format, ...)` is the entry point;
-`LogWriter()` is the io.Writer `hmf up` hands to stdlib `log` and the launcher
-hands to the child process. Never let a logging failure fail a caller — writes
-swallow their errors on purpose. Debugging an agent that never replied starts
-with `tail -f ~/.hmf/hmf.log`, not with reading the DB.
+`internal/daemon/logging.go` owns the event log — **one file, `~/.hmf/hmf.log`**,
+for daemon events, agent stdout/stderr and backgrounded daemon stderr. Don't add
+a second log file; the old `capture.log` and installer `daemon.log` were merged
+into this one because three files meant no single place to look.
+
+- `logf(event, format, ...)` / `logErrf(...)` — the latter stamps `ERROR`, so
+  `grep ERROR` is the complete failure list. Use it for every failure path.
+- Correlation: every post/wake/spawn/exit line carries `thread=<root id>`
+  (`threadKey(threadID, msgID)` when a message may be a root), plus
+  `session=` / `msg=` where known. `grep thread=N` must replay a whole task —
+  keep new lines to that shape.
+- Read-only methods listed in `quietMethods` log a summary, not bodies: the
+  monitor TUI polls them and full JSON pushed real events out of the file.
+- `LogWriter()` is the io.Writer `hmf up` hands to stdlib `log` and the launcher
+  hands to the child process. Writes swallow their errors on purpose — logging
+  must never fail a caller.
+- 40MB cap, rotates to `hmf.log.1` (one backup).
+
+Debugging an agent that never replied starts with `tail -f ~/.hmf/hmf.log`, not
+with reading the DB.
 Tests override via `HMF_STATE_DIR` (temp dir) — required because macOS socket
 path length is capped; test helpers `spinDaemon`/`spinCLIDaemon` set this up.
 
@@ -197,6 +210,11 @@ agent session (`HMF_CHANNEL_ID` must be set).
   `exited`/`failed`/`no_agent` (safety-net BLOCKED message should already be
   posted in that case). Real tasks (migration + codegen + build) run several
   minutes — one short poll timing out is not evidence the agent is stuck.
+- **`status='active'` in the DB is a claim, not a fact.** The exit watcher is a
+  goroutine; a daemon restart loses it and the row stays `active` forever,
+  blocking deletes, prunes and wakes. `Store.ReapDeadSessions` (pid-liveness
+  check) runs before delete/prune; rows with pid 0/NULL are left alone because
+  `Sessions.Create` precedes `SetPID`.
 - **Thread-scoped session queries need a project scope too.** Several projects
   legitimately work one thread at once. Both the resume lookup and
   `threadSessionActive` filter on `root_thread_id` AND the project — dropping

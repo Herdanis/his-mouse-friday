@@ -168,14 +168,14 @@ if [ "$NO_DAEMON" -eq 1 ]; then
 elif [ -S "$SOCKET_PATH" ]; then
   ok "daemon already running ($SOCKET_PATH)"
 else
-  info "starting daemon in background (log: $HMF_STATE/daemon.log)"
+  info "starting daemon in background (log: $HMF_STATE/hmf.log)"
   mkdir -p "$HMF_STATE"
-  nohup "$gobin/hmf" up > "$HMF_STATE/daemon.log" 2>&1 &
+  nohup "$gobin/hmf" up >> "$HMF_STATE/hmf.log" 2>&1 &
   sleep 2
   if [ -S "$SOCKET_PATH" ]; then
     ok "daemon running"
   else
-    warn "daemon may still be starting — verify with 'hmf status', log: $HMF_STATE/daemon.log"
+    warn "daemon may still be starting — verify with 'hmf status', log: $HMF_STATE/hmf.log"
   fi
 fi
 
