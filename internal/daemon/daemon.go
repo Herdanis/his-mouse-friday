@@ -363,6 +363,9 @@ func (d *Daemon) resolveToProject(to string) (string, error) {
 		}
 		cands = append(cands, ws+"/"+name)
 	}
+	if err := rows.Err(); err != nil {
+		return "", fmt.Errorf("resolve %q: %w", to, err)
+	}
 	switch len(cands) {
 	case 0:
 		return "", fmt.Errorf("no project named %q; call list_project_agents", to)
@@ -687,11 +690,6 @@ func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error
 		}
 	}()
 	return nil
-}
-
-// logCapture logs a session-scoped debug line into the daemon event log.
-func logCapture(sessionID int64, format string, args ...any) {
-	logf("capture", "session %d: "+format, append([]any{sessionID}, args...)...)
 }
 
 // taskStatusWait is how long a task_status call blocks before reporting back.
@@ -1040,6 +1038,9 @@ func (d *Daemon) handleSessionList(req protocol.Request) protocol.Response {
 		}
 		out = append(out, it)
 	}
+	if err := rows.Err(); err != nil {
+		return errResp(req.ID, err.Error())
+	}
 	if out == nil {
 		out = []SessionListItem{}
 	}
@@ -1218,6 +1219,9 @@ func (d *Daemon) handleTodoThreads(req protocol.Request) protocol.Response {
 			r.Preview = string(runes[:57]) + "..."
 		}
 		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return errResp(req.ID, err.Error())
 	}
 	if out == nil {
 		out = []row{}
