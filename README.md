@@ -139,8 +139,19 @@ After `make install`, in any opencode session:
    permission is a plain `allow`/`ask`/`deny` string with no path patterns, so
    there is nothing to mirror it into. The plugin matches fs patterns
    gitignore-style (no-slash patterns match at any depth, `*` stops at `/`,
-   a trailing `/` covers a directory's contents) against both edit targets and
-   paths named in a bash command.
+   a trailing `/` covers a directory's contents) against read and edit targets
+   and paths named in a bash command.
+
+   **Cross-project access is read-only.** A parent may look inside a registered
+   project it doesn't own — `cat`, `ls`, `rg`, `git log`/`status`/`diff`, and
+   the native `read`/`grep`/`glob` tools all work — so it can verify a child's
+   work itself. Anything that changes or runs that project (`edit`, writes,
+   redirects, `sed -i`, `rm`, `git commit`, `go test`, `npm run`, ...) is still
+   blocked; it belongs to that project's agent, reached with `post_message`.
+   The command allowlist is conservative: anything it doesn't recognise counts
+   as a write. The target's own `permissions.fs` deny/ask list still applies to
+   those reads, so a child's secrets are not readable just because the caller
+   is a parent.
 
    In a directory with no `mouse.yaml`, the plugin falls back to
    `~/.hmf/mouse.yaml` (same rule as the daemon's `config.ResolveMouse`), so
@@ -507,7 +518,9 @@ sqlite3 ~/.hmf/hmf.db "UPDATE sessions SET status='failed', exit_code=-1 WHERE i
   registry (edit) plus path args extracted from the command (bash: `terraform
   -chdir`, `docker compose -f`, `bash script.sh`, ...). Blocks only when the
   target resolves inside a *registered* project other than the caller's own;
-  unregistered paths are untouched.
+  unregistered paths are untouched. Read-only access across projects is
+  allowed on purpose (see *Config*) — the block is on changing and running,
+  not on looking.
 
 - [ ] **Fix auto-spawn reliability.** Engaged agent sometimes doesn't post back
   (`in_progress`/`done`) when auto-spawned by `engage_project_agent` vs

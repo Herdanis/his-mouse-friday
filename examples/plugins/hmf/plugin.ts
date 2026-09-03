@@ -2,10 +2,11 @@
 //
 // Enforces hmf protection rules by intercepting tool calls:
 //   1. Edit tool: blocks edits to registered project dirs when cwd
-//      is not inside that project. Agent must use engage_project_agent.
-//   2. Bash tool: checks commands against mouse.yaml deny/ask lists.
-//   3. Both tools: checks target paths against mouse.yaml's fs deny/ask
-//      lists (gitignore-style globs), so secrets stay unreadable.
+//      is not inside that project. Agent must delegate with post_message.
+//   2. Bash tool: checks commands against mouse.yaml deny/ask lists, and
+//      blocks anything but reads from touching another registered project.
+//   3. All tools: checks target paths against the fs deny/ask lists of the
+//      mouse.yaml that owns that path, so secrets stay unreadable.
 //
 // Zero context cost — runs as code, AI never sees instructions.
 
@@ -127,6 +128,13 @@ function loadProjects(): ProjectInfo[] {
 // ============================================
 // Mouse.yaml loader (minimal parse — no YAML dep)
 // ============================================
+
+// scopeForPath resolves the rules that govern a file: the mouse.yaml of the
+// project the file lives in. A parent reading a child's file is judged by the
+// child's yaml, not its own.
+export function scopeForPath(abs: string): MouseScope | null {
+  return loadMouseYaml(dirname(abs));
+}
 
 function loadMouseYaml(dir: string): MouseScope | null {
   // Walk up: a session opened in A/config must still see A/mouse.yaml.
@@ -278,6 +286,57 @@ export function extractPathCandidates(cmd: string, cwd: string, mustExist = true
 }
 
 // ============================================
+// Read-only command detection
+// ============================================
+
+// A parent may LOOK inside a registered project to verify a child's work; it
+// may never change it. Everything here only reads.
+const READ_ONLY_BINARIES = new Set([
+  "cat", "head", "tail", "less", "more", "ls", "tree", "find", "fd", "stat",
+  "file", "wc", "du", "diff", "cmp", "sort", "uniq", "cut", "column",
+  "grep", "egrep", "fgrep", "rg", "ag", "ack", "jq", "yq", "awk", "sed",
+  "basename", "dirname", "realpath", "readlink", "echo", "pwd", "date",
+  "git", "go", "npm", "bun",
+]);
+
+// Subcommand allowlists for tools whose other subcommands write or execute.
+const READ_ONLY_SUBCOMMANDS: Record<string, Set<string>> = {
+  git: new Set(["log", "status", "diff", "show", "blame", "ls-files", "ls-tree",
+    "rev-parse", "describe", "shortlog", "cat-file", "grep", "remote"]),
+  go: new Set(["list", "version", "env", "doc"]),
+  npm: new Set(["ls", "list", "view", "outdated"]),
+  bun: new Set(["pm"]),
+};
+
+// True when every segment of the command only reads. Conservative by design:
+// anything unrecognised is a write.
+export function isReadOnlyCommand(cmd: string): boolean {
+  // Output redirection writes wherever it points; `-i` edits in place.
+  if (/(^|[^0-9<>])>{1,2}[^>]/.test(cmd) || />\s*$/.test(cmd)) return false;
+  if (/(^|\s)-i(\s|$)|(^|\s)--in-place(\s|$)/.test(cmd)) return false;
+  if (/[`$]\(/.test(cmd)) return false; // command substitution hides the real command
+  const segments = cmd.split(/\|\||&&|[|;]/);
+  for (const seg of segments) {
+    const words = seg.trim().split(/\s+/).filter(Boolean);
+    if (words.length === 0) continue;
+    let bin = words[0].split("/").pop() ?? "";
+    if (bin === "sudo" || bin === "env" || bin === "command") return false;
+    if (!READ_ONLY_BINARIES.has(bin)) return false;
+    const subs = READ_ONLY_SUBCOMMANDS[bin];
+    if (subs) {
+      // First non-flag word after the binary is the subcommand. `git -C <dir>`
+      // takes a value, so skip that pair too.
+      let i = 1;
+      while (i < words.length && words[i].startsWith("-")) {
+        i += words[i] === "-C" || words[i] === "--git-dir" ? 2 : 1;
+      }
+      if (i >= words.length || !subs.has(words[i])) return false;
+    }
+  }
+  return true;
+}
+
+// ============================================
 // Plugin
 // ============================================
 
@@ -285,6 +344,23 @@ export const HmfProtection: Plugin = async ({ directory }) => {
   const projects = loadProjects();   // runs once, session-lifetime
   return {
     "tool.execute.before": async (input, output) => {
+      // ============================================
+      // Read protection
+      // ============================================
+      // Reading another registered project is allowed (a parent verifying a
+      // child's work), but that project's own fs deny/ask list still applies.
+      // ponytail: `read` only — a `grep` over a directory can still surface a
+      // denied file's lines; tighten if that matters.
+      if (input.tool === "read") {
+        const filePath = (output.args as { filePath?: string; path?: string })?.filePath
+          ?? (output.args as { filePath?: string; path?: string })?.path
+          ?? "";
+        if (!filePath) return;
+        const abs = resolve(filePath);
+        enforceFS(abs, scopeForPath(abs), "read of");
+        return;
+      }
+
       // ============================================
       // Edit protection
       // ============================================
@@ -326,17 +402,27 @@ export const HmfProtection: Plugin = async ({ directory }) => {
 
         const cwd = process.cwd();
 
-        // Same rule as edit: block a command touching another registered project.
+        // Same rule as edit, with one exception: reading another registered
+        // project is allowed, so a parent can verify a child's work. Anything
+        // that could change or run it is still the owning agent's job.
         const myProject = findProjectFor(cwd, projects);
+        const readOnly = isReadOnlyCommand(cmd);
         for (const abs of extractPathCandidates(cmd, cwd)) {
           const targetProject = findProjectFor(abs, projects);
           if (!targetProject) continue;
           if (myProject && myProject.path === targetProject.path) continue;
+          if (readOnly) {
+            // The target's own fs rules still hold — its secrets are not
+            // readable just because the caller is a parent.
+            enforceFS(abs, scopeForPath(abs), "read of");
+            continue;
+          }
           throw new Error(
             `hmf: blocked command touching ${targetProject.workspace}/${targetProject.name} — ` +
             `this is a registered project` +
             (myProject ? ` (you are ${myProject.workspace}/${myProject.name})` : "") +
-            `. Use engage_project_agent to delegate. Command: "${cmd}", path: ${abs}.`,
+            `. Reading it is allowed; changing or running it is not — delegate with ` +
+            `post_message. Command: "${cmd}", path: ${abs}.`,
           );
         }
 

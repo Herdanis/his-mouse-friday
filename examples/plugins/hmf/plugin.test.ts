@@ -4,7 +4,7 @@ import { test, expect } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readMouseYaml, pathMatchesPattern, commandMatchesPattern } from "./plugin";
+import { readMouseYaml, pathMatchesPattern, commandMatchesPattern, isReadOnlyCommand, scopeForPath } from "./plugin";
 
 function fixture(yaml: string): string {
   const dir = mkdtempSync(join(tmpdir(), "hmf-plugin-"));
@@ -98,4 +98,56 @@ test("cross-project extraction still requires the path to exist", () => {
   // mustExist=true is the default and must stay strict, or an unrelated bare
   // word would read as a path into another registered project.
   expect(extractPathCandidates("touch new.key", "/work")).toEqual([]);
+});
+
+// A parent may look inside a child project to verify its work, never change it.
+test("read-only commands are recognised", () => {
+  for (const cmd of [
+    "cat internal/app.go",
+    "rg 'func main' ../other/src",
+    "git -C ../other log --oneline -5",
+    "git status",
+    "ls -la ../other/internal",
+    "head -50 ../other/README.md | grep install",
+    "go list ./...",
+  ]) {
+    expect(isReadOnlyCommand(cmd)).toBe(true);
+  }
+});
+
+test("anything that writes or runs code is not read-only", () => {
+  for (const cmd of [
+    "echo x > ../other/file.go",
+    "sed -i 's/a/b/' ../other/main.go",
+    "rm ../other/main.go",
+    "go test ./...",
+    "npm run build",
+    "git commit -am wip",
+    "git checkout -b feature",
+    "cat f.go && rm g.go",
+    "cat $(rm -rf x)",
+    "sudo cat /etc/passwd",
+  ]) {
+    expect(isReadOnlyCommand(cmd)).toBe(false);
+  }
+});
+
+// A parent reading a child's file is judged by the CHILD's mouse.yaml.
+test("read rules come from the project the file lives in", () => {
+  const child = fixture(`permissions:
+  fs:
+    deny:
+      - "secret.txt"
+`);
+  const scope = scopeForPath(join(child, "src", "app.go"))!;
+  expect(scope.root).toBe(child);
+  expect(scope.perms.fs.deny).toEqual(["secret.txt"]);
+  expect(pathMatchesPattern(join(child, "secret.txt"), scope.root, "secret.txt")).toBe(true);
+  // The parent's own yaml has no say over a path inside the child.
+  const parent = fixture(`permissions:
+  fs:
+    deny:
+      - "*.go"
+`);
+  expect(pathMatchesPattern(join(child, "src", "app.go"), parent, "*.go")).toBe(false);
 });

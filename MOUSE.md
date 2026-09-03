@@ -23,7 +23,8 @@ of editing foreign code directly.
 - No commands require approval.
 - No files denied (agent may read/write any file).
 - A2A policy: inbound=true, outbound=true.
-- Rule: do NOT modify other services directly — engage their agent via hmf.
+- Rule: do NOT modify or run other services directly — engage their agent via
+  hmf. Reading their files is allowed.
 - Rule: if unsure, ask the user before making changes outside src/.
 
 ## Escalation

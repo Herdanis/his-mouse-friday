@@ -24,9 +24,10 @@ agent runtime) and `MOUSE.md` (runbook); `AGENTS.md` points opencode at
   spawner granted plus the rules its target directory declares.
 - **Config lives where it applies.** Global concerns at root; directory rules
   in their own directories. Do not centralize directory rules at the root.
-- **Agents own their repo.** Do NOT edit another registered project's files
-  directly — engage that project's agent via `post_message` with a `to`
-  field. The hmf MCP `list_project_agents` tool is the registry of who owns
+- **Agents own their repo.** Do NOT edit, write to, or run another registered
+  project's files directly — engage that project's agent via `post_message`
+  with a `to` field. Reading it is allowed, so you can verify work you asked
+  for. The hmf MCP `list_project_agents` tool is the registry of who owns
   what.
 - **Prefer native OpenCode mechanisms** (`opencode.json`, per-directory
   instruction files, `.opencode/`) over custom config formats unless the
@@ -149,6 +150,7 @@ agent session (`HMF_CHANNEL_ID` must be set).
 - Before editing a path, check whether it falls inside a *different* hmf
   registered project (`list_project_agents`). If yes and your cwd is outside
   that project, do NOT edit directly — engage that project's agent instead.
+  Reading it is fine.
 - Spawning a sub-agent for directory-scoped work? Use `opencode run` and pass
   the hmf env vars the launcher sets (`HMF_CHANNEL_ID`, `HMF_TASK_MSG_ID`,
   `HMF_PROJECT`, `HMF_FROM`) so the child can call `hmf done` and post
@@ -158,11 +160,19 @@ agent session (`HMF_CHANNEL_ID` must be set).
   the code. Pre-researching file paths and line numbers spends your context on
   work the child is about to redo anyway, and the numbers are stale the moment
   the child edits anything.
-- **Trust the done reply.** The spawned agent reports which files it changed
-  and whether the project's verify commands passed. Don't re-read its files to
-  confirm — that re-acquires in your context what the child already holds. If
-  something needs checking, `post_message` a follow-up on the same thread; the
-  child still has the context and answers cheaply.
+- **Read across projects is allowed; writing is not.** A parent may open any
+  registered project read-only — `read`/`grep`/`glob`, `cat`, `ls`, `rg`,
+  `git log`/`status`/`diff` — to check that a child's work matches what was
+  asked. Editing, writing, or running that project (tests, builds, git
+  commands that change state) stays with its own agent: delegate with
+  `post_message`. The plugin enforces this; anything outside its read-only
+  allowlist is treated as a write and blocked.
+- **Start with the done reply, verify only when it matters.** The spawned agent
+  reports which files it changed and whether the project's verify commands
+  passed. Re-reading everything it touched just re-acquires context the child
+  already holds — read the specific files whose correctness you actually need
+  to confirm, or `post_message` a follow-up on the same thread, where the child
+  still has the context and answers cheaply.
 - **Polling a spawned agent.** Prefer `task_status(message_id, wait_seconds=120)`
   over a manual sleep loop — the daemon blocks server-side (cheap local
   polling, zero LLM tokens) and returns the moment `has_done` flips or the
