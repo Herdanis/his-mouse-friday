@@ -168,6 +168,45 @@ type convEvent struct {
 
 func (e convEvent) Who() string { return shortIdentity(e.From) }
 
+// groupConversation puts each reply under the dispatch addressed to the project
+// it came from. Two agents working one thread in parallel interleave in time,
+// and a purely chronological list indents one agent's reply under the other's
+// task.
+func groupConversation(events []convEvent) []convEvent {
+	type branch struct {
+		head    *convEvent
+		replies []convEvent
+	}
+	var branches []*branch
+	byProject := map[string]*branch{}
+	var loose *branch
+	for _, e := range events {
+		if e.Dispatch {
+			b := &branch{head: &e}
+			branches = append(branches, b)
+			byProject[e.To] = b
+			continue
+		}
+		b := byProject[e.From]
+		if b == nil { // reply with no dispatch of its own (human, or pre-dispatch)
+			if loose == nil {
+				loose = &branch{}
+				branches = append(branches, loose)
+			}
+			b = loose
+		}
+		b.replies = append(b.replies, e)
+	}
+	out := make([]convEvent, 0, len(events))
+	for _, b := range branches {
+		if b.head != nil {
+			out = append(out, *b.head)
+		}
+		out = append(out, b.replies...)
+	}
+	return out
+}
+
 // Current is the work item the child is on — the first one not done.
 func (r monitorRow) Current() string {
 	for _, t := range r.Todos {
@@ -1040,7 +1079,7 @@ func (m monitorModel) detailBody() string {
 	// Dispatches are indented left, replies right, so the direction reads at
 	// a glance without hunting through the text.
 	b.WriteString(styLabel.Render("conversation") + "\n")
-	for _, e := range r.Events {
+	for _, e := range groupConversation(r.Events) {
 		when := ""
 		if t, ok := parseDaemonTime(e.TS); ok {
 			when = styDim.Render(t.Local().Format("15:04") + " ")
