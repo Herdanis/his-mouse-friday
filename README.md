@@ -306,9 +306,10 @@ time shown is the sum of the runs, excluding the gaps between them. A failed
 run among them is called out rather than hidden by the collapse.
 
 Those are opencode session ids, so any agent listed can be reopened
-directly — `cd` into that project and pass the id to `opencode -s`. opencode
-resumes per-directory, which is why the hint carries the path as well as the
-id. A spawn whose session id was never captured is never merged with another
+directly — `hmf session attach <id>` does it for you (name or session id, a
+unique prefix of either is enough), or `cd` into that project and pass the id
+to `opencode -s` by hand. opencode resumes per-directory, which is why the hint
+carries the path as well as the id. A spawn whose session id was never captured is never merged with another
 on a guess; it stays its own entry, listed by its hmf name.
 
 Work items can be deleted from here — press `d` to pick one, `d` again to
@@ -525,18 +526,21 @@ sqlite3 ~/.hmf/hmf.db "UPDATE sessions SET status='failed', exit_code=-1 WHERE i
   allowed on purpose (see *Config*) — the block is on changing and running,
   not on looking.
 
-- [ ] **Confirm auto-spawn reliability under real load.** Engaged agents used
-  to sometimes never post back (`in_progress`/`done`) when auto-spawned rather
-  than run manually. The suspected causes are all addressed now: the spawn
-  entrypoint (`internal/daemon/daemon.go`) names every hmf tool the child needs
-  (`read_thread`, the `todo_*` tools, `report_progress`, the `done` reply) and
-  the launcher appends a REPLY RULE; the daemon posts a pickup `ack` the moment
-  the process spawns; `reconcileOrphanedSessions` + `PostBlockedIfNoDone` turn
-  a silent death into a visible `BLOCKED`; a watchdog reaps hung resumed
-  sessions; and the resume lookup is scoped to `project_id`, so a second
-  project on the same thread no longer resumes the first project's opencode
-  session and hangs. What's left is observation over enough real runs to call
-  it fixed. Use `~/.hmf/hmf.log` to tell a prompt problem from a spawn one.
+- [x] **Auto-spawn reliability.** Engaged agents used to sometimes never post
+  back (`in_progress`/`done`) when auto-spawned rather than run manually. The
+  causes are addressed: the spawn entrypoint (`internal/daemon/daemon.go`)
+  names every hmf tool the child needs (`read_thread`, the `todo_*` tools,
+  `report_progress`, the `done` reply) and the launcher appends a REPLY RULE;
+  the daemon posts a pickup `ack` the moment the process spawns;
+  `reconcileOrphanedSessions` + `PostBlockedIfNoDone` turn a silent death into
+  a visible `BLOCKED`; a watchdog reaps hung resumed sessions; and the resume
+  lookup is scoped to `project_id`, so a second project on the same thread no
+  longer resumes the first project's opencode session and hangs. Each of those
+  has a regression test in `internal/daemon`. Field check: four real dispatches
+  across two projects (fresh spawn, then a follow-up on the same thread) all
+  acked, replied `done` and exited 0, and the follow-ups resumed each project's
+  own captured session id. Silence that survives all of this is a prompt
+  problem, not a spawn one — `~/.hmf/hmf.log` tells them apart.
 
 - [x] **Thread `to` field through `post_message` auto-fill.** Fixed in
   `internal/daemon/daemon.go:handlePost` — a reply that omits `to` now
@@ -544,14 +548,19 @@ sqlite3 ~/.hmf/hmf.db "UPDATE sessions SET status='failed', exit_code=-1 WHERE i
   skipped for `status=done` to avoid waking the originator back on a
   worker's completion notice.
 
-- [ ] **`hmf session attach <id>`.** The underlying resume already works: the
-  daemon captures each spawn's `opencode_session_id` and reuses it (scoped to
-  thread + binary + project) when the same project is woken again. What's
-  missing is the shortcut — today reopening a session by hand means
-  `cd <project> && opencode -s <id>`, which `hmf monitor` prints for you.
-  `hmf session list` shows the ids; there is no `attach` subcommand yet.
+- [x] **Session resume.** `hmf session attach <id>` reopens any spawned agent's
+  session interactively. `<id>` is the hmf session name or the opencode session
+  id, and a unique prefix of either works; an ambiguous one lists the
+  candidates. It runs `opencode -s <id>` in that session's project directory
+  (opencode resumes per-directory, so the path matters). `--print` emits the
+  `cd ... && opencode -s ...` line instead of running it. A session whose
+  opencode id was never captured can't be attached and says so.
 
 - [ ] **Real multi-agent scenario.** 3+ agents coordinating (payment →
-  user-service → frontend) to prove the full team model. Nothing in the repo
-  exercises this yet — the monitor renders a hand-off tree, but no test or
-  example drives one.
+  user-service → frontend) to prove the full team model. Covered in a test now
+  — `TestChain_ThreeProjectDelegation` (`internal/daemon/chain_test.go`) drives
+  a human → A → B → C chain on one thread and asserts the shared
+  `root_thread_id`, one ack per hop, the `session_list` chain shape the monitor
+  renders, and that B and C never resume A's opencode session id. Still open
+  because that runs against a stub runtime: the same chain has not been driven
+  end to end with three real agents.

@@ -415,7 +415,6 @@ func atoi64(s string) int64 {
 	return n
 }
 
-// sessionCmd groups session subcommands (currently just `list`).
 // progressCmd is the shell equivalent of the report_progress MCP tool, for
 // spawned agents that reach for bash before tools (same rationale as doneCmd).
 func progressCmd() *cobra.Command {
@@ -521,8 +520,81 @@ func sessionCmd() *cobra.Command {
 			return nil
 		},
 	}
-	c.AddCommand(list)
+	var printOnly bool
+	attach := &cobra.Command{
+		Use:   "attach <id>",
+		Short: "Reopen a session interactively (id = session name or opencode session id, prefix ok)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			result, err := protocol.Call("session_list", struct{}{})
+			if err != nil {
+				return err
+			}
+			var items []daemon.SessionListItem
+			if err := json.Unmarshal(result, &items); err != nil {
+				return fmt.Errorf("parse: %w", err)
+			}
+			it, err := resolveSessionForAttach(items, args[0])
+			if err != nil {
+				return err
+			}
+			if printOnly {
+				fmt.Printf("cd %s && opencode -s %s\n", it.Dir, it.AgentSessionID)
+				return nil
+			}
+			oc := exec.Command("opencode", "-s", it.AgentSessionID)
+			oc.Dir = it.Dir
+			oc.Stdin, oc.Stdout, oc.Stderr = os.Stdin, os.Stdout, os.Stderr
+			return oc.Run()
+		},
+	}
+	attach.Flags().BoolVar(&printOnly, "print", false, "print the attach command instead of running it")
+	c.AddCommand(list, attach)
 	return c
+}
+
+// resolveSessionForAttach picks the session <id> names: exact match on the hmf
+// name or the opencode session id first, then a unique prefix of either.
+func resolveSessionForAttach(items []daemon.SessionListItem, id string) (daemon.SessionListItem, error) {
+	var pre []daemon.SessionListItem
+	for _, it := range items {
+		if it.Name == id || (it.AgentSessionID != "" && it.AgentSessionID == id) {
+			return attachable(it)
+		}
+		if strings.HasPrefix(it.Name, id) || (it.AgentSessionID != "" && strings.HasPrefix(it.AgentSessionID, id)) {
+			pre = append(pre, it)
+		}
+	}
+	// A resumed task leaves one row per run, all sharing the opencode session
+	// id — same conversation, not an ambiguous match.
+	var cands []string
+	seen := map[string]bool{}
+	uniq := pre[:0]
+	for _, it := range pre {
+		key := it.Name + "\x00" + it.AgentSessionID + "\x00" + it.Dir
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		uniq = append(uniq, it)
+	}
+	switch len(uniq) {
+	case 1:
+		return attachable(uniq[0])
+	case 0:
+		return daemon.SessionListItem{}, fmt.Errorf("no session matches %q; run 'hmf session list'", id)
+	}
+	for _, it := range uniq {
+		cands = append(cands, fmt.Sprintf("%s (%s)", it.Name, it.AgentSessionID))
+	}
+	return daemon.SessionListItem{}, fmt.Errorf("%q is ambiguous, matches: %s", id, strings.Join(cands, ", "))
+}
+
+func attachable(it daemon.SessionListItem) (daemon.SessionListItem, error) {
+	if it.AgentSessionID == "" {
+		return daemon.SessionListItem{}, fmt.Errorf("session %q never captured an opencode session id, cannot attach; run 'hmf session list'", it.Name)
+	}
+	return it, nil
 }
 
 // taskCmd groups task subcommands for viewing shared todos bound to threads.

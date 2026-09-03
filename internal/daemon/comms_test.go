@@ -76,6 +76,37 @@ func TestComms_Threading(t *testing.T) {
 	}
 }
 
+// The safety net decides and inserts in one statement: a real done reply that
+// lands first must not get a contradictory BLOCKED appended right after it.
+func TestComms_PostBlockedIfNoDone(t *testing.T) {
+	store := newTestStore(t)
+	store.db.Exec(`INSERT INTO workspaces(id, name) VALUES(1, 'companyA')`)
+	c := &Comms{Store: store}
+	chID := insertTestChannel(t, store, 1, "test")
+	root, _ := c.PostMessage(chID, 0, "a/b", "a/c", "task", "message")
+
+	posted, err := c.PostBlockedIfNoDone(chID, root.ID, "a/c", "a/b", "BLOCKED: died")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !posted {
+		t.Fatal("thread had no done reply — BLOCKED should have been posted")
+	}
+
+	posted, err = c.PostBlockedIfNoDone(chID, root.ID, "a/c", "a/b", "BLOCKED: again")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if posted {
+		t.Error("thread already has a done reply — must not post a second BLOCKED")
+	}
+	var n int
+	store.db.QueryRow(`SELECT count(*) FROM messages WHERE thread_id=? AND status='done'`, root.ID).Scan(&n)
+	if n != 1 {
+		t.Errorf("done replies = %d, want 1", n)
+	}
+}
+
 // GetOrCreateGeneralChannel must be auto-created on init + idempotent on lookup.
 func TestComms_GeneralChannel(t *testing.T) {
 	store := newTestStore(t)

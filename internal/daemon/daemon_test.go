@@ -759,6 +759,62 @@ func TestWakeAgent_KillAfterDoneMarksExitedNotFailed(t *testing.T) {
 	}
 }
 
+// hasStatus reports whether any message in msgs carries status.
+func hasStatus(msgs []Message, status string) bool {
+	for _, m := range msgs {
+		if m.Status == status {
+			return true
+		}
+	}
+	return false
+}
+
+// Mirror of the above: an agent that dies nonzero having posted nothing must
+// land as failed AND get the synthetic BLOCKED reply — without it the parent
+// polls a dead session forever.
+func TestWakeAgent_ExitWithoutDoneMarksFailedAndPostsBlocked(t *testing.T) {
+	d := setupDaemon(t)
+	d.SafetyNetEnabled = true
+	d.Registry.AddWorkspace("companyA")
+	userDir := t.TempDir()
+	os.WriteFile(filepath.Join(userDir, "mouse.yaml"),
+		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n"), 0644)
+	d.Registry.AddProject("companyA", "user-service", userDir)
+
+	var captured SpawnConfig
+	d.Launcher = &Launcher{SpawnFn: func(cfg SpawnConfig) (int, error) {
+		captured = cfg
+		return 1, nil
+	}}
+
+	params, _ := json.Marshal(map[string]any{
+		"from": "companyA/payment", "to": "companyA/user-service", "content": "task",
+	})
+	resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: params, ID: 1})
+	if resp.Error != nil {
+		t.Fatalf("post: %s", resp.Error.Message)
+	}
+	var pr PostResult
+	json.Unmarshal(resp.Result, &pr)
+
+	captured.OnExit(1) // crashed, no done reply
+
+	var status string
+	var exitCode int
+	d.Store.db.QueryRow(`SELECT status, exit_code FROM sessions WHERE task_msg_id=?`, pr.MessageID).Scan(&status, &exitCode)
+	if status != "failed" || exitCode != 1 {
+		t.Errorf("status=%q exit_code=%d, want failed/1", status, exitCode)
+	}
+	var content string
+	if err := d.Store.db.QueryRow(
+		`SELECT content FROM messages WHERE thread_id=? AND status='done'`, pr.MessageID).Scan(&content); err != nil {
+		t.Fatalf("no safety-net reply on thread %d: %v", pr.MessageID, err)
+	}
+	if !strings.HasPrefix(content, "BLOCKED:") {
+		t.Errorf("safety-net reply = %q, want a BLOCKED notice", content)
+	}
+}
+
 // Dead PID with a done reply already posted → exited; dead PID with no
 // done reply → failed + synthetic BLOCKED reply.
 func TestReconcileOrphanedSessions(t *testing.T) {
@@ -1640,6 +1696,21 @@ func TestHandle_AckReplyOnSpawn(t *testing.T) {
 	}
 	if from != "companyA/user-service" {
 		t.Errorf("ack from = %q, want the project doing the work", from)
+	}
+
+	// The ack is aimed at whoever dispatched, not at the lobby: visible in
+	// read_thread, filtered out of read_channel.
+	rt, _ := json.Marshal(map[string]any{"message_id": pr.MessageID})
+	var thread []Message
+	json.Unmarshal(d.Handle(context.Background(), protocol.Request{Method: "read_thread", Params: rt, ID: 10}).Result, &thread)
+	if !hasStatus(thread, "ack") {
+		t.Error("read_thread must show the ack — it is the pickup signal")
+	}
+	rc, _ := json.Marshal(map[string]any{})
+	var channel []Message
+	json.Unmarshal(d.Handle(context.Background(), protocol.Request{Method: "read_channel", Params: rc, ID: 11}).Result, &channel)
+	if hasStatus(channel, "ack") {
+		t.Error("read_channel must not carry acks — one per spawn would flood the lobby")
 	}
 
 	// An ack is not a done reply — task_status must still report incomplete.
