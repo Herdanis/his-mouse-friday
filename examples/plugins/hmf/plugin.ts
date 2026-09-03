@@ -4,6 +4,8 @@
 //   1. Edit tool: blocks edits to registered project dirs when cwd
 //      is not inside that project. Agent must use engage_project_agent.
 //   2. Bash tool: checks commands against mouse.yaml deny/ask lists.
+//   3. Both tools: checks target paths against mouse.yaml's fs deny/ask
+//      lists (gitignore-style globs), so secrets stay unreadable.
 //
 // Zero context cost — runs as code, AI never sees instructions.
 
@@ -23,9 +25,20 @@ interface ProjectInfo {
   path: string;
 }
 
-interface MousePerms {
+interface PermList {
   deny: string[];
   ask: string[];
+}
+
+interface MousePerms {
+  fs: PermList;
+  commands: PermList;
+}
+
+// Where the mouse.yaml was found — fs globs resolve relative to it.
+interface MouseScope {
+  perms: MousePerms;
+  root: string;
 }
 
 // ============================================
@@ -115,19 +128,23 @@ function loadProjects(): ProjectInfo[] {
 // Mouse.yaml loader (minimal parse — no YAML dep)
 // ============================================
 
-function loadMouseYaml(dir: string): MousePerms | null {
+function loadMouseYaml(dir: string): MouseScope | null {
   // Walk up: a session opened in A/config must still see A/mouse.yaml.
   let cur = dir;
   const stop = homedir();
   for (;;) {
     const perms = readMouseYaml(cur);
-    if (perms) return perms;
-    if (cur === stop || cur === dirname(cur)) return null;
+    if (perms) return { perms, root: cur };
+    if (cur === stop || cur === dirname(cur)) break;
     cur = dirname(cur);
   }
+  // Unregistered dir: fall back to the global default, same as Go's
+  // config.ResolveMouse. Its fs rules are scoped to the session's own dir.
+  const global = readMouseYaml(join(homedir(), ".hmf"));
+  return global ? { perms: global, root: dir } : null;
 }
 
-function readMouseYaml(dir: string): MousePerms | null {
+export function readMouseYaml(dir: string): MousePerms | null {
   const path = join(dir, "mouse.yaml");
   if (!existsSync(path)) return null;
   try {
@@ -135,14 +152,19 @@ function readMouseYaml(dir: string): MousePerms | null {
     // Supported shapes (minimal parse — no YAML dep):
     //   block:  "deny:" + "  - pattern" lines   |   inline:  deny: ["a", "b"]
     // Unquoted/quoted scalars both accepted; other YAML forms are NOT parsed.
-    const deny: string[] = [];
-    const ask: string[] = [];
+    const out: MousePerms = { fs: { deny: [], ask: [] }, commands: { deny: [], ask: [] } };
+    // Which parent the deny/ask block sits under. Untagged blocks fall back to
+    // commands — an fs pattern leaking into the command list both fails to
+    // protect the file and false-positives on unrelated commands.
+    let group: "fs" | "commands" = "commands";
     const push = (section: "deny" | "ask", raw: string) => {
       const v = raw.replace(/^["']|["']$/g, "").trim();
-      if (v) (section === "deny" ? deny : ask).push(v);
+      if (v) out[group][section].push(v);
     };
     let section: "deny" | "ask" | null = null;
     for (const line of text.split("\n")) {
+      const parent = line.match(/^\s+(fs|commands):/);
+      if (parent) { group = parent[1] as "fs" | "commands"; section = null; continue; }
       const inline = line.match(/^\s+(deny|ask):\s*\[(.*)\]\s*$/);
       if (inline) {
         for (const item of inline[2].split(",")) push(inline[1] as "deny" | "ask", item.trim());
@@ -157,18 +179,58 @@ function readMouseYaml(dir: string): MousePerms | null {
         if (m) push(section, m[1]);
       }
     }
-    return { deny, ask };
+    return out;
   } catch {
     return null;
   }
 }
 
-function commandMatchesPattern(cmd: string, pattern: string): boolean {
+// gitignore-style glob against the path relative to the mouse.yaml dir.
+// A pattern with no "/" matches at any depth; "*" stops at a path separator,
+// "**" does not. A trailing "/" marks a directory and matches everything under it.
+export function pathMatchesPattern(abs: string, root: string, pattern: string): boolean {
+  const rel = relative(root, abs);
+  if (!rel || rel.startsWith("..")) return false; // outside this config's scope
+  const pat = pattern.replace(/\/+$/, "");
+  const rx = new RegExp(
+    "^" +
+      pat
+        .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+        .replace(/\*\*/g, "\u0000")
+        .replace(/\*/g, "[^/]*")
+        .replace(/\u0000/g, ".*") +
+      "$",
+  );
+  if (!pat.includes("/")) return rel.split("/").some((seg) => rx.test(seg));
+  return rx.test(rel);
+}
+
+export function commandMatchesPattern(cmd: string, pattern: string): boolean {
   if (pattern.includes("*")) {
     const re = "^" + pattern.replace(/\*/g, "\\S+").replace(/\s+/g, "\\s+") + "(\\s|$)";
     return new RegExp(re).test(cmd);
   }
   return cmd.startsWith(pattern);
+}
+
+// ============================================
+// FS guard (shared by edit + bash)
+// ============================================
+
+// Throws if abs is covered by an fs deny/ask pattern. `how` names the caller
+// so the agent's BLOCKED reply says which tool it was.
+function enforceFS(abs: string, scope: MouseScope | null, how: string): void {
+  if (!scope) return;
+  for (const pattern of scope.perms.fs.deny) {
+    if (pathMatchesPattern(abs, scope.root, pattern)) {
+      throw new Error(`hmf: blocked ${how} of ${abs} (denied in mouse.yaml fs: "${pattern}").`);
+    }
+  }
+  for (const pattern of scope.perms.fs.ask) {
+    if (pathMatchesPattern(abs, scope.root, pattern)) {
+      throw new Error(`hmf: ${how} of ${abs} requires approval (ask in mouse.yaml fs: "${pattern}").`);
+    }
+  }
 }
 
 // ============================================
@@ -179,23 +241,38 @@ function findProjectFor(abs: string, projects: ProjectInfo[]): ProjectInfo | und
   return projects.find((p) => abs === p.path || abs.startsWith(p.path + "/"));
 }
 
-// Pulls path-looking args out of a shell command. Only tokens that exist on
-// disk count as paths — filters out flags, URLs, image refs.
+// Pulls path-looking args out of a shell command.
 // ponytail: whitespace/quote split, not a real shell parser.
-function extractPathCandidates(cmd: string, cwd: string): string[] {
+//
+// mustExist=true (cross-project check): only tokens present on disk count, so
+// an unrelated bare word can't be mistaken for a path into another project.
+// mustExist=false (fs rules): a bare filename counts too — otherwise a write
+// that creates the file (`touch new.key`, `echo x >.env`) slips past, since
+// the target does not exist yet at check time.
+export function extractPathCandidates(cmd: string, cwd: string, mustExist = true): string[] {
   const tokens = cmd.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) ?? [];
   const out: string[] = [];
-  for (let raw of tokens) {
+  for (const raw of tokens) {
     let t = raw.replace(/^["']|["']$/g, "");
+    // Strip leading shell operators so a glued redirect (">.env") still
+    // yields its target.
+    t = t.replace(/^[0-9]*[<>]+&?|^[|;&(]+/, "").replace(/^["']|["']$/g, "");
     if (t.startsWith("-")) {
       const eq = t.indexOf("=");
       if (eq === -1) continue; // bare flag, e.g. "-f" — value is the next token
       t = t.slice(eq + 1);
     }
     if (t.startsWith("@")) t = t.slice(1); // curl -d @path, etc.
-    if (!t || !(t.includes("/") || t === "." || t.startsWith("."))) continue;
-    const abs = resolve(cwd, t);
-    if (existsSync(abs)) out.push(abs);
+    if (!t) continue;
+    if (t.includes("://")) continue; // URL
+    if (!t.includes("/") && /^[\w.-]+:[\w.-]+$/.test(t)) continue; // image ref, host:port
+    const looksLikePath = t.includes("/") || t === "." || t.startsWith(".");
+    if (mustExist) {
+      if (!looksLikePath) continue;
+      if (existsSync(resolve(cwd, t))) out.push(resolve(cwd, t));
+    } else {
+      out.push(resolve(cwd, t));
+    }
   }
   return out;
 }
@@ -219,6 +296,10 @@ export const HmfProtection: Plugin = async ({ directory }) => {
 
         const abs = resolve(filePath);
         const cwd = process.cwd();
+
+        // fs rules first: they apply inside your own repo too, so they must
+        // not sit behind the cross-project early-returns below.
+        enforceFS(abs, loadMouseYaml(dirname(abs)), "edit");
 
         // Only guard edits INTO a registered project — unregistered targets
         // (scratch files, /tmp, unrelated clones) are always allowed.
@@ -262,14 +343,19 @@ export const HmfProtection: Plugin = async ({ directory }) => {
         const mouse = loadMouseYaml(cwd);
         if (!mouse) return;
 
-        for (const pattern of mouse.deny) {
+        // mustExist=false: also covers a write that creates the file.
+        for (const abs of extractPathCandidates(cmd, cwd, false)) {
+          enforceFS(abs, mouse, "command access to");
+        }
+
+        for (const pattern of mouse.perms.commands.deny) {
           if (commandMatchesPattern(cmd, pattern)) {
             throw new Error(
               `hmf: blocked command (denied in mouse.yaml): "${cmd}" matches "${pattern}".`,
             );
           }
         }
-        for (const pattern of mouse.ask) {
+        for (const pattern of mouse.perms.commands.ask) {
           if (commandMatchesPattern(cmd, pattern)) {
             throw new Error(
               `hmf: command requires approval (ask in mouse.yaml): "${cmd}" matches "${pattern}".`,
