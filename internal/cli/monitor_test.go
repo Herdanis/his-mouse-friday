@@ -178,3 +178,35 @@ func TestGroupRuns_KeepsDistinctAgentsApart(t *testing.T) {
 		t.Fatalf("got %d entries, want 4 (two distinct ids + two unidentifiable)", len(runs))
 	}
 }
+
+// TestListEntry_NamesTheDispatcher: the list column is the parent, not the
+// worker. The parent is stable — present before anything spawns, unchanged
+// when the task fans out to several agents — and the narrow layout has no
+// detail pane to fall back on.
+func TestListEntry_NamesTheDispatcher(t *testing.T) {
+	m := monitorModel{w: 100, rows: []monitorRow{{
+		ThreadID: 62,
+		From:     "dir:ledger",
+		Status:   "active",
+		Attempts: []attempt{
+			{Name: "a1-mouse", Project: "mouse-for-sale", Status: "active"},
+		},
+	}}}
+	out := m.listEntry(0, 40)
+	if !strings.Contains(out, "ledger/") {
+		t.Errorf("list entry does not name the dispatcher\n%s", out)
+	}
+	if strings.Contains(out, "mouse-for-sale") {
+		t.Errorf("list entry names the worker instead of the dispatcher\n%s", out)
+	}
+}
+
+// A task nobody has spawned for yet still names its dispatcher.
+func TestListEntry_DispatcherBeforeAnySpawn(t *testing.T) {
+	m := monitorModel{w: 100, rows: []monitorRow{{
+		ThreadID: 63, From: "haydn/his-mouse-friday", Status: "queued",
+	}}}
+	if out := m.listEntry(0, 40); !strings.Contains(out, "his-mouse-friday") {
+		t.Errorf("list entry lost the dispatcher\n%s", out)
+	}
+}

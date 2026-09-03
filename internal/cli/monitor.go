@@ -731,13 +731,11 @@ func (m monitorModel) listEntry(i, w int) string {
 
 	el := r.WorkElapsed()
 	inner := max(8, w-2) // minus the selection lead
-	// The worker, not the dispatcher: at this width only one name fits, and
-	// the party doing the work is the one you are watching. The dispatcher is
-	// named in the detail header. Nothing spawned yet — fall back to it here.
-	who := r.ProjectLabel()
-	if len(r.Projects()) == 0 {
-		who = r.FromLabel()
-	}
+	// The dispatcher, not the worker: only one name fits at this width, and
+	// the parent is the stable identity — it is there before anything spawns
+	// and does not change when the task fans out. The worker is named in the
+	// detail header, which the narrow layout drops.
+	who := r.FromLabel()
 	head := fmt.Sprintf("#%d  %s", r.ThreadID, who)
 	headW := max(4, inner-2-lipgloss.Width(el)-1)
 	head = padTo(truncate(head, headW), headW)
