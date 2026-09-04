@@ -218,7 +218,10 @@ hmf monitor --active   # only what's still running
 On a terminal at least 96 columns wide the list and the selected task sit side
 by side, so moving the cursor updates the detail immediately — no opening and
 closing to compare two tasks. Narrower terminals fall back to a plain list,
-with `enter` opening a task and `esc` going back.
+with `enter` opening a task and `esc` going back. `z` zooms the detail to the
+full width for reading a long conversation, and the mouse wheel scrolls
+whichever pane has focus. (Mouse tracking takes click-drag selection away from
+the terminal while the monitor runs — hold shift to select text as usual.)
 
 Each list entry is two lines: status mark, thread id and the project doing the
 work on the first, work-item progress and the instruction on the second. `●`
@@ -238,8 +241,10 @@ The id is the thread id, so anything you spot is directly actionable:
 | key | |
 |---|---|
 | `↑` `↓` / `j` `k` | move (list scrolls) |
+| wheel / trackpad | scroll whichever pane has focus |
 | `g` / `G` | jump to first / last |
 | `tab` | switch focus between list and detail (wide terminals) |
+| `z` | zoom: give the detail the whole terminal, `z` or `esc` to go back |
 | `enter` | focus the detail pane (or open a task on narrow terminals) |
 | `esc` | back to the list |
 | `a` | toggle all / running-only |

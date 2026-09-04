@@ -236,7 +236,8 @@ func monitorCmd() *cobra.Command {
 			if !isTerminal(os.Stdout) {
 				return printMonitorSnapshot(os.Stdout, all)
 			}
-			_, err := tea.NewProgram(newMonitorModel(all), tea.WithAltScreen()).Run()
+			_, err := tea.NewProgram(newMonitorModel(all),
+				tea.WithAltScreen(), tea.WithMouseCellMotion()).Run()
 			return err
 		},
 	}
@@ -268,9 +269,11 @@ type monitorModel struct {
 	lastLoad time.Time
 
 	// split is set when the terminal is wide enough for list and detail side
-	// by side; focus picks which of the two panes the keys drive.
+	// by side; focus picks which of the two panes the keys drive. zoom drops
+	// the list so one task's detail owns the whole terminal.
 	split bool
 	focus int
+	zoom  bool
 
 	// Work-item selection inside the detail view. pickTodo turns ↑↓ into an
 	// item cursor instead of scrolling; confirmDel guards the delete.
@@ -447,6 +450,9 @@ func (m monitorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		return m.handleKey(msg)
+
+	case tea.MouseMsg:
+		return m.handleMouse(msg)
 	}
 
 	if m.detail >= 0 && m.vpReady {
@@ -457,15 +463,64 @@ func (m monitorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// handleMouse routes the wheel to whichever pane the keys drive, so trackpad
+// and keyboard never disagree about what is scrolling.
+func (m monitorModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	if msg.Action != tea.MouseActionPress {
+		return m, nil
+	}
+	up := msg.Button == tea.MouseButtonWheelUp
+	if !up && msg.Button != tea.MouseButtonWheelDown {
+		return m, nil
+	}
+	if m.detailFocused() {
+		if !m.vpReady {
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.vp, cmd = m.vp.Update(msg) // viewport owns wheel scrolling
+		return m, cmd
+	}
+	const step = 3
+	if up {
+		m.cursor = max(0, m.cursor-step)
+	} else {
+		m.cursor = min(max(0, len(m.rows)-1), m.cursor+step)
+	}
+	m.syncDetail()
+	return m, nil
+}
+
+// resizeViewport refits the detail viewport after the layout changes, keeping
+// the reader where they were instead of jumping to the top.
+func (m *monitorModel) resizeViewport() {
+	if !m.vpReady {
+		return
+	}
+	at := m.vp.YOffset
+	m.vp.Width, m.vp.Height = m.vpSize()
+	m.vp.SetContent(m.detailBody())
+	m.vp.YOffset = min(at, max(0, m.vp.TotalLineCount()-m.vp.Height))
+}
+
 func (m monitorModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "q", "ctrl+c":
 		return m, tea.Quit
 
 	case "tab":
-		if m.split {
+		if m.splitActive() {
 			m.focus = 1 - m.focus
 		}
+		return m, nil
+
+	case "z":
+		if m.detail < 0 || !m.split {
+			return m, nil
+		}
+		m.zoom = !m.zoom
+		m.focus = 1
+		m.resizeViewport()
 		return m, nil
 
 	case "esc", "h", "left":
@@ -476,7 +531,10 @@ func (m monitorModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.confirmDel = false
 		case m.pickTodo:
 			m.pickTodo = false
-		case m.split && m.focus == 1:
+		case m.zoom:
+			m.zoom = false
+			m.resizeViewport()
+		case m.splitActive() && m.focus == 1:
 			m.focus = 0
 		case !m.split && m.detail >= 0:
 			m.detail = -1
@@ -485,7 +543,7 @@ func (m monitorModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.refreshDetail()
 
 	case "enter", "l", "right":
-		if m.split {
+		if m.splitActive() {
 			m.focus = 1
 			return m, nil
 		}
@@ -583,7 +641,7 @@ func (m monitorModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.refreshDetail()
 	}
 
-	if (m.split && m.focus == 1) || (!m.split && m.detail >= 0) {
+	if m.detailFocused() {
 		var cmd tea.Cmd
 		m.vp, cmd = m.vp.Update(msg)
 		return m, cmd
@@ -609,7 +667,7 @@ func (m monitorModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // syncDetail keeps the split-pane detail pointed at the highlighted row.
 func (m *monitorModel) syncDetail() {
-	if !m.split || len(m.rows) == 0 || m.detail == m.cursor {
+	if !m.splitActive() || len(m.rows) == 0 || m.detail == m.cursor {
 		return
 	}
 	m.detail = m.cursor
@@ -629,6 +687,19 @@ func (m *monitorModel) syncDetail() {
 // list. Narrow ones fall back to list → detail as separate screens.
 const splitMinWidth = 96
 
+// splitActive is the split pane actually being drawn: a zoomed detail takes
+// the full width, which is the same geometry a narrow terminal already uses.
+func (m monitorModel) splitActive() bool { return m.split && !m.zoom }
+
+// detailFocused reports whether keys and wheel events drive the detail
+// viewport rather than the list.
+func (m monitorModel) detailFocused() bool {
+	if m.splitActive() {
+		return m.focus == 1
+	}
+	return m.detail >= 0
+}
+
 func (m monitorModel) paneWidths() (int, int) {
 	lw := clamp(m.w*38/100, 34, 56)
 	return lw, m.w - lw
@@ -638,7 +709,7 @@ func (m monitorModel) paneHeight() int { return max(6, m.h-2) }
 
 // vpSize is the detail viewport: pane minus its border, padding and header.
 func (m monitorModel) vpSize() (int, int) {
-	if m.split {
+	if m.splitActive() {
 		_, rw := m.paneWidths()
 		return max(20, rw-4), max(3, m.paneHeight()-5)
 	}
@@ -655,7 +726,7 @@ func (m monitorModel) View() string {
 		return m.topBar() + "\n\n  " + styFailed.Render("daemon unreachable") +
 			"  " + styDim.Render(m.err.Error()) + "\n\n" + m.footer()
 	}
-	if !m.split {
+	if !m.splitActive() {
 		if m.detail >= 0 && m.detail < len(m.rows) {
 			return m.narrowDetail()
 		}
@@ -752,8 +823,10 @@ func (m monitorModel) footer() string {
 	}
 	pairs := []string{"↑↓", "move"}
 	switch {
+	case m.zoom:
+		pairs = []string{"↑↓", "scroll", "z", "unzoom", "esc", "back"}
 	case m.split:
-		pairs = append(pairs, "tab", "focus")
+		pairs = append(pairs, "tab", "focus", "z", "zoom")
 	case m.detail >= 0:
 		pairs = []string{"↑↓", "scroll", "esc", "back"}
 	default:

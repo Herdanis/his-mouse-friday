@@ -355,3 +355,68 @@ func runeCol(line, sub string) int {
 	}
 	return utf8.RuneCountInString(line[:i])
 }
+
+// z gives one task the whole terminal: the list must be gone from the frame
+// and the detail must widen past its split-pane width, and z again undoes it.
+func TestZoom_DetailTakesFullWidth(t *testing.T) {
+	rows := []monitorRow{
+		{ThreadID: 214, From: "backend", Status: "active", Task: "ship the login flow"},
+		{ThreadID: 213, From: "penny-pincher", Status: "exited", Task: "bump dependencies"},
+	}
+	m := monitorModel{w: 120, h: 24, split: true, rows: rows, detail: 0, cursor: 0}
+	splitW, _ := m.vpSize()
+
+	zoomed, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'z'}})
+	z := zoomed.(monitorModel)
+	if !z.zoom {
+		t.Fatal("z did not zoom")
+	}
+	zoomW, _ := z.vpSize()
+	if zoomW <= splitW {
+		t.Errorf("zoomed detail width %d, want wider than split %d", zoomW, splitW)
+	}
+	if strings.Contains(z.View(), "#213") {
+		t.Error("zoomed view still renders the list")
+	}
+	if !strings.Contains(z.footer(), "unzoom") {
+		t.Error("footer does not advertise the way back")
+	}
+
+	back, _ := z.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'z'}})
+	if back.(monitorModel).zoom {
+		t.Error("second z did not unzoom")
+	}
+	// esc is the other way out.
+	out, _ := z.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if out.(monitorModel).zoom {
+		t.Error("esc did not unzoom")
+	}
+}
+
+// The wheel drives whichever pane the keys drive: the list when it has focus,
+// the detail viewport when it does. Anything else and trackpad and keyboard
+// disagree about what is scrolling.
+func TestMouseWheel_ScrollsFocusedPane(t *testing.T) {
+	rows := make([]monitorRow, 10)
+	for i := range rows {
+		rows[i] = monitorRow{ThreadID: int64(200 + i), From: "backend", Status: "exited"}
+	}
+	m := monitorModel{w: 120, h: 24, split: true, rows: rows, detail: 0, cursor: 0, focus: 0}
+
+	down, _ := m.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonWheelDown})
+	if got := down.(monitorModel).cursor; got != 3 {
+		t.Errorf("wheel down moved list cursor to %d, want 3", got)
+	}
+	up, _ := down.(monitorModel).Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonWheelUp})
+	if got := up.(monitorModel).cursor; got != 0 {
+		t.Errorf("wheel up moved list cursor to %d, want 0", got)
+	}
+
+	// Detail focused: the list cursor must not move.
+	d := m
+	d.focus = 1
+	moved, _ := d.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonWheelDown})
+	if got := moved.(monitorModel).cursor; got != 0 {
+		t.Errorf("wheel scrolled the list while the detail had focus (cursor %d)", got)
+	}
+}
