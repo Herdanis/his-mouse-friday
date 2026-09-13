@@ -23,7 +23,6 @@ import { execSync } from "node:child_process";
 // ============================================
 
 interface ProjectInfo {
-  workspace: string;
   name: string;
   path: string;
 }
@@ -89,7 +88,7 @@ function loadProjectsFromDB(): ProjectInfo[] {
   const dbPath = join(homedir(), ".hmf", "hmf.db");
   if (!existsSync(dbPath)) return [];
   try {
-    const sql = "SELECT w.name, p.name, p.path FROM projects p JOIN workspaces w ON p.workspace_id=w.id";
+    const sql = "SELECT name, path FROM projects";
     const out = execSync(`sqlite3 "${dbPath}" "${sql}"`, {
       timeout: 2000,
       encoding: "utf8",
@@ -98,8 +97,8 @@ function loadProjectsFromDB(): ProjectInfo[] {
     const items: ProjectInfo[] = [];
     for (const line of out.split("\n")) {
       const parts = line.split("|");
-      if (parts.length === 3) {
-        items.push({ workspace: parts[0], name: parts[1], path: parts[2] });
+      if (parts.length === 2) {
+        items.push({ name: parts[0], path: parts[1] });
       }
     }
     return items;
@@ -500,9 +499,9 @@ export const HmfProtection: Plugin = async ({ directory }) => {
         if (myProject && myProject.path === targetProject.path) return;
 
         throw new Error(
-          `hmf: blocked edit to ${targetProject.workspace}/${targetProject.name} — ` +
+          `hmf: blocked edit to project ${targetProject.name} — ` +
           `this is a registered project` +
-          (myProject ? ` (you are ${myProject.workspace}/${myProject.name})` : "") +
+            (myProject ? ` (you are in ${myProject.name})` : "") +
           `. Use engage_project_agent to delegate. Target was ${abs}.`,
         );
       }
@@ -533,9 +532,9 @@ export const HmfProtection: Plugin = async ({ directory }) => {
             continue;
           }
           throw new Error(
-            `hmf: blocked command touching ${targetProject.workspace}/${targetProject.name} — ` +
+            `hmf: blocked command touching project ${targetProject.name} — ` +
             `this is a registered project` +
-            (myProject ? ` (you are ${myProject.workspace}/${myProject.name})` : "") +
+          (myProject ? ` (you are in ${myProject.name})` : "") +
             `. Reading it is allowed; changing or running it is not — delegate with ` +
             `post_message. Command: "${cmd}", path: ${abs}.`,
           );

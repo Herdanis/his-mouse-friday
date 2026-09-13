@@ -260,7 +260,7 @@ test("read is unchanged by the search guard", () => {
 // ============================================
 
 test("an empty registry is retried, a populated one is not", () => {
-  const proj = { workspace: "w", name: "n", path: "/p" };
+  const proj = { name: "n", path: "/p" };
   let calls = 0;
   const flaky = () => {
     calls++;
