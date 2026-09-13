@@ -34,6 +34,7 @@ var (
 	styDim     = lipgloss.NewStyle().Foreground(cMuted)
 	styWorking = lipgloss.NewStyle().Foreground(cSuccess)
 	styFailed  = lipgloss.NewStyle().Foreground(cDanger)
+	styAttn    = lipgloss.NewStyle().Foreground(cDanger)
 	styDone    = lipgloss.NewStyle().Foreground(cDoneFg)
 	styKey     = lipgloss.NewStyle().Foreground(cAccent)
 )
@@ -57,17 +58,26 @@ type fetchMsg struct{ err error }
 
 // fetchers injects the socket calls so unit tests never touch a socket.
 type fetchers struct {
-	threadList  func() (json.RawMessage, error)
-	sessionList func() (json.RawMessage, error)
-	projectList func() (json.RawMessage, error)
-	todoThreads func() (json.RawMessage, error)
+	threadList   func() (json.RawMessage, error)
+	sessionList  func() (json.RawMessage, error)
+	projectList  func() (json.RawMessage, error)
+	todoThreads  func() (json.RawMessage, error)
+	readThread   func(json.RawMessage) (json.RawMessage, error)
+	threadDelete func(json.RawMessage) (json.RawMessage, error)
 }
 
 func defaultFetchers() fetchers {
 	c := func(method string) func() (json.RawMessage, error) {
 		return func() (json.RawMessage, error) { return protocol.Call(method, struct{}{}) }
 	}
-	return fetchers{c("thread_list"), c("session_list"), c("project_list"), c("todo_threads")}
+	p := func(method string) func(json.RawMessage) (json.RawMessage, error) {
+		return func(params json.RawMessage) (json.RawMessage, error) { return protocol.Call(method, params) }
+	}
+	return fetchers{
+		threadList: c("thread_list"), sessionList: c("session_list"),
+		projectList: c("project_list"), todoThreads: c("todo_threads"),
+		readThread: p("read_thread"), threadDelete: p("thread_delete"),
+	}
 }
 
 func fetchCmd(f func() (json.RawMessage, error)) tea.Cmd {
@@ -123,6 +133,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) update(msg tea.Msg) (model, tea.Cmd) {
+	var cmd tea.Cmd
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.w, m.h = msg.Width, msg.Height
@@ -138,6 +149,17 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 			m.panel = (m.panel + 1) % panel(len(panelNames))
 			return m, m.refreshActive()
 		}
+		// Keys not consumed by the chrome go to the active panel.
+		switch m.panel {
+		case panelThreads:
+			m.threads, cmd = m.threads.update(msg)
+		case panelAgents:
+			m.agents, cmd = m.agents.update(msg)
+		case panelProjects:
+			m.projects, cmd = m.projects.update(msg)
+		case panelTodos:
+			m.todos, cmd = m.todos.update(msg)
+		}
 
 	case tickMsg:
 		// Only the active panel refreshes — one socket round-trip set per
@@ -146,8 +168,11 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 
 	case fetchMsg:
 		m.err = msg.err
+
+	case threadsMsg:
+		m.threads, cmd = m.threads.update(msg)
 	}
-	return m, nil
+	return m, cmd
 }
 
 func (m model) refreshActive() tea.Cmd {

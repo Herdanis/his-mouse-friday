@@ -56,11 +56,16 @@ func stubFetcher(m map[string]json.RawMessage) fetchers {
 	f := func(method string) func() (json.RawMessage, error) {
 		return func() (json.RawMessage, error) { return m[method], nil }
 	}
+	p := func(method string) func(json.RawMessage) (json.RawMessage, error) {
+		return func(json.RawMessage) (json.RawMessage, error) { return m[method], nil }
+	}
 	return fetchers{
-		threadList:  f("thread_list"),
-		sessionList: f("session_list"),
-		projectList: f("project_list"),
-		todoThreads: f("todo_threads"),
+		threadList:   f("thread_list"),
+		sessionList:  f("session_list"),
+		projectList:  f("project_list"),
+		todoThreads:  f("todo_threads"),
+		readThread:   p("read_thread"),
+		threadDelete: p("thread_delete"),
 	}
 }
 
