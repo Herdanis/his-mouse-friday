@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net"
 	"os"
 	"os/exec"
@@ -1966,5 +1967,43 @@ func TestHandle_ReportProgress(t *testing.T) {
 	}
 	if st.HasDone {
 		t.Error("a progress report must not count as completion")
+	}
+}
+
+// The child finished; a broken parent wake must not fail the child's done
+// post. The failure is recorded as a BLOCKED reply for the TUI/human.
+func TestDoneReplyWakeFailurePostsBlockedNotError(t *testing.T) {
+	d := setupDaemon(t)
+	d.Launcher = &Launcher{SpawnFn: func(cfg SpawnConfig) (int, error) {
+		return 0, errors.New("opencode not installed")
+	}}
+	d.Registry.AddWorkspace("co")
+	aDir := t.TempDir()
+	os.WriteFile(filepath.Join(aDir, "mouse.yaml"),
+		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n  allow_outbound: true\n"), 0644)
+	d.Registry.AddProject("co", "parent", aDir)
+	bDir := t.TempDir()
+	os.WriteFile(filepath.Join(bDir, "mouse.yaml"),
+		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n"), 0644)
+	d.Registry.AddProject("co", "child", bDir)
+	d.Store.db.Exec(`INSERT INTO messages(id, channel_id, thread_id, from_project, to_project, content, status, ts)
+		VALUES(800, 1, NULL, 'co/parent', 'co/child', 'do X', 'message', datetime('now'))`)
+
+	done, _ := json.Marshal(map[string]any{
+		"from": "co/child", "thread_id": 800, "content": "did X", "status": "done",
+	})
+	resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: done, ID: 1})
+	if resp.Error != nil {
+		t.Fatalf("done post must succeed despite wake failure, got: %s", resp.Error.Message)
+	}
+	msgs, _ := d.Comms.ReadThread(800)
+	found := false
+	for _, m := range msgs {
+		if strings.HasPrefix(m.Content, "BLOCKED: parent wake failed") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("thread missing BLOCKED wake-failure reply, got %d messages", len(msgs))
 	}
 }
