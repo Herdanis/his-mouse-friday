@@ -7,8 +7,9 @@ Guidance for AI agents working in this repository.
 `his-mouse-friday` (hmf) is a per-directory AI agent orchestration harness. A
 long-running Go daemon brokers agent-to-agent (A2A) communication over a
 unix socket. A stateless MCP shim (`hmf-mcp`, stdio) exposes 6 tools to
-opencode sessions; CLI (`hmf`) manages workspaces, projects, and the daemon
-lifecycle. Each registered repo declares its own `mouse.yaml` (permissions,
+opencode sessions; CLI (`hmf`) manages projects and the daemon
+lifecycle. Registered projects are addressed by bare project name (no
+workspace prefix). Each registered repo declares its own `mouse.yaml` (permissions,
 agent runtime) and `MOUSE.md` (runbook); `AGENTS.md` points opencode at
 `MOUSE.md`.
 
@@ -53,13 +54,12 @@ agent runtime) and `MOUSE.md` (runbook); `AGENTS.md` points opencode at
 Two binaries over one daemon:
 
 - `cmd/hmf` → `internal/cli` (cobra). Subcommands: `up`, `down`, `status`,
-  `workspace add|list|delete`, `project add|list|delete`, `init`, `config show`,
-  `done`. `hmf up` blocks (foreground daemon); run in a separate terminal.
+  `project add|list|delete`, `init`, `config show`, `done`. `hmf up` blocks (foreground daemon); run in a separate terminal.
 - `cmd/hmf-mcp` → `internal/mcp.RunServer` (stdio MCP server via
   `modelcontextprotocol/go-sdk`). Stateless: every tool call is forwarded to
   the daemon over the unix socket.
 - `internal/daemon` — `Daemon` (request router), `Store` (sqlite via
-  modernc.org/sqlite), `Registry` (workspaces/projects), `Sessions` (spawned
+  modernc.org/sqlite), `Registry` (projects), `Sessions` (spawned
   agent lifecycle), `Comms` (channels/threads/messages), `Launcher` (spawns
   `opencode run` with env vars).
 - `internal/protocol` — JSON-over-socket wire format (`Request{Method,Params,ID}`,

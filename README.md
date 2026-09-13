@@ -101,7 +101,7 @@ under that, so no special `"timeout"` setting is needed on the `hmf` entry.
 
 After installing, in any opencode session:
 
-- `/hmf-setup` — full guided setup (workspace, project, config files, tailored MOUSE.md)
+- `/hmf-setup` — full guided setup (project, config files, tailored MOUSE.md)
 - `/hmf-register` — fast registration (one question, minimal config)
 
 **Option B — Manual:**
@@ -110,11 +110,10 @@ After installing, in any opencode session:
 
        hmf up
 
-2. Register a workspace + your repos:
+2. Register your repos (bare project name + path):
 
-       hmf workspace add companyA
-       hmf project add payment-service ~/code/payment --workspace companyA
-       hmf project add user-service ~/code/user-service --workspace companyA
+       hmf project add payment-service ~/code/payment
+       hmf project add user-service ~/code/user-service
        hmf status
 
 3. Add `mouse.yaml` + `MOUSE.md` to each repo (see `examples/`).
@@ -420,7 +419,7 @@ hmf prune --older-than 168h    # keep the last week
 hmf prune --yes                # skip the prompt
 ```
 
-Workspaces and projects are **never** touched — your registered repos stay
+Registered projects are **never** touched — your registered repos stay
 registered. Threads with a session still `active` are skipped too, so pruning
 mid-task can't orphan a running agent. The file is vacuumed afterwards, so the
 space is actually reclaimed rather than just marked free.

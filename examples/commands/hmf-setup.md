@@ -1,5 +1,5 @@
 ---
-description: Guided setup for his-mouse-friday — register workspace + project, write config files
+description: Guided setup for his-mouse-friday — register project, write config files
 ---
 Interactive setup wizard for his-mouse-friday. Ask one question at a time, wait for the answer, proceed.
 
@@ -45,26 +45,7 @@ grep -Fq "plugins/hmf/plugin.ts" "$CFG" 2>/dev/null && echo "WIRED: ok" || echo 
   commas) and a naive rewrite can corrupt it.
 - `FILE: ok` and `WIRED: ok` → say "hmf plugin active." and continue.
 
-## Step 3: Workspace
-
-Run: `hmf workspace list`
-
-Parse output (one workspace name per line). Show the user:
-
-```
-Workspace:
-1. <name-1>
-2. <name-2>
-3. Create new workspace
-Pick a number:
-```
-
-- Number → use that workspace name.
-- Create new → ask "New workspace name:", then run `hmf workspace add <name>`.
-
-Wait for the user's answer.
-
-## Step 4: Project name
+## Step 3: Project name
 
 Run: `basename "$(pwd)"`
 
@@ -81,7 +62,7 @@ Pick a number:
 - 2 → ask "Project name:", then use what they type.
 - Any other reply → ask again.
 
-Then run: `hmf project add <name> "$(pwd)" --workspace <ws>`
+Then run: `hmf project add <name> "$(pwd)"`
 
 - Error → show it, ask for a different name.
 - Success → continue. The project is now auto-guarded (direct edits/commands
@@ -323,7 +304,7 @@ Wrote: mouse.yaml, MOUSE.md, AGENTS.md, opencode.json
 Print exactly:
 
 ```
-Registered: <workspace>/<project>
+Registered: <project>
 
 Next:
 - Open opencode in this repo — agent now has hmf tools
