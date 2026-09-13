@@ -652,6 +652,13 @@ func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error
 		AgentSessionID: priorOcID.String,
 		OnExit: func(code int) {
 			logf("exit", "thread=%d session=%d to=%s name=%s process exited code=%d", parentID, tmpSess.ID, msg.ToProject, name, code)
+			// Daemon-killed session (killIdleParent before a resume) is
+			// already marked exited — the launcher's exit watcher still
+			// fires OnExit(-1) for that SIGTERM, and that is not a failure.
+			if cur, err := d.Sessions.Get(tmpSess.ID); err != nil || cur.Status != "active" {
+				logf("exit", "thread=%d session=%d status no longer active — skipping exit handling", parentID, tmpSess.ID)
+				return
+			}
 			var doneCount int
 			d.Store.db.QueryRow(
 				`SELECT count(*) FROM messages WHERE thread_id=? AND status='done'`, parentID).Scan(&doneCount)

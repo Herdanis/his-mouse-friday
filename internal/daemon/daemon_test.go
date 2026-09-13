@@ -1128,6 +1128,110 @@ func TestDoneWakeKillsIdleParent(t *testing.T) {
 	}
 }
 
+// Finding 1 regression: killIdleParent SIGTERMs the launcher-spawned parent
+// process, so the real launcher's exit watcher fires OnExit(-1). That must
+// NOT post a false BLOCKED on the parent's upper thread or flip the row to
+// "failed" — a daemon-killed session is not a failure.
+func TestDoneWakeKillSuppressesExitWatcherBlocked(t *testing.T) {
+	sleep := exec.Command("sleep", "30")
+	if err := sleep.Start(); err != nil {
+		t.Skip("cannot start sleep:", err)
+	}
+	defer sleep.Process.Kill()
+
+	var cfgParent SpawnConfig
+	d := setupDaemon(t)
+	d.SafetyNetEnabled = true
+	d.Launcher = &Launcher{Binary: "/bin/echo", SpawnFn: func(cfg SpawnConfig) (int, error) {
+		// Fresh parent spawn = the idle parent session the daemon will
+		// SIGTERM; capture its OnExit to simulate the launcher's exit
+		// watcher. Resume spawns carry AgentSessionID — skip those.
+		if cfg.ProjectID == "co/parent" && cfg.AgentSessionID == "" {
+			cfgParent = cfg
+			return sleep.Process.Pid, nil
+		}
+		return 0, nil
+	}}
+	d.Registry.AddWorkspace("co")
+	aDir := t.TempDir()
+	os.WriteFile(filepath.Join(aDir, "mouse.yaml"),
+		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n  allow_outbound: true\n"), 0644)
+	d.Registry.AddProject("co", "parent", aDir)
+	bDir := t.TempDir()
+	os.WriteFile(filepath.Join(bDir, "mouse.yaml"),
+		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n"), 0644)
+	d.Registry.AddProject("co", "child", bDir)
+
+	// (1) Task root: orchestrator → parent. wakeAgent spawns the parent.
+	root, _ := json.Marshal(map[string]any{
+		"from": "co/orchestrator", "to": "co/parent", "content": "orchestrate X",
+	})
+	resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: root, ID: 1})
+	if resp.Error != nil {
+		t.Fatalf("root post: %s", resp.Error.Message)
+	}
+	var rootRes PostResult
+	json.Unmarshal(resp.Result, &rootRes)
+	if rootRes.MessageID == 0 {
+		t.Fatal("no root message id")
+	}
+	if cfgParent.OnExit == nil {
+		t.Fatal("parent was not spawned via SpawnFn")
+	}
+	d.Store.db.Exec(`UPDATE sessions SET opencode_session_id='ses_parent'
+		WHERE project_id=(SELECT id FROM projects WHERE name='parent')`)
+
+	// (2) Parent posts a sub-task root → child gets spawned.
+	sub, _ := json.Marshal(map[string]any{
+		"from": "co/parent", "to": "co/child", "content": "do X",
+	})
+	resp = d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: sub, ID: 2})
+	if resp.Error != nil {
+		t.Fatalf("sub-task post: %s", resp.Error.Message)
+	}
+	var pr PostResult
+	json.Unmarshal(resp.Result, &pr)
+	if pr.MessageID == 0 {
+		t.Fatal("no sub-task message id")
+	}
+
+	// (3) Child posts done on the sub-task → daemon kills the idle parent.
+	done, _ := json.Marshal(map[string]any{
+		"from": "co/child", "thread_id": pr.MessageID,
+		"content": "did X", "status": "done",
+	})
+	resp = d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: done, ID: 3})
+	if resp.Error != nil {
+		t.Fatalf("done reply: %s", resp.Error.Message)
+	}
+
+	// (4) Simulate the launcher's exit watcher on the killed parent process.
+	cfgParent.OnExit(-1)
+
+	// (5) Original parent session still "exited" (not flipped to "failed").
+	var status string
+	err := d.Store.db.QueryRow(
+		`SELECT status FROM sessions
+		 WHERE project_id=(SELECT id FROM projects WHERE name='parent')
+		 ORDER BY id ASC LIMIT 1`).Scan(&status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != "exited" {
+		t.Fatalf("killed parent session status = %q, want exited (not failed)", status)
+	}
+	// And the parent's upper thread carries no false BLOCKED.
+	msgs, err := d.Comms.ReadThread(rootRes.MessageID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range msgs {
+		if strings.HasPrefix(m.Content, "BLOCKED") {
+			t.Fatalf("false BLOCKED on parent's upper thread: %+v", m)
+		}
+	}
+}
+
 // ============================================
 // Wake guard — no wake on active session (done threads ARE re-wakeable)
 // ============================================
