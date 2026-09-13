@@ -30,6 +30,9 @@ type threadsModel struct {
 	rows    []daemon.ThreadListItem
 	sel     int
 	confirm bool
+	// confirmReader remembers the confirm was armed while reading, so a
+	// confirmed delete also drops back to the list.
+	confirmReader bool
 
 	readerOpen bool
 	msgs       []daemon.Message
@@ -49,7 +52,10 @@ func (t *threadsModel) refreshNow() {
 		return
 	}
 	var rows []daemon.ThreadListItem
-	json.Unmarshal(raw, &rows)
+	if err := json.Unmarshal(raw, &rows); err != nil {
+		t.rerr = err.Error()
+		return
+	}
 	t.rows = rows
 	t.sel = min(t.sel, max(0, len(rows)-1))
 	t.rerr = ""
@@ -80,6 +86,7 @@ func (t threadsModel) update(msg tea.Msg) (threadsModel, tea.Cmd) {
 	case threadsMsg:
 		t.rows = msg.rows
 		t.sel = min(t.sel, max(0, len(t.rows)-1))
+		t.rerr = ""
 		return t, nil
 	case tea.KeyMsg:
 		return t.keyUpdate(msg)
@@ -88,18 +95,16 @@ func (t threadsModel) update(msg tea.Msg) (threadsModel, tea.Cmd) {
 }
 
 func (t threadsModel) keyUpdate(msg tea.KeyMsg) (threadsModel, tea.Cmd) {
-	if t.readerOpen {
-		if msg.String() == "esc" {
-			t.readerOpen = false
-			return t, nil
-		}
-		var cmd tea.Cmd
-		t.vp, cmd = t.vp.Update(msg)
-		return t, cmd
-	}
+	// Confirm must precede the reader branch: a confirm armed from either
+	// mode consumes the y/n.
 	if t.confirm {
 		t.confirm = false
+		wasReader := t.confirmReader
+		t.confirmReader = false
 		if msg.String() != "y" {
+			return t, nil
+		}
+		if len(t.rows) == 0 {
 			return t, nil
 		}
 		params, _ := json.Marshal(map[string]int64{"thread_id": t.rows[t.sel].ID})
@@ -107,8 +112,25 @@ func (t threadsModel) keyUpdate(msg tea.KeyMsg) (threadsModel, tea.Cmd) {
 			t.rerr = err.Error()
 			return t, nil
 		}
+		if wasReader {
+			t.readerOpen = false
+		}
 		t.refreshNow()
 		return t, nil
+	}
+	if t.readerOpen {
+		switch msg.String() {
+		case "esc":
+			t.readerOpen = false
+			return t, nil
+		case "d":
+			t.confirm = true
+			t.confirmReader = true
+			return t, nil
+		}
+		var cmd tea.Cmd
+		t.vp, cmd = t.vp.Update(msg)
+		return t, cmd
 	}
 	switch msg.String() {
 	case "up", "k":
@@ -120,6 +142,7 @@ func (t threadsModel) keyUpdate(msg tea.KeyMsg) (threadsModel, tea.Cmd) {
 	case "d":
 		if len(t.rows) > 0 {
 			t.confirm = true
+			t.confirmReader = false
 		}
 	}
 	return t, nil
@@ -180,7 +203,11 @@ func (t threadsModel) readerView(w, h int) string {
 			m.TS.Format("15:04"), m.FromProject, m.ToProject, firstLine(m.Content, 200)))
 	}
 	vp.SetContent(strings.Join(lines, "\n"))
-	return vp.View() + "\n" + styDim.Render("esc back · j/k scroll · d delete")
+	out := vp.View() + "\n" + styDim.Render("esc back · j/k scroll · d delete")
+	if t.confirm {
+		out += "  " + styFailed.Render(fmt.Sprintf("delete thread #%d? y/n", t.rows[t.sel].ID))
+	}
+	return out
 }
 
 func statusStyle(s string) lipgloss.Style {

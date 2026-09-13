@@ -65,6 +65,46 @@ func TestThreadsNavAndEsc(t *testing.T) {
 	}
 }
 
+func TestThreadsDeleteFromReader(t *testing.T) {
+	var deletedID string
+	tf := stubFetcher(map[string]json.RawMessage{
+		"thread_list": mustJSON([]daemon.ThreadListItem{{ID: 500, Title: "t", Status: "idle"}}),
+		"read_thread": mustJSON([]daemon.Message{{ID: 500, Content: "do it"}}),
+	})
+	tf.threadDelete = func(params json.RawMessage) (json.RawMessage, error) {
+		deletedID = string(params)
+		return mustJSON(map[string]int{"deleted": 1}), nil
+	}
+	tm := newThreadsModel(tf)
+	tm.refreshNow()
+	tm, _ = tm.update(tea.KeyMsg{Type: tea.KeyEnter})
+	if !tm.readerOpen {
+		t.Fatal("enter must open reader")
+	}
+	tm, _ = tm.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	if !tm.confirm {
+		t.Fatal("d must arm confirm in reader")
+	}
+	tm, _ = tm.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	if !strings.Contains(deletedID, "500") {
+		t.Fatalf("y must call thread_delete with thread_id 500, got %q", deletedID)
+	}
+	if tm.readerOpen {
+		t.Fatal("confirmed delete from reader must return to list")
+	}
+}
+
+func TestThreadsRerrClearsOnRefresh(t *testing.T) {
+	tm := newThreadsModel(stubFetcher(map[string]json.RawMessage{
+		"thread_list": mustJSON([]daemon.ThreadListItem{{ID: 1, Title: "a", Status: "idle"}}),
+	}))
+	tm.rerr = "boom"
+	tm2, _ := tm.update(threadsMsg{rows: []daemon.ThreadListItem{{ID: 1, Title: "a", Status: "idle"}}})
+	if tm2.rerr != "" {
+		t.Fatalf("successful threadsMsg must clear rerr, got %q", tm2.rerr)
+	}
+}
+
 func TestThreadsDeleteConfirm(t *testing.T) {
 	var deletedID string
 	tf := stubFetcher(map[string]json.RawMessage{
