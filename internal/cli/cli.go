@@ -18,11 +18,17 @@ import (
 	"github.com/herdanis/his-mouse-friday/internal/config"
 	"github.com/herdanis/his-mouse-friday/internal/daemon"
 	"github.com/herdanis/his-mouse-friday/internal/protocol"
+	"github.com/herdanis/his-mouse-friday/internal/tui"
 	"github.com/spf13/cobra"
 )
 
 func NewRootCmd() *cobra.Command {
-	root := &cobra.Command{Use: "hmf"}
+	// Bare `hmf` opens the orchestrator TUI; cobra only runs RunE when no
+	// subcommand matched, so every subcommand keeps its current behavior.
+	root := &cobra.Command{
+		Use:  "hmf",
+		RunE: func(cmd *cobra.Command, args []string) error { return tui.Run() },
+	}
 
 	root.AddCommand(upCmd())
 	root.AddCommand(downCmd())
