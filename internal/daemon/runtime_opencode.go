@@ -17,12 +17,6 @@ func isOpencode(binary string) bool {
 	return strings.Contains(binary, "opencode")
 }
 
-// defaultAgentName is the agent hmf spawns with when mouse.yaml doesn't name
-// one. Explicit so a child never silently inherits the user's own
-// `default_agent` — that default may be a narrow one (e.g. a surgical
-// 1-2 file editor with no shell) that refuses ordinary delegated work.
-const defaultAgentName = "hmf-worker"
-
 // opencodeResumeArgs returns args for `opencode run -s <id> [--agent <a>] [--title <n>] [-m <model>] <task>`.
 func opencodeResumeArgs(sessionID, task, model, title, agent string) []string {
 	return append(opencodeCommonArgs([]string{"run", "-s", sessionID}, model, title, agent), task)
@@ -34,13 +28,13 @@ func opencodeFreshArgs(task, model, title, agent string) []string {
 }
 
 func opencodeCommonArgs(args []string, model, title, agent string) []string {
-	if agent == "" {
-		agent = defaultAgentName
-	}
 	// --auto: headless spawns have no TTY, so opencode's native `ask` prompts
 	// hang forever. Auto-approves only what isn't explicitly denied, so deny
 	// rules still hold — unlike a blanket `bash: "*": "allow"` in the config.
-	args = append(args, "--auto", "--agent", agent)
+	args = append(args, "--auto")
+	if agent != "" {
+		args = append(args, "--agent", agent)
+	}
 	if title != "" {
 		args = append(args, "--title", title)
 	}

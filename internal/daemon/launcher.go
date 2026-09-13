@@ -21,7 +21,7 @@ type SpawnConfig struct {
 	Dir            string // repo path to run in
 	Binary         string // agent binary (opencode, /bin/echo, etc.)
 	Model          string // model id
-	AgentName      string // opencode --agent; empty = hmf's default worker
+	AgentName      string // opencode --agent; empty = opencode's own default agent
 	Runbook        string // MOUSE.md content
 	Task           string // the task to perform
 	FromID         string // engaging agent's "workspace/project" identity

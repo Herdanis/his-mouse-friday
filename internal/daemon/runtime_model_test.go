@@ -3,8 +3,23 @@ package daemon
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+// Spawns must not inject hmf's own agent: opencode's default agent runs
+// unless mouse.yaml names one explicitly.
+func TestOpencodeArgsNoDefaultAgent(t *testing.T) {
+	args := opencodeFreshArgs("do X", "default", "", "")
+	joined := strings.Join(args, " ")
+	if strings.Contains(joined, "--agent") {
+		t.Fatalf("no agent name configured — args must not carry --agent, got: %v", args)
+	}
+	withName := opencodeFreshArgs("do X", "default", "", "reviewer")
+	if !strings.Contains(strings.Join(withName, " "), "--agent reviewer") {
+		t.Fatalf("configured agent must be passed through, got: %v", withName)
+	}
+}
 
 func TestRuntimeModelAvailable(t *testing.T) {
 	// Fake opencode binary whose `models` output lists exactly one model.

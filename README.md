@@ -485,11 +485,12 @@ MCP server into opencode*) and restart the session — MCP config is read at
 connection time.
 
 **Spawned agents do nothing, or refuse multi-file work.**
-Check what agent they run as. hmf passes `--agent hmf-worker`; if that agent
-isn't installed (`~/.config/opencode/agents/hmf-worker.md`), opencode falls
-back to your `default_agent`, which may be a narrow one that refuses 3+ file
-tasks or has no shell. Re-run the installer, or copy
-`examples/agents/hmf-worker.md` into place.
+Check what agent they run as. If `mouse.yaml` doesn't set `agent.name`, hmf
+spawns with no `--agent` flag, so opencode's own `default_agent` runs — which
+may be a narrow one that refuses 3+ file tasks or has no shell. Set
+`agent.name` in the project's `mouse.yaml` (or in `~/.hmf/mouse.yaml`) to
+spawn a specific agent; `examples/agents/hmf-worker.md` is a general-purpose
+worker you can copy into `~/.config/opencode/agents/` and name.
 
 **A session shows `active` in `hmf session list` but nothing's happening.**
 Usually a daemon restart orphaned it — the goroutine watching that spawned
