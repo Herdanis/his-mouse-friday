@@ -179,7 +179,20 @@ See `examples/`.
 Children run as separate processes, so they can't report into the session that
 dispatched them. Two views, depending on where you are:
 
-**From another terminal — live dashboard:**
+**From another terminal — the orchestrator TUI:**
+
+Bare `hmf` (with a daemon running) opens an interactive TUI with four panels:
+
+| Panel      | Shows                                       | Keys                                             |
+|------------|---------------------------------------------|--------------------------------------------------|
+| Threads    | delegation threads and their status         | `↑↓/jk` move · `enter` open · `d` delete         |
+| Agents     | running sessions, log tail via `enter`      | `↑↓/jk` move · `enter` expand log · `e` errors only |
+| Projects   | registered projects                         | `a` add · `d` delete                             |
+| Todos      | project work items                          | `a` add · `space` toggle · `x` done · `enter` edit |
+
+`1-4` or `tab` switches panels, `esc` backs out of a drill-down, `q` quits.
+
+**From another terminal — `hmf monitor` (legacy, removed in an upcoming release):**
 
 ```bash
 hmf monitor            # every task, running ones first

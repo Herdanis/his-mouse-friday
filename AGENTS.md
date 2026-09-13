@@ -89,7 +89,9 @@ into this one because three files meant no single place to look.
 - 40MB cap, rotates to `hmf.log.1` (one backup).
 
 Debugging an agent that never replied starts with `tail -f ~/.hmf/hmf.log`, not
-with reading the DB.
+with reading the DB. The orchestrator TUI (bare `hmf`) is the human observation
+surface; agents keep their MCP tools and never read the TUI.
+
 Tests override via `HMF_STATE_DIR` (temp dir) — required because macOS socket
 path length is capped; test helpers `spinDaemon`/`spinCLIDaemon` set this up.
 
