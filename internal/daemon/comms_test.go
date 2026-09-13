@@ -85,7 +85,7 @@ func TestComms_PostBlockedIfNoDone(t *testing.T) {
 	chID := insertTestChannel(t, store, 1, "test")
 	root, _ := c.PostMessage(chID, 0, "a/b", "a/c", "task", "message")
 
-	posted, err := c.PostBlockedIfNoDone(chID, root.ID, "a/c", "a/b", "BLOCKED: died")
+	posted, err := c.PostBlockedIfNoDone(chID, root.ID, "a/c", "a/b", "BLOCKED: died", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +93,7 @@ func TestComms_PostBlockedIfNoDone(t *testing.T) {
 		t.Fatal("thread had no done reply — BLOCKED should have been posted")
 	}
 
-	posted, err = c.PostBlockedIfNoDone(chID, root.ID, "a/c", "a/b", "BLOCKED: again")
+	posted, err = c.PostBlockedIfNoDone(chID, root.ID, "a/c", "a/b", "BLOCKED: again", 0)
 	if err != nil {
 		t.Fatal(err)
 	}

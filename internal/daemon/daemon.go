@@ -673,7 +673,7 @@ func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error
 			if doneCount == 0 {
 				logf("exit", "thread=%d session=%d no done reply — posting safety-net BLOCKED", parentID, tmpSess.ID)
 				content := fmt.Sprintf("BLOCKED: agent exited (code=%d) without posting a done reply", code)
-				if _, err := d.Comms.PostBlockedIfNoDone(msg.ChannelID, parentID, msg.ToProject, msg.FromProject, content); err != nil {
+				if _, err := d.Comms.PostBlockedIfNoDone(msg.ChannelID, parentID, msg.ToProject, msg.FromProject, content, 0); err != nil {
 					logErrf("exit", "thread=%d session=%d safety-net post failed: %v", parentID, tmpSess.ID, err)
 				}
 			}
@@ -790,7 +790,7 @@ func (d *Daemon) wakeParentOnDone(ctx context.Context, p PostParams, msg Message
 	if err := d.wakeAgent(ctx, wake, wakeMsg); err != nil {
 		logErrf("wake", "thread=%d msg=%d done-wake to=%s failed: %v", p.ThreadID, msg.ID, parent, err)
 		content := fmt.Sprintf("BLOCKED: parent wake failed after child finished: %v", err)
-		if _, perr := d.Comms.PostBlockedIfNoDone(msg.ChannelID, p.ThreadID, msg.FromProject, parent, content); perr != nil {
+		if _, perr := d.Comms.PostBlockedIfNoDone(msg.ChannelID, p.ThreadID, msg.FromProject, parent, content, msg.ID); perr != nil {
 			logErrf("wake", "thread=%d BLOCKED post failed: %v", p.ThreadID, perr)
 		}
 	}

@@ -47,12 +47,16 @@ func (c *Comms) PostMessage(channelID, threadID int64, from, to, content, status
 // has none, deciding and inserting in one statement. The exit watcher used to
 // count first and post after, so an agent's real reply landing in between got
 // a contradictory BLOCKED appended right after it.
-func (c *Comms) PostBlockedIfNoDone(channelID, threadID int64, from, to, content string) (bool, error) {
+//
+// excludeMsgID omits one message from the no-done check, so a wake-failure
+// BLOCKED can land on a thread whose triggering done reply is already saved
+// (exit-watcher callers pass 0: no done reply exists by construction).
+func (c *Comms) PostBlockedIfNoDone(channelID, threadID int64, from, to, content string, excludeMsgID int64) (bool, error) {
 	res, err := c.Store.db.Exec(
 		`INSERT INTO messages(channel_id, thread_id, from_project, to_project, content, status, ts)
 		 SELECT ?,?,?,?,?,'done',?
-		 WHERE NOT EXISTS (SELECT 1 FROM messages WHERE thread_id=? AND status='done')`,
-		channelID, nullIfZero(threadID), from, to, content, time.Now().UTC(), threadID)
+		 WHERE NOT EXISTS (SELECT 1 FROM messages WHERE thread_id=? AND status='done' AND id<>?)`,
+		channelID, nullIfZero(threadID), from, to, content, time.Now().UTC(), threadID, excludeMsgID)
 	if err != nil {
 		return false, err
 	}
