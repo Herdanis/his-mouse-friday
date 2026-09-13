@@ -194,7 +194,7 @@ func nextAction(hasDone bool, agentStatus string, messageID int64) string {
 	case agentStatus == "no_agent":
 		return "NO AGENT WAS WOKEN — re-post with a `to` field to spawn one."
 	default:
-		return "agent still working — you will be woken when it posts done; do not poll task_status"
+		return "agent still working — registered agents are woken automatically when it posts done; humans can follow along with `hmf watch`"
 	}
 }
 

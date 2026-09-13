@@ -53,8 +53,8 @@ func Call(method string, params any) (json.RawMessage, error) {
 	return CallWithTimeout(method, params, 30*time.Second)
 }
 
-// CallWithTimeout is Call with a caller-chosen deadline — for RPCs that may
-// take longer than the 30s default.
+// CallWithTimeout is Call with a caller-chosen deadline. Call wraps this
+// with the 30s default; no current caller needs a different one.
 func CallWithTimeout(method string, params any, timeout time.Duration) (json.RawMessage, error) {
 	var raw json.RawMessage
 	if params != nil {
