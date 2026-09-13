@@ -91,6 +91,8 @@ func (p projectsModel) update(msg tea.Msg) (projectsModel, tea.Cmd) {
 	return p, nil
 }
 
+func (p projectsModel) capturing() bool { return p.adding || p.confirm }
+
 func (p projectsModel) keyUpdate(msg tea.KeyMsg) (projectsModel, tea.Cmd) {
 	// Confirm consumes the y/n first — never leaks into other branches.
 	if p.confirm {

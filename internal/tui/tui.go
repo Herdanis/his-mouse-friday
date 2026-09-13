@@ -148,6 +148,21 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		m.w, m.h = msg.Width, msg.Height
 
 	case tea.KeyMsg:
+		// While the active panel holds an open form/input/confirm it claims
+		// all keys (q, digits, tab included) — ctrl+c always quits.
+		if m.activePanelCapturing() && msg.String() != "ctrl+c" {
+			switch m.panel {
+			case panelThreads:
+				m.threads, cmd = m.threads.update(msg)
+			case panelAgents:
+				m.agents, cmd = m.agents.update(msg)
+			case panelProjects:
+				m.projects, cmd = m.projects.update(msg)
+			case panelTodos:
+				m.todos, cmd = m.todos.update(msg)
+			}
+			return m, cmd
+		}
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
@@ -190,6 +205,22 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 	return m, cmd
 }
 
+// activePanelCapturing reports whether the active panel holds an open
+// form/input/confirm and should claim keys before the chrome does.
+func (m model) activePanelCapturing() bool {
+	switch m.panel {
+	case panelThreads:
+		return m.threads.capturing()
+	case panelAgents:
+		return m.agents.capturing()
+	case panelProjects:
+		return m.projects.capturing()
+	case panelTodos:
+		return m.todos.capturing()
+	}
+	return false
+}
+
 func (m model) refreshActive() tea.Cmd {
 	switch m.panel {
 	case panelThreads:
@@ -203,7 +234,6 @@ func (m model) refreshActive() tea.Cmd {
 	}
 	return nil
 }
-
 func tickCmd() tea.Cmd {
 	return tea.Tick(tickEvery, func(t time.Time) tea.Msg { return tickMsg(t) })
 }

@@ -94,6 +94,8 @@ func (t threadsModel) update(msg tea.Msg) (threadsModel, tea.Cmd) {
 	return t, nil
 }
 
+func (t threadsModel) capturing() bool { return t.confirm }
+
 func (t threadsModel) keyUpdate(msg tea.KeyMsg) (threadsModel, tea.Cmd) {
 	// Confirm must precede the reader branch: a confirm armed from either
 	// mode consumes the y/n.
@@ -204,7 +206,7 @@ func (t threadsModel) readerView(w, h int) string {
 	}
 	vp.SetContent(strings.Join(lines, "\n"))
 	out := vp.View() + "\n" + styDim.Render("esc back · j/k scroll · d delete")
-	if t.confirm {
+	if t.confirm && len(t.rows) > 0 {
 		out += "  " + styFailed.Render(fmt.Sprintf("delete thread #%d? y/n", t.rows[t.sel].ID))
 	}
 	return out

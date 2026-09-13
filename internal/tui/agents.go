@@ -121,6 +121,8 @@ func (a agentsModel) update(msg tea.Msg) (agentsModel, tea.Cmd) {
 	return a, nil
 }
 
+func (a agentsModel) capturing() bool { return false }
+
 func (a agentsModel) keyUpdate(msg tea.KeyMsg) (agentsModel, tea.Cmd) {
 	if a.expanded >= 0 {
 		switch msg.String() {

@@ -148,6 +148,8 @@ func (t todosModel) update(msg tea.Msg) (todosModel, tea.Cmd) {
 	return t, nil
 }
 
+func (t todosModel) capturing() bool { return t.adding || t.confirm }
+
 func (t todosModel) keyUpdate(msg tea.KeyMsg) (todosModel, tea.Cmd) {
 	// Confirm consumes the y/n first — never leaks into other branches.
 	if t.confirm {

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/bubbles/viewport"
 )
 
 func TestPanelSwitchingAndTick(t *testing.T) {
@@ -47,6 +48,55 @@ func TestFetchErrLandsInModelError(t *testing.T) {
 	m, _ = m.update(fetchMsg{})
 	if m.err != nil {
 		t.Fatal("nil fetch error must clear m.err")
+	}
+}
+
+func TestFormOpenClaimsKeys(t *testing.T) {
+	key := func(s string) tea.KeyMsg {
+		return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
+	}
+
+	// Form open + q: form receives it, no quit, panel unchanged.
+	m := initialModel()
+	m.fetchers = stubFetcher(nil)
+	m.panel = panelProjects
+	m, _ = m.update(key("a"))
+	if !m.projects.adding {
+		t.Fatal("a must open the add form")
+	}
+	m2, _ := m.update(key("q"))
+	if m2.panel != panelProjects {
+		t.Fatal("panel must stay projects while form open")
+	}
+	if got := m2.projects.inputs[0].Value(); got != "q" {
+		t.Fatalf("q must land in form input, got %q", got)
+	}
+
+	// Form open + 1: digit lands in the input, no panel switch.
+	m3, _ := m2.update(key("1"))
+	if m3.panel != panelProjects {
+		t.Fatal("panel must stay projects while form open")
+	}
+	if got := m3.projects.inputs[0].Value(); got != "q1" {
+		t.Fatalf("1 must land in form input, got %q", got)
+	}
+}
+
+func TestNoFormQQuits(t *testing.T) {
+	m := initialModel()
+	m.fetchers = stubFetcher(nil)
+	m.panel = panelProjects
+	if _, cmd := m.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")}); cmd == nil {
+		t.Fatal("q with no form open must quit")
+	}
+}
+
+func TestReaderViewEmptyRowsNoPanic(t *testing.T) {
+	// Confirm armed mid-read, then rows emptied by an async refresh —
+	// readerView must not index into a nil slice.
+	tm := threadsModel{readerOpen: true, confirm: true, confirmReader: true, vp: viewport.New(80, 20)}
+	if tm.readerView(80, 20) == "" {
+		t.Fatal("reader view must render")
 	}
 }
 
