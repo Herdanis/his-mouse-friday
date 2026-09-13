@@ -19,7 +19,7 @@ import (
 // responses unmarshal cleanly into shim output types.
 
 // spinDaemon: temp HMF_STATE_DIR + daemon with /bin/echo + registered
-// workspace/project. Shim's callDaemon reaches it via protocol.SocketPath().
+// project. Shim's callDaemon reaches it via protocol.SocketPath().
 func spinDaemon(t *testing.T) (*daemon.Daemon, func()) {
 	t.Helper()
 	// macOS limits unix socket paths to ~104 chars; t.TempDir() paths are too
@@ -68,12 +68,11 @@ func spinDaemon(t *testing.T) (*daemon.Daemon, func()) {
 	}
 	cancelWait()
 
-	// Register a workspace + an inbound-allowed project (mouse.yaml in its dir).
+	// Register an inbound-allowed project (mouse.yaml in its dir).
 	userDir := t.TempDir()
 	os.WriteFile(filepath.Join(userDir, "mouse.yaml"),
 		[]byte("agent:\n  primary:\n    provider: /bin/echo\na2a:\n  allow_inbound: true\n"), 0644)
-	mustCallDaemon(t, "workspace_add", map[string]any{"name": "companyA"})
-	mustCallDaemon(t, "project_add", map[string]any{"workspace": "companyA", "name": "user-service", "path": userDir})
+	mustCallDaemon(t, "project_add", map[string]any{"name": "user-service", "path": userDir})
 
 	cleanup := func() {
 		cancel()
@@ -105,8 +104,8 @@ func TestShim_PostMessageReturnsMessageID(t *testing.T) {
 	defer cleanup()
 
 	result := mustCallDaemon(t, "post_message", map[string]any{
-		"from":    "companyA/payment",
-		"to":      "companyA/user-service",
+		"from":    "payment",
+		"to":      "user-service",
 		"content": "do the thing",
 	})
 	var out PostOutput
@@ -125,8 +124,8 @@ func TestShim_TaskStatusShape(t *testing.T) {
 
 	// Post a task — wakes /bin/echo (exits immediately → session marked exited).
 	postResult := mustCallDaemon(t, "post_message", map[string]any{
-		"from":    "companyA/payment",
-		"to":      "companyA/user-service",
+		"from":    "payment",
+		"to":      "user-service",
 		"content": "x",
 	})
 	var pr PostOutput
@@ -155,8 +154,8 @@ func TestShim_ReadThreadShape(t *testing.T) {
 	defer cleanup()
 
 	postResult := mustCallDaemon(t, "post_message", map[string]any{
-		"from":    "companyA/payment",
-		"to":      "companyA/user-service",
+		"from":    "payment",
+		"to":      "user-service",
 		"content": "task",
 	})
 	var pr PostOutput
@@ -166,8 +165,8 @@ func TestShim_ReadThreadShape(t *testing.T) {
 	// Post a reply in-thread.
 	mustCallDaemon(t, "post_message", map[string]any{
 		"thread_id": threadID,
-		"from":      "companyA/user-service",
-		"to":        "companyA/payment",
+		"from":      "user-service",
+		"to":        "payment",
 		"content":   "done",
 		"status":    "done",
 	})
@@ -196,8 +195,8 @@ func TestShim_ReadChannelDefaultsToGeneral(t *testing.T) {
 
 	// Post a message (defaults to general since no channel given).
 	mustCallDaemon(t, "post_message", map[string]any{
-		"from":    "companyA/payment",
-		"to":      "companyA/user-service",
+		"from":    "payment",
+		"to":      "user-service",
 		"content": "lobby post",
 	})
 

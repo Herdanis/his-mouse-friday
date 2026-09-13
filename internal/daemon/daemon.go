@@ -161,7 +161,7 @@ type TaskStatusResult struct {
 
 	// Progress detail. The child runs in its own process and can't write into
 	// the caller's session, so this is how its work becomes visible there.
-	Project     string     `json:"project,omitempty"`      // workspace/project doing the work
+	Project     string     `json:"project,omitempty"`      // project doing the work
 	ElapsedSecs int64      `json:"elapsed_secs,omitempty"` // since the task was posted
 	TodosDone   int        `json:"todos_done"`
 	TodosTotal  int        `json:"todos_total"`
@@ -345,40 +345,15 @@ func (d *Daemon) findProject(name string) (Project, error) {
 	return p, err
 }
 
-// resolveToProject canonicalizes a `to` field. A full "workspace/project"
-// passes through. A bare name resolves against the registry: 0 rows →
-// not-found, 1 row → auto-resolved, 2+ rows → ambiguous error listing the
-// candidates so the caller can ask the user to disambiguate.
+// resolveToProject canonicalizes a `to` field. Identity is the bare project
+// name. A value containing "/" is a legacy "workspace/project" identity and
+// fails resolution instead of being silently split. An unregistered bare name
+// passes through — mailbox semantics (post stored, no wake) still apply.
 func (d *Daemon) resolveToProject(to string) (string, error) {
 	if strings.Contains(to, "/") {
-		return to, nil
+		return "", fmt.Errorf("to %q must be a bare project name — workspaces are gone; call list_project_agents for registered names", to)
 	}
-	rows, err := d.Store.db.Query(
-		`SELECT w.name, p.name FROM projects p JOIN workspaces w ON p.workspace_id=w.id
-		 WHERE p.name=?`, to)
-	if err != nil {
-		return "", fmt.Errorf("resolve %q: %w", to, err)
-	}
-	defer rows.Close()
-	var cands []string
-	for rows.Next() {
-		var ws, name string
-		if err := rows.Scan(&ws, &name); err != nil {
-			return "", fmt.Errorf("resolve %q: %w", to, err)
-		}
-		cands = append(cands, ws+"/"+name)
-	}
-	if err := rows.Err(); err != nil {
-		return "", fmt.Errorf("resolve %q: %w", to, err)
-	}
-	switch len(cands) {
-	case 0:
-		return "", fmt.Errorf("no project named %q; call list_project_agents", to)
-	case 1:
-		return cands[0], nil
-	default:
-		return "", fmt.Errorf("ambiguous %q: exists in %s — specify workspace/project", to, strings.Join(cands, ", "))
-	}
+	return to, nil
 }
 
 // threadSessionActive reports whether toProject already has a session running
@@ -389,18 +364,13 @@ func (d *Daemon) threadSessionActive(threadID int64, toProject string) bool {
 	if threadID == 0 {
 		return false
 	}
-	parts := strings.SplitN(toProject, "/", 2)
-	if len(parts) != 2 {
-		return false
-	}
 	var status string
 	err := d.Store.db.QueryRow(
 		`SELECT s.status FROM sessions s
 		 JOIN projects p ON s.project_id=p.id
-		 JOIN workspaces w ON p.workspace_id=w.id
-		 WHERE s.root_thread_id=? AND w.name=? AND p.name=?
+		 WHERE s.root_thread_id=? AND p.name=?
 		 ORDER BY s.id DESC LIMIT 1`,
-		threadID, parts[0], parts[1]).Scan(&status)
+		threadID, toProject).Scan(&status)
 	if err != nil {
 		return false // this project has no session on the thread
 	}
@@ -433,12 +403,14 @@ func (d *Daemon) handlePost(ctx context.Context, req protocol.Request) protocol.
 			if other == "" || other == p.From {
 				other = root.FromProject
 			}
-			// Only ever auto-fill a real "workspace/project". A thread opened
+			// Only ever auto-fill a registered project name. A thread opened
 			// from an unregistered directory carries a non-project identity
 			// there, and resolving that as a recipient would fail the post.
-			if other != "" && other != p.From && strings.Contains(other, "/") {
-				p.To = other
-				logf("post", "thread=%d autofilled to=%s from thread root", p.ThreadID, p.To)
+			if other != "" && other != p.From {
+				if _, err := d.findProject(other); err == nil {
+					p.To = other
+					logf("post", "thread=%d autofilled to=%s from thread root", p.ThreadID, p.To)
+				}
 			}
 		}
 	}
@@ -487,14 +459,10 @@ func (d *Daemon) handlePost(ctx context.Context, req protocol.Request) protocol.
 // sets a2a.allow_outbound: false. Mirrors the inbound guard — both sides of an
 // A2A hop declare consent, and both are enforced here.
 //
-// Anything that isn't a registered "workspace/project" with a mouse.yaml is
+// Anything that isn't a registered project with a mouse.yaml is
 // allowed through: humans and scratch dirs aren't governed by a repo's config.
 func (d *Daemon) checkOutboundAllowed(fromProject string) error {
-	parts := strings.SplitN(fromProject, "/", 2)
-	if len(parts) != 2 {
-		return nil
-	}
-	proj, err := d.findProject(parts[1])
+	proj, err := d.findProject(fromProject)
 	if err != nil {
 		return nil // unregistered sender — nothing declared, nothing to enforce
 	}
@@ -525,11 +493,10 @@ func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error
 		logf("wake", "thread=%d msg=%d to=%s "+format, append([]any{parentID, msg.ID, msg.ToProject}, args...)...)
 	}
 	wlog("start from=%s", msg.FromProject)
-	parts := strings.SplitN(msg.ToProject, "/", 2)
-	if len(parts) != 2 {
-		return fmt.Errorf("to must be workspace/project, got %q", msg.ToProject)
+	if strings.Contains(msg.ToProject, "/") {
+		return fmt.Errorf("to must be a bare project name, got %q", msg.ToProject)
 	}
-	proj, err := d.findProject(parts[1])
+	proj, err := d.findProject(msg.ToProject)
 	if err != nil {
 		// Unregistered recipient — post but don't wake (mailbox semantics).
 		if errors.Is(err, sql.ErrNoRows) {
@@ -768,14 +735,7 @@ func (d *Daemon) wakeParentOnDone(ctx context.Context, p PostParams, msg Message
 		wlog("done-wake skipped: originator finished its own thread")
 		return
 	}
-	parts := strings.SplitN(parent, "/", 2)
-	// No slash = human/scratch originator — reads the thread themselves, no
-	// wake. (SplitN on "human" yields one part; indexing [1] would panic.)
-	if len(parts) != 2 {
-		wlog("done-wake skipped: originator %q not a registered project", parent)
-		return
-	}
-	proj, err := d.findProject(parts[1])
+	proj, err := d.findProject(parent)
 	if err != nil {
 		// Human/scratch originator — reads the thread themselves, no wake.
 		wlog("done-wake skipped: originator %q not a registered project", parent)
@@ -1086,10 +1046,9 @@ func (d *Daemon) handleSessionList(req protocol.Request) protocol.Response {
 		        IFNULL(m.from_project,''), IFNULL(s.pid,0), p.path,
 		        IFNULL((SELECT ps.id FROM sessions ps
 		                JOIN projects pp ON ps.project_id=pp.id
-		                JOIN workspaces pw ON pp.workspace_id=pw.id
 		                WHERE ps.root_thread_id = s.root_thread_id
 		                  AND ps.id < s.id
-		                  AND pw.name || '/' || pp.name = m.from_project
+		                  AND pp.name = m.from_project
 		                ORDER BY ps.id DESC LIMIT 1), 0) AS engaged_by_session
 		 FROM sessions s JOIN projects p ON s.project_id=p.id
 		 LEFT JOIN messages m ON m.id = s.task_msg_id

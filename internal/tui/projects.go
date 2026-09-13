@@ -34,15 +34,15 @@ type projectsModel struct {
 }
 
 func newProjectsModel(f fetchers) projectsModel {
-	wsName := textinput.New()
-	wsName.Placeholder = "workspace/name"
-	wsName.CharLimit = 120
+	name := textinput.New()
+	name.Placeholder = "name"
+	name.CharLimit = 120
 	path := textinput.New()
 	path.Placeholder = "path"
 	path.CharLimit = 200
 	return projectsModel{
 		list: f.projectList, add: f.projectAdd, del: f.projectDel,
-		inputs: [2]textinput.Model{wsName, path},
+		inputs: [2]textinput.Model{name, path},
 	}
 }
 

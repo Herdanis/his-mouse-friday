@@ -48,10 +48,10 @@ func TestHandle_PostToGeneralWakesAgent(t *testing.T) {
 	os.WriteFile(filepath.Join(userDir, "mouse.yaml"), []byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n"), 0644)
 	d.Registry.AddProject("user-service", userDir)
 
-	// Post a task to general mentioning @companyA/user-service — thread root.
+	// Post a task to general mentioning @user-service — thread root.
 	params, _ := json.Marshal(map[string]any{
-		"from":    "companyA/payment-service",
-		"to":      "companyA/user-service",
+		"from":    "payment-service",
+		"to":      "user-service",
 		"content": "add field payment_status",
 	})
 	resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: params, ID: 1})
@@ -83,8 +83,8 @@ func TestHandle_SyntheticBlockedReplyOnSilentExit(t *testing.T) {
 	d.Registry.AddProject("user-service", userDir)
 
 	params, _ := json.Marshal(map[string]any{
-		"from":    "companyA/payment-service",
-		"to":      "companyA/user-service",
+		"from":    "payment-service",
+		"to":      "user-service",
 		"content": "do something with bash",
 	})
 	resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: params, ID: 1})
@@ -120,7 +120,7 @@ func TestHandle_Post_InboundDenied(t *testing.T) {
 	os.WriteFile(filepath.Join(userDir, "mouse.yaml"), []byte("agent:\n  primary:\n    provider: opencode\n"), 0644)
 	d.Registry.AddProject("user-service", userDir)
 
-	params, _ := json.Marshal(map[string]any{"from": "companyA/payment", "to": "companyA/user-service", "content": "x"})
+	params, _ := json.Marshal(map[string]any{"from": "payment", "to": "user-service", "content": "x"})
 	resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: params, ID: 1})
 	if resp.Error == nil {
 		t.Fatal("expected inbound-denied error")
@@ -132,7 +132,7 @@ func TestHandle_PostAndRead(t *testing.T) {
 	d.Store.db.Exec(`INSERT INTO channels(id, name, type) VALUES(10, 'dm', 'dm')`)
 
 	postParams, _ := json.Marshal(map[string]any{
-		"channel": 10, "from": "companyA/payment", "to": "companyA/user", "content": "hello",
+		"channel": 10, "from": "payment", "to": "user", "content": "hello",
 	})
 	resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: postParams, ID: 1})
 	if resp.Error != nil {
@@ -146,7 +146,7 @@ func TestHandle_PostAndRead(t *testing.T) {
 	}
 	var msgs []Message
 	json.Unmarshal(resp.Result, &msgs)
-	if len(msgs) != 1 || msgs[0].Content != "hello" || msgs[0].FromProject != "companyA/payment" {
+	if len(msgs) != 1 || msgs[0].Content != "hello" || msgs[0].FromProject != "payment" {
 		t.Errorf("got %+v", msgs)
 	}
 }
@@ -155,7 +155,7 @@ func TestHandle_PostToUnregisteredAgentSkipsWake(t *testing.T) {
 	d := setupDaemon(t)
 
 	// Addressing an unregistered agent: message posts, no wake (mailbox semantics).
-	params, _ := json.Marshal(map[string]any{"from": "companyA/payment", "to": "companyA/ghost", "content": "hello"})
+	params, _ := json.Marshal(map[string]any{"from": "payment", "to": "ghost", "content": "hello"})
 	resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: params, ID: 1})
 	if resp.Error != nil {
 		t.Fatalf("post to unregistered agent should succeed (skip wake): %s", resp.Error.Message)
@@ -180,7 +180,7 @@ func postTask(t *testing.T, d *Daemon, sessionStatus string, exitCode int, withD
 	// Thread root message in the general channel.
 	res, err := d.Store.db.Exec(
 		`INSERT INTO messages(channel_id, thread_id, from_project, to_project, content, status, ts)
-		 VALUES(1, NULL, 'companyA/payment', 'companyA/user-service', 'task', 'message', datetime('now'))`)
+		 VALUES(1, NULL, 'payment', 'user-service', 'task', 'message', datetime('now'))`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -195,7 +195,7 @@ func postTask(t *testing.T, d *Daemon, sessionStatus string, exitCode int, withD
 	if withDone {
 		d.Store.db.Exec(
 			`INSERT INTO messages(channel_id, thread_id, from_project, to_project, content, status, ts)
-			 VALUES(1, ?, 'companyA/user-service', 'companyA/payment', 'done', 'done', datetime('now'))`,
+			 VALUES(1, ?, 'user-service', 'payment', 'done', 'done', datetime('now'))`,
 			parentID)
 	}
 	return parentID
@@ -281,9 +281,9 @@ func TestHandle_TaskStatus_RequiresThreadID(t *testing.T) {
 // never wait server-side. An unresolved task returns has_done=false fast.
 func TestTaskStatusReturnsImmediately(t *testing.T) {
 	d := setupDaemon(t)
-	d.Store.db.Exec(`INSERT INTO projects(id, name, path) VALUES(1, 'co/child', '/tmp/child')`)
+	d.Store.db.Exec(`INSERT INTO projects(id, name, path) VALUES(1, 'child', '/tmp/child')`)
 	d.Store.db.Exec(`INSERT INTO messages(id, channel_id, thread_id, from_project, to_project, content, status, ts)
-		VALUES(900, 1, NULL, 'co/parent', 'co/child', 'do X', 'message', datetime('now'))`)
+		VALUES(900, 1, NULL, 'parent', 'child', 'do X', 'message', datetime('now'))`)
 	// Active session keeps the status non-terminal — the case that used to block.
 	d.Store.db.Exec(`INSERT INTO sessions(project_id, agent_binary, model, status, pid, created_at, task_msg_id, root_thread_id)
 		VALUES(1, 'opencode', 'default', 'active', 0, datetime('now'), 900, 900)`)
@@ -513,7 +513,7 @@ func TestWakeAgent_StoresParentID(t *testing.T) {
 
 	// Thread root wake: root_thread_id = msg.ID.
 	params, _ := json.Marshal(map[string]any{
-		"from": "companyA/payment", "to": "companyA/user-service", "content": "task 1",
+		"from": "payment", "to": "user-service", "content": "task 1",
 	})
 	resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: params, ID: 1})
 	var pr PostResult
@@ -541,14 +541,14 @@ func TestHandle_CrossProjectDelegationInheritsRoot(t *testing.T) {
 	d.Registry.AddProject("service-b", bDir)
 	// Seed: root thread 500 already exists, with service-a's session bound.
 	d.Store.db.Exec(`INSERT INTO messages(id, channel_id, thread_id, from_project, to_project, content, status, ts)
-		VALUES(500, 1, NULL, 'companyA/orchestrator', 'companyA/service-a', 'do X', 'message', datetime('now'))`)
+		VALUES(500, 1, NULL, 'orchestrator', 'service-a', 'do X', 'message', datetime('now'))`)
 	d.Store.db.Exec(`INSERT INTO sessions(project_id, agent_binary, model, status, pid, created_at, task_msg_id, root_thread_id)
 		VALUES((SELECT id FROM projects WHERE name='service-a'), 'opencode', 'default', 'exited', 0, datetime('now'), 500, 500)`)
 
 	// service-a (in its spawned session) calls service-b as a new thread root.
 	// ParentID=500 passed in params → service-b's session binds to root 500.
 	params, _ := json.Marshal(map[string]any{
-		"from": "companyA/service-a", "to": "companyA/service-b",
+		"from": "service-a", "to": "service-b",
 		"content": "sub-task", "parent_id": 500,
 	})
 	resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: params, ID: 1})
@@ -585,7 +585,7 @@ func TestWakeAgent_TaskMsgIDMatchesRootForTaskStatus(t *testing.T) {
 	d.Registry.AddProject("service-b", bDir)
 	// Seed: root thread 500, service-a's session bound.
 	d.Store.db.Exec(`INSERT INTO messages(id, channel_id, thread_id, from_project, to_project, content, status, ts)
-		VALUES(500, 1, NULL, 'companyA/orchestrator', 'companyA/service-a', 'do X', 'message', datetime('now'))`)
+		VALUES(500, 1, NULL, 'orchestrator', 'service-a', 'do X', 'message', datetime('now'))`)
 	d.Store.db.Exec(`INSERT INTO sessions(project_id, agent_binary, model, status, pid, created_at, task_msg_id, root_thread_id)
 		VALUES((SELECT id FROM projects WHERE name='service-a'), 'opencode', 'default', 'exited', 0, datetime('now'), 500, 500)`)
 
@@ -593,7 +593,7 @@ func TestWakeAgent_TaskMsgIDMatchesRootForTaskStatus(t *testing.T) {
 	// explicit parent_id). This message itself becomes a reply on thread
 	// 500 while also spawning its own session.
 	params, _ := json.Marshal(map[string]any{
-		"from": "companyA/service-a", "to": "companyA/service-b",
+		"from": "service-a", "to": "service-b",
 		"content": "sub-task", "thread_id": 500,
 	})
 	resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: params, ID: 1})
@@ -610,7 +610,7 @@ func TestWakeAgent_TaskMsgIDMatchesRootForTaskStatus(t *testing.T) {
 	// service-b replies exactly like `hmf done`/[REPLY RULE] would: thread_id
 	// = HMF_TASK_MSG_ID = captured.TaskMsgID.
 	doneParams, _ := json.Marshal(map[string]any{
-		"from": "companyA/service-b", "thread_id": captured.TaskMsgID,
+		"from": "service-b", "thread_id": captured.TaskMsgID,
 		"content": "done", "status": "done",
 	})
 	if resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: doneParams, ID: 2}); resp.Error != nil {
@@ -641,7 +641,7 @@ func TestHandle_TaskStatusRepeatCallInstant(t *testing.T) {
 	d.Registry.AddProject("user-service", userDir)
 
 	d.Store.db.Exec(`INSERT INTO messages(id, channel_id, thread_id, from_project, to_project, content, status, ts)
-		VALUES(500, 1, NULL, 'companyA/payment', 'companyA/user-service', 'task', 'message', datetime('now'))`)
+		VALUES(500, 1, NULL, 'payment', 'user-service', 'task', 'message', datetime('now'))`)
 	d.Store.db.Exec(`INSERT INTO sessions(project_id, agent_binary, model, status, pid, created_at, task_msg_id, root_thread_id)
 		VALUES((SELECT id FROM projects WHERE name='user-service'), 'opencode', 'default', 'active', 0, datetime('now'), 500, 500)`)
 
@@ -682,7 +682,7 @@ func TestWakeAgent_KillAfterDoneMarksExitedNotFailed(t *testing.T) {
 	}}
 
 	params, _ := json.Marshal(map[string]any{
-		"from": "companyA/payment", "to": "companyA/user-service", "content": "task",
+		"from": "payment", "to": "user-service", "content": "task",
 	})
 	resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: params, ID: 1})
 	if resp.Error != nil {
@@ -695,7 +695,7 @@ func TestWakeAgent_KillAfterDoneMarksExitedNotFailed(t *testing.T) {
 	// afterward (e.g. a resumed session that won't self-exit) — exit code
 	// is nonzero despite the task having succeeded.
 	done, _ := json.Marshal(map[string]any{
-		"from": "companyA/user-service", "thread_id": captured.TaskMsgID,
+		"from": "user-service", "thread_id": captured.TaskMsgID,
 		"content": "done", "status": "done",
 	})
 	if resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: done, ID: 99}); resp.Error != nil {
@@ -739,7 +739,7 @@ func TestWakeAgent_ExitWithoutDoneMarksFailedAndPostsBlocked(t *testing.T) {
 	}}
 
 	params, _ := json.Marshal(map[string]any{
-		"from": "companyA/payment", "to": "companyA/user-service", "content": "task",
+		"from": "payment", "to": "user-service", "content": "task",
 	})
 	resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: params, ID: 1})
 	if resp.Error != nil {
@@ -778,21 +778,21 @@ func TestReconcileOrphanedSessions(t *testing.T) {
 
 	// PID 999999999 is never a real live process. Root msg 700, completed.
 	d.Store.db.Exec(`INSERT INTO messages(id, channel_id, thread_id, from_project, to_project, content, status, ts)
-		VALUES(700, 1, NULL, 'companyA/payment', 'companyA/user-service', 'task', 'message', datetime('now'))`)
+		VALUES(700, 1, NULL, 'payment', 'user-service', 'task', 'message', datetime('now'))`)
 	d.Store.db.Exec(`INSERT INTO messages(channel_id, thread_id, from_project, to_project, content, status, ts)
-		VALUES(1, 700, 'companyA/user-service', 'companyA/payment', 'done', 'done', datetime('now'))`)
+		VALUES(1, 700, 'user-service', 'payment', 'done', 'done', datetime('now'))`)
 	d.Store.db.Exec(`INSERT INTO sessions(project_id, agent_binary, model, status, pid, created_at, task_msg_id, root_thread_id)
 		VALUES((SELECT id FROM projects WHERE name='user-service'), 'opencode', 'default', 'active', 999999999, datetime('now'), 700, 700)`)
 
 	// Root msg 701, orphaned mid-task, no done reply ever posted.
 	d.Store.db.Exec(`INSERT INTO messages(id, channel_id, thread_id, from_project, to_project, content, status, ts)
-		VALUES(701, 1, NULL, 'companyA/payment', 'companyA/user-service', 'task 2', 'message', datetime('now'))`)
+		VALUES(701, 1, NULL, 'payment', 'user-service', 'task 2', 'message', datetime('now'))`)
 	d.Store.db.Exec(`INSERT INTO sessions(project_id, agent_binary, model, status, pid, created_at, task_msg_id, root_thread_id)
 		VALUES((SELECT id FROM projects WHERE name='user-service'), 'opencode', 'default', 'active', 999999998, datetime('now'), 701, 701)`)
 
 	// A genuinely live process (this test's own PID) must be left alone.
 	d.Store.db.Exec(`INSERT INTO messages(id, channel_id, thread_id, from_project, to_project, content, status, ts)
-		VALUES(702, 1, NULL, 'companyA/payment', 'companyA/user-service', 'task 3', 'message', datetime('now'))`)
+		VALUES(702, 1, NULL, 'payment', 'user-service', 'task 3', 'message', datetime('now'))`)
 	d.Store.db.Exec(`INSERT INTO sessions(project_id, agent_binary, model, status, pid, created_at, task_msg_id, root_thread_id)
 		VALUES((SELECT id FROM projects WHERE name='user-service'), 'opencode', 'default', 'active', ?, datetime('now'), 702, 702)`, os.Getpid())
 
@@ -837,14 +837,14 @@ func TestHandle_ReplyWithToWakesAgent(t *testing.T) {
 
 	// Seed: thread root 500, agent already exited (no done reply yet).
 	d.Store.db.Exec(`INSERT INTO messages(id, channel_id, thread_id, from_project, to_project, content, status, ts)
-		VALUES(500, 1, NULL, 'companyA/payment', 'companyA/user-service', 'task', 'message', datetime('now'))`)
+		VALUES(500, 1, NULL, 'payment', 'user-service', 'task', 'message', datetime('now'))`)
 	d.Store.db.Exec(`INSERT INTO sessions(project_id, agent_binary, model, status, pid, created_at, task_msg_id, root_thread_id)
 		VALUES((SELECT id FROM projects WHERE name='user-service'), 'opencode', 'default', 'exited', 0, datetime('now'), 500, 500)`)
 
 	// Follow-up reply with to= — should wake the agent.
 	params, _ := json.Marshal(map[string]any{
-		"channel": 1, "thread_id": 500, "from": "companyA/payment",
-		"to": "companyA/user-service", "content": "now do follow-up",
+		"channel": 1, "thread_id": 500, "from": "payment",
+		"to": "user-service", "content": "now do follow-up",
 	})
 	resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: params, ID: 1})
 	if resp.Error != nil {
@@ -870,13 +870,13 @@ func TestHandle_ReplyWithoutToAutoFillsFromRoot(t *testing.T) {
 
 	// Seed: thread root 500 addressed to user-service, agent already exited.
 	d.Store.db.Exec(`INSERT INTO messages(id, channel_id, thread_id, from_project, to_project, content, status, ts)
-		VALUES(500, 1, NULL, 'companyA/payment', 'companyA/user-service', 'task', 'message', datetime('now'))`)
+		VALUES(500, 1, NULL, 'payment', 'user-service', 'task', 'message', datetime('now'))`)
 	d.Store.db.Exec(`INSERT INTO sessions(project_id, agent_binary, model, status, pid, created_at, task_msg_id, root_thread_id)
 		VALUES((SELECT id FROM projects WHERE name='user-service'), 'opencode', 'default', 'exited', 0, datetime('now'), 500, 500)`)
 
 	// Follow-up reply with NO `to` — should still wake user-service.
 	params, _ := json.Marshal(map[string]any{
-		"channel": 1, "thread_id": 500, "from": "companyA/payment",
+		"channel": 1, "thread_id": 500, "from": "payment",
 		"status": "in_progress", "content": "retry, still nothing happened",
 	})
 	resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: params, ID: 1})
@@ -907,13 +907,13 @@ func TestHandle_DoneReplyWithoutToDoesNotAutoWake(t *testing.T) {
 	d.Registry.AddProject("payment", paymentDir)
 
 	d.Store.db.Exec(`INSERT INTO messages(id, channel_id, thread_id, from_project, to_project, content, status, ts)
-		VALUES(500, 1, NULL, 'companyA/payment', 'companyA/user-service', 'task', 'message', datetime('now'))`)
+		VALUES(500, 1, NULL, 'payment', 'user-service', 'task', 'message', datetime('now'))`)
 	d.Store.db.Exec(`INSERT INTO sessions(project_id, agent_binary, model, status, pid, created_at, task_msg_id, root_thread_id)
 		VALUES((SELECT id FROM projects WHERE name='user-service'), 'opencode', 'default', 'exited', 0, datetime('now'), 500, 500)`)
 
 	// Worker's completion reply — no `to`, status=done.
 	params, _ := json.Marshal(map[string]any{
-		"channel": 1, "thread_id": 500, "from": "companyA/user-service",
+		"channel": 1, "thread_id": 500, "from": "user-service",
 		"status": "done", "content": "done, files changed: x.go",
 	})
 	resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: params, ID: 1})
@@ -952,12 +952,12 @@ func TestDoneReplyWakesOriginator(t *testing.T) {
 	// Root task 500: parent → child. The parent's OWN session is on its
 	// upper thread 499 — NOT on thread 500.
 	d.Store.db.Exec(`INSERT INTO messages(id, channel_id, thread_id, from_project, to_project, content, status, ts)
-		VALUES(500, 1, NULL, 'co/parent', 'co/child', 'do X', 'message', datetime('now'))`)
+		VALUES(500, 1, NULL, 'parent', 'child', 'do X', 'message', datetime('now'))`)
 	d.Store.db.Exec(`INSERT INTO sessions(project_id, agent_binary, model, status, pid, created_at, task_msg_id, root_thread_id, opencode_session_id)
 		VALUES((SELECT id FROM projects WHERE name='parent'), 'opencode', 'default', 'exited', 0, datetime('now'), 499, 499, 'ses_parent')`)
 
 	done, _ := json.Marshal(map[string]any{
-		"from": "co/child", "thread_id": 500,
+		"from": "child", "thread_id": 500,
 		"content": "did X, tests pass", "status": "done",
 	})
 	resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: done, ID: 1})
@@ -1003,12 +1003,12 @@ func TestDoneWakeEntrypointAndNoAck(t *testing.T) {
 		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n"), 0644)
 	d.Registry.AddProject("child", bDir)
 	d.Store.db.Exec(`INSERT INTO messages(id, channel_id, thread_id, from_project, to_project, content, status, ts)
-		VALUES(700, 1, NULL, 'co/parent', 'co/child', 'do X', 'message', datetime('now'))`)
+		VALUES(700, 1, NULL, 'parent', 'child', 'do X', 'message', datetime('now'))`)
 	d.Store.db.Exec(`INSERT INTO sessions(project_id, agent_binary, model, status, pid, created_at, task_msg_id, root_thread_id, opencode_session_id)
 		VALUES((SELECT id FROM projects WHERE name='parent'), 'opencode', 'default', 'exited', 0, datetime('now'), 700, 700, 'ses_parent')`)
 
 	done, _ := json.Marshal(map[string]any{
-		"from": "co/child", "thread_id": 700, "content": "done: all green", "status": "done",
+		"from": "child", "thread_id": 700, "content": "done: all green", "status": "done",
 	})
 	if resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: done, ID: 1}); resp.Error != nil {
 		t.Fatalf("done reply: %s", resp.Error.Message)
@@ -1038,10 +1038,10 @@ func TestDoneReplyNoWakeForUnregisteredOriginator(t *testing.T) {
 		return 1, nil
 	}}
 	d.Store.db.Exec(`INSERT INTO messages(id, channel_id, thread_id, from_project, to_project, content, status, ts)
-		VALUES(600, 1, NULL, 'human', 'co/child', 'do X', 'message', datetime('now'))`)
+		VALUES(600, 1, NULL, 'human', 'child', 'do X', 'message', datetime('now'))`)
 
 	done, _ := json.Marshal(map[string]any{
-		"from": "co/child", "thread_id": 600,
+		"from": "child", "thread_id": 600,
 		"content": "did X", "status": "done",
 	})
 	resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: done, ID: 1})
@@ -1080,13 +1080,13 @@ func TestDoneWakeKillsIdleParent(t *testing.T) {
 	defer sleep.Process.Kill()
 
 	d.Store.db.Exec(`INSERT INTO messages(id, channel_id, thread_id, from_project, to_project, content, status, ts)
-		VALUES(650, 1, NULL, 'co/parent', 'co/child', 'do X', 'message', datetime('now'))`)
+		VALUES(650, 1, NULL, 'parent', 'child', 'do X', 'message', datetime('now'))`)
 	d.Store.db.Exec(`INSERT INTO sessions(project_id, agent_binary, model, status, pid, created_at, task_msg_id, root_thread_id, opencode_session_id)
 		VALUES((SELECT id FROM projects WHERE name='parent'), 'opencode', 'default', 'active', ?, datetime('now'), 649, 649, 'ses_parent_idle')`,
 		sleep.Process.Pid)
 
 	done, _ := json.Marshal(map[string]any{
-		"from": "co/child", "thread_id": 650, "content": "did X", "status": "done",
+		"from": "child", "thread_id": 650, "content": "did X", "status": "done",
 	})
 	if resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: done, ID: 1}); resp.Error != nil {
 		t.Fatalf("done reply: %s", resp.Error.Message)
@@ -1125,7 +1125,7 @@ func TestDoneWakeKillSuppressesExitWatcherBlocked(t *testing.T) {
 		// Fresh parent spawn = the idle parent session the daemon will
 		// SIGTERM; capture its OnExit to simulate the launcher's exit
 		// watcher. Resume spawns carry AgentSessionID — skip those.
-		if cfg.ProjectID == "co/parent" && cfg.AgentSessionID == "" {
+		if cfg.ProjectID == "parent" && cfg.AgentSessionID == "" {
 			cfgParent = cfg
 			return sleep.Process.Pid, nil
 		}
@@ -1142,7 +1142,7 @@ func TestDoneWakeKillSuppressesExitWatcherBlocked(t *testing.T) {
 
 	// (1) Task root: orchestrator → parent. wakeAgent spawns the parent.
 	root, _ := json.Marshal(map[string]any{
-		"from": "co/orchestrator", "to": "co/parent", "content": "orchestrate X",
+		"from": "orchestrator", "to": "parent", "content": "orchestrate X",
 	})
 	resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: root, ID: 1})
 	if resp.Error != nil {
@@ -1161,7 +1161,7 @@ func TestDoneWakeKillSuppressesExitWatcherBlocked(t *testing.T) {
 
 	// (2) Parent posts a sub-task root → child gets spawned.
 	sub, _ := json.Marshal(map[string]any{
-		"from": "co/parent", "to": "co/child", "content": "do X",
+		"from": "parent", "to": "child", "content": "do X",
 	})
 	resp = d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: sub, ID: 2})
 	if resp.Error != nil {
@@ -1175,7 +1175,7 @@ func TestDoneWakeKillSuppressesExitWatcherBlocked(t *testing.T) {
 
 	// (3) Child posts done on the sub-task → daemon kills the idle parent.
 	done, _ := json.Marshal(map[string]any{
-		"from": "co/child", "thread_id": pr.MessageID,
+		"from": "child", "thread_id": pr.MessageID,
 		"content": "did X", "status": "done",
 	})
 	resp = d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: done, ID: 3})
@@ -1226,17 +1226,17 @@ func TestHandle_RewakeOnDoneThread(t *testing.T) {
 
 	// Seed: thread root 500, an exited session bound to it, and a done reply.
 	d.Store.db.Exec(`INSERT INTO messages(id, channel_id, thread_id, from_project, to_project, content, status, ts)
-		VALUES(500, 1, NULL, 'companyA/payment', 'companyA/user-service', 'task', 'message', datetime('now'))`)
+		VALUES(500, 1, NULL, 'payment', 'user-service', 'task', 'message', datetime('now'))`)
 	d.Store.db.Exec(`INSERT INTO sessions(project_id, agent_binary, model, status, pid, created_at, task_msg_id, root_thread_id)
 		VALUES((SELECT id FROM projects WHERE name='user-service'), 'opencode', 'default', 'exited', 0, datetime('now'), 500, 500)`)
 	d.Store.db.Exec(`INSERT INTO messages(channel_id, thread_id, from_project, to_project, content, status, ts)
-		VALUES(1, 500, 'companyA/user-service', 'companyA/payment', 'done', 'done', datetime('now'))`)
+		VALUES(1, 500, 'user-service', 'payment', 'done', 'done', datetime('now'))`)
 
 	// Follow-up reply with to= — SHOULD wake (resume path). Session is
 	// exited, not active; done reply doesn't block re-wake anymore.
 	params, _ := json.Marshal(map[string]any{
-		"channel": 1, "thread_id": 500, "from": "companyA/payment",
-		"to": "companyA/user-service", "content": "follow-up",
+		"channel": 1, "thread_id": 500, "from": "payment",
+		"to": "user-service", "content": "follow-up",
 	})
 	resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: params, ID: 1})
 	if resp.Error != nil {
@@ -1261,13 +1261,13 @@ func TestHandle_NoWakeOnActiveSession(t *testing.T) {
 	// the done-reply guard won't fire; only the active-session guard should
 	// suppress the wake here.
 	d.Store.db.Exec(`INSERT INTO messages(id, channel_id, thread_id, from_project, to_project, content, status, ts)
-		VALUES(500, 1, NULL, 'companyA/payment', 'companyA/user-service', 'task', 'message', datetime('now'))`)
+		VALUES(500, 1, NULL, 'payment', 'user-service', 'task', 'message', datetime('now'))`)
 	d.Store.db.Exec(`INSERT INTO sessions(project_id, agent_binary, model, status, pid, created_at, task_msg_id, root_thread_id)
 		VALUES((SELECT id FROM projects WHERE name='user-service'), 'opencode', 'default', 'active', 0, datetime('now'), 500, 500)`)
 
 	params, _ := json.Marshal(map[string]any{
-		"channel": 1, "thread_id": 500, "from": "companyA/payment",
-		"to": "companyA/user-service", "content": "follow-up",
+		"channel": 1, "thread_id": 500, "from": "payment",
+		"to": "user-service", "content": "follow-up",
 	})
 	resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: params, ID: 1})
 	if resp.Error != nil {
@@ -1297,7 +1297,7 @@ func TestWakeAgent_AlwaysFreshSpawn(t *testing.T) {
 	d.Registry.AddProject("user-service", userDir)
 
 	// First wake: thread root, fresh spawn, captures OC ID ses_fresh1.
-	p1, _ := json.Marshal(map[string]any{"from": "companyA/payment", "to": "companyA/user-service", "content": "task 1"})
+	p1, _ := json.Marshal(map[string]any{"from": "payment", "to": "user-service", "content": "task 1"})
 	r1 := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: p1, ID: 1})
 	var pr1 PostResult
 	json.Unmarshal(r1.Result, &pr1)
@@ -1309,8 +1309,8 @@ func TestWakeAgent_AlwaysFreshSpawn(t *testing.T) {
 	// (resume disabled: opencode run -s doesn't exit). Both spawns are
 	// fresh; capturer called twice.
 	p2, _ := json.Marshal(map[string]any{
-		"channel": 1, "thread_id": pr1.MessageID, "from": "companyA/payment",
-		"to": "companyA/user-service", "content": "follow-up",
+		"channel": 1, "thread_id": pr1.MessageID, "from": "payment",
+		"to": "user-service", "content": "follow-up",
 	})
 	r2 := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: p2, ID: 2})
 	if r2.Error != nil {
@@ -1337,7 +1337,7 @@ func TestWakeAgent_PrefixGeneratedOnceAndInherited(t *testing.T) {
 	d.Registry.AddProject("user-service", userDir)
 
 	// First wake: generates a prefix.
-	p1, _ := json.Marshal(map[string]any{"from": "companyA/payment", "to": "companyA/user-service", "content": "t1"})
+	p1, _ := json.Marshal(map[string]any{"from": "payment", "to": "user-service", "content": "t1"})
 	r1 := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: p1, ID: 1})
 	var pr1 PostResult
 	json.Unmarshal(r1.Result, &pr1)
@@ -1356,8 +1356,8 @@ func TestWakeAgent_PrefixGeneratedOnceAndInherited(t *testing.T) {
 
 	// Second wake (reply, same thread root): should inherit prefix1.
 	p2, _ := json.Marshal(map[string]any{
-		"channel": 1, "thread_id": pr1.MessageID, "from": "companyA/payment",
-		"to": "companyA/user-service", "content": "t2",
+		"channel": 1, "thread_id": pr1.MessageID, "from": "payment",
+		"to": "user-service", "content": "t2",
 	})
 	r2 := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: p2, ID: 2})
 	if r2.Error != nil {
@@ -1380,12 +1380,6 @@ func TestDaemon_ResolveToProject(t *testing.T) {
 	if _, err := d.Registry.AddProject("payment", "/tmp/payA"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.Registry.AddProject("payment", "/tmp/payB"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := d.Registry.AddProject("checkout", "/tmp/checkout"); err != nil {
-		t.Fatal(err)
-	}
 
 	tests := []struct {
 		name    string
@@ -1393,10 +1387,11 @@ func TestDaemon_ResolveToProject(t *testing.T) {
 		want    string
 		wantErr string
 	}{
-		{"full path passthrough", "companyA/payment", "companyA/payment", ""},
-		{"bare unambiguous resolves", "checkout", "companyA/checkout", ""},
-		{"bare ambiguous errors with candidates", "payment", "", "ambiguous"},
-		{"bare not found errors", "nope", "", "no project named"},
+		// A slash is a legacy "workspace/project" identity — a clear error,
+		// not a silent split.
+		{"slash fails resolution", "co/payment", "", "bare project name"},
+		{"registered bare name passes", "payment", "payment", ""},
+		{"unregistered bare name passes (mailbox)", "ghost", "ghost", ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1420,22 +1415,21 @@ func TestDaemon_ResolveToProject(t *testing.T) {
 	}
 }
 
-func TestHandlePost_AmbiguousBareToErrors(t *testing.T) {
+// Ambiguity is gone with UNIQUE(name); the resolution failure that remains is
+// a legacy "ws/name" identity in `to` — it must error, not silently split.
+func TestHandlePost_SlashToErrors(t *testing.T) {
 	d := setupDaemon(t)
 	if _, err := d.Registry.AddProject("payment", "/tmp/payA"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.Registry.AddProject("payment", "/tmp/payB"); err != nil {
-		t.Fatal(err)
-	}
 
-	params, _ := json.Marshal(PostParams{From: "me", To: "payment", Content: "hi"})
+	params, _ := json.Marshal(PostParams{From: "me", To: "co/payment", Content: "hi"})
 	resp := d.handlePost(context.Background(), protocol.Request{Method: "post_message", Params: params, ID: 1})
 	if resp.Error == nil {
-		t.Fatal("expected error for ambiguous bare `to`")
+		t.Fatal("expected error for legacy slash `to`")
 	}
-	if !strings.Contains(resp.Error.Message, "ambiguous") {
-		t.Fatalf("want error containing 'ambiguous', got %q", resp.Error.Message)
+	if !strings.Contains(resp.Error.Message, "bare project name") {
+		t.Fatalf("want error containing 'bare project name', got %q", resp.Error.Message)
 	}
 }
 
@@ -1447,7 +1441,7 @@ func TestHandle_TodoAddUpdateList(t *testing.T) {
 	d := setupDaemon(t)
 	d.Store.db.Exec(`INSERT INTO channels(id, name, type) VALUES(10, 'dm', 'dm')`)
 	postParams, _ := json.Marshal(map[string]any{
-		"channel": 10, "from": "companyA/payment", "content": "task root",
+		"channel": 10, "from": "payment", "content": "task root",
 	})
 	resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: postParams, ID: 1})
 	if resp.Error != nil {
@@ -1557,7 +1551,7 @@ func TestWakeAgent_ResumeScopedToBinary(t *testing.T) {
 	d.LookPath = func(string) (string, error) { return "/usr/bin/x", nil }
 	d.CaptureAgentSessionID = func(SpawnConfig) (string, error) { return "ses_opencode123", nil }
 	params, _ := json.Marshal(map[string]any{
-		"from": "companyA/payment", "to": "companyA/user-service", "content": "task 1",
+		"from": "payment", "to": "user-service", "content": "task 1",
 	})
 	resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: params, ID: 1})
 	var pr PostResult
@@ -1593,7 +1587,7 @@ func TestWakeAgent_ResumeScopedToBinary(t *testing.T) {
 		return 1, nil
 	}}
 	params2, _ := json.Marshal(map[string]any{
-		"thread_id": pr.MessageID, "from": "companyA/payment", "to": "companyA/user-service", "content": "follow-up",
+		"thread_id": pr.MessageID, "from": "payment", "to": "user-service", "content": "follow-up",
 	})
 	resp = d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: params2, ID: 2})
 	if resp.Error != nil {
@@ -1620,7 +1614,7 @@ func TestWakeAgent_ResumeScopedToProject(t *testing.T) {
 	d.LookPath = func(string) (string, error) { return "/usr/bin/x", nil }
 	d.CaptureAgentSessionID = func(SpawnConfig) (string, error) { return "ses_projA123", nil }
 	params, _ := json.Marshal(map[string]any{
-		"from": "companyA/orchestrator", "to": "companyA/proj-a", "content": "task for A",
+		"from": "orchestrator", "to": "proj-a", "content": "task for A",
 	})
 	resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: params, ID: 1})
 	var pr PostResult
@@ -1645,7 +1639,7 @@ func TestWakeAgent_ResumeScopedToProject(t *testing.T) {
 		return 1, nil
 	}}
 	params2, _ := json.Marshal(map[string]any{
-		"thread_id": pr.MessageID, "from": "companyA/orchestrator", "to": "companyA/proj-b", "content": "task for B",
+		"thread_id": pr.MessageID, "from": "orchestrator", "to": "proj-b", "content": "task for B",
 	})
 	resp = d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: params2, ID: 2})
 	if resp.Error != nil {
@@ -1701,7 +1695,7 @@ func TestTaskStatus_CarriesChildProgressDetail(t *testing.T) {
 	d.Registry.AddProject("user-service", userDir)
 
 	d.Store.db.Exec(`INSERT INTO messages(id, channel_id, thread_id, from_project, to_project, content, status, ts)
-		VALUES(700, 1, NULL, 'companyA/payment', 'companyA/user-service', 'task', 'message', datetime('now'))`)
+		VALUES(700, 1, NULL, 'payment', 'user-service', 'task', 'message', datetime('now'))`)
 	d.Store.db.Exec(`INSERT INTO sessions(project_id, agent_binary, model, status, pid, created_at, task_msg_id, root_thread_id)
 		VALUES((SELECT id FROM projects WHERE name='user-service'), 'opencode', 'default', 'active', 0, datetime('now'), 700, 700)`)
 	// The child plans three steps and finishes the first.
@@ -1710,7 +1704,7 @@ func TestTaskStatus_CarriesChildProgressDetail(t *testing.T) {
 	d.Todos.Add(700, "run tests")
 	d.Todos.Update(first.ID, "done")
 	d.Store.db.Exec(`INSERT INTO messages(channel_id, thread_id, from_project, content, status, ts)
-		VALUES(1, 700, 'companyA/user-service', 'migration written, moving on' || char(10) || 'second line ignored', 'message', datetime('now'))`)
+		VALUES(1, 700, 'user-service', 'migration written, moving on' || char(10) || 'second line ignored', 'message', datetime('now'))`)
 
 	params, _ := json.Marshal(map[string]any{"message_id": 700})
 	resp := d.Handle(context.Background(), protocol.Request{Method: "task_status", Params: params, ID: 1})
@@ -1729,7 +1723,7 @@ func TestTaskStatus_CarriesChildProgressDetail(t *testing.T) {
 	if len(ts.Todos) != 3 {
 		t.Errorf("todos list: got %d entries want 3", len(ts.Todos))
 	}
-	if ts.Project != "companyA/user-service" {
+	if ts.Project != "user-service" {
 		t.Errorf("project: got %q", ts.Project)
 	}
 	if ts.LastUpdate != "migration written, moving on" {
@@ -1756,7 +1750,7 @@ func TestHandle_Post_OutboundDenied(t *testing.T) {
 	}
 	post := func(d *Daemon) protocol.Response {
 		params, _ := json.Marshal(map[string]any{
-			"from": "companyA/payment", "to": "companyA/user-service", "content": "do X"})
+			"from": "payment", "to": "user-service", "content": "do X"})
 		return d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: params, ID: 1})
 	}
 
@@ -1789,7 +1783,7 @@ func TestHandle_Post_OutboundDenied(t *testing.T) {
 	t.Run("unregistered sender unaffected", func(t *testing.T) {
 		d := newDaemon(t, "agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n  allow_outbound: false\n")
 		params, _ := json.Marshal(map[string]any{
-			"from": "some/scratch-dir", "to": "companyA/user-service", "content": "do X"})
+			"from": "some/scratch-dir", "to": "user-service", "content": "do X"})
 		if resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: params, ID: 1}); resp.Error != nil {
 			t.Fatalf("unregistered sender should be unrestricted, got %q", resp.Error.Message)
 		}
@@ -1808,10 +1802,10 @@ func TestHandle_ReplyDoesNotAutoFillNonProjectSender(t *testing.T) {
 
 	// Root dispatched from a plain directory, not a registered project.
 	d.Store.db.Exec(`INSERT INTO messages(id, channel_id, thread_id, from_project, to_project, content, status, ts)
-		VALUES(800, 1, NULL, 'dir:ledger', 'companyA/user-service', 'task', 'message', datetime('now'))`)
+		VALUES(800, 1, NULL, 'dir:ledger', 'user-service', 'task', 'message', datetime('now'))`)
 
 	params, _ := json.Marshal(map[string]any{
-		"channel": 1, "thread_id": 800, "from": "companyA/user-service",
+		"channel": 1, "thread_id": 800, "from": "user-service",
 		"status": "in_progress", "content": "progress note",
 	})
 	resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: params, ID: 1})
@@ -1840,14 +1834,14 @@ func TestHandle_SecondProjectOnSameThreadStillWakes(t *testing.T) {
 
 	// Root thread 900 with backend already working on it.
 	d.Store.db.Exec(`INSERT INTO messages(id, channel_id, thread_id, from_project, to_project, content, status, ts)
-		VALUES(900, 1, NULL, 'dir:lab', 'companyA/backend', 'do the backend half', 'message', datetime('now'))`)
+		VALUES(900, 1, NULL, 'dir:lab', 'backend', 'do the backend half', 'message', datetime('now'))`)
 	d.Store.db.Exec(`INSERT INTO sessions(project_id, agent_binary, model, status, pid, created_at, task_msg_id, root_thread_id)
 		VALUES((SELECT id FROM projects WHERE name='backend'), 'opencode', 'default', 'active', 0, datetime('now'), 900, 900)`)
 
 	// The other half of the same task, on the same thread.
 	params, _ := json.Marshal(map[string]any{
 		"channel": 1, "thread_id": 900, "from": "dir:lab",
-		"to": "companyA/frontend", "content": "do the frontend half",
+		"to": "frontend", "content": "do the frontend half",
 	})
 	if resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: params, ID: 1}); resp.Error != nil {
 		t.Fatalf("post: %s", resp.Error.Message)
@@ -1863,7 +1857,7 @@ func TestHandle_SecondProjectOnSameThreadStillWakes(t *testing.T) {
 	// exists to stop duplicate spawns, and must survive the rescoping.
 	dup, _ := json.Marshal(map[string]any{
 		"channel": 1, "thread_id": 900, "from": "dir:lab",
-		"to": "companyA/backend", "content": "nudge",
+		"to": "backend", "content": "nudge",
 	})
 	d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: dup, ID: 2})
 	var backendSessions int
@@ -1885,8 +1879,8 @@ func TestHandle_AckReplyOnSpawn(t *testing.T) {
 	d.Registry.AddProject("user-service", userDir)
 
 	params, _ := json.Marshal(map[string]any{
-		"from":    "companyA/payment-service",
-		"to":      "companyA/user-service",
+		"from":    "payment-service",
+		"to":      "user-service",
 		"content": "add field payment_status",
 	})
 	resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: params, ID: 1})
@@ -1906,7 +1900,7 @@ func TestHandle_AckReplyOnSpawn(t *testing.T) {
 	if !strings.Contains(content, "working on it") {
 		t.Errorf("ack content = %q, want a pickup notice", content)
 	}
-	if from != "companyA/user-service" {
+	if from != "user-service" {
 		t.Errorf("ack from = %q, want the project doing the work", from)
 	}
 
@@ -1952,7 +1946,7 @@ func TestHandle_ReportProgress(t *testing.T) {
 	d.Registry.AddProject("payment-service", payDir)
 
 	params, _ := json.Marshal(map[string]any{
-		"from": "companyA/payment-service", "to": "companyA/user-service",
+		"from": "payment-service", "to": "user-service",
 		"content": "add field payment_status",
 	})
 	resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: params, ID: 1})
@@ -1963,7 +1957,7 @@ func TestHandle_ReportProgress(t *testing.T) {
 	d.Store.db.QueryRow(`SELECT count(*) FROM sessions`).Scan(&before)
 
 	rp, _ := json.Marshal(map[string]any{
-		"thread_id": pr.MessageID, "from": "companyA/user-service",
+		"thread_id": pr.MessageID, "from": "user-service",
 		"note": "migrating the schema", "eta_minutes": 12,
 	})
 	presp := d.Handle(context.Background(), protocol.Request{Method: "report_progress", Params: rp, ID: 2})
@@ -2010,10 +2004,10 @@ func TestDoneReplyWakeFailurePostsBlockedNotError(t *testing.T) {
 		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n"), 0644)
 	d.Registry.AddProject("child", bDir)
 	d.Store.db.Exec(`INSERT INTO messages(id, channel_id, thread_id, from_project, to_project, content, status, ts)
-		VALUES(800, 1, NULL, 'co/parent', 'co/child', 'do X', 'message', datetime('now'))`)
+		VALUES(800, 1, NULL, 'parent', 'child', 'do X', 'message', datetime('now'))`)
 
 	done, _ := json.Marshal(map[string]any{
-		"from": "co/child", "thread_id": 800, "content": "did X", "status": "done",
+		"from": "child", "thread_id": 800, "content": "did X", "status": "done",
 	})
 	resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: done, ID: 1})
 	if resp.Error != nil {
@@ -2037,7 +2031,7 @@ func TestQuietMethodsLogSummary(t *testing.T) {
 	d := setupDaemon(t)
 	d.Store.db.Exec(`INSERT INTO projects(id, name, path) VALUES(1, 'child', '/tmp/child')`)
 	d.Store.db.Exec(`INSERT INTO messages(id, channel_id, thread_id, from_project, to_project, content, status, ts)
-		VALUES(500, 1, NULL, 'co/parent', 'co/child', 'do X please', 'message', datetime('now','-1 hour'))`)
+		VALUES(500, 1, NULL, 'parent', 'child', 'do X please', 'message', datetime('now','-1 hour'))`)
 
 	for i, method := range []string{"thread_list", "session_list"} {
 		resp := d.Handle(context.Background(), protocol.Request{Method: method, ID: int64(i + 1)})
@@ -2068,10 +2062,10 @@ func TestThreadList(t *testing.T) {
 	d.Store.db.Exec(`INSERT INTO projects(id, name, path) VALUES(1, 'child', '/tmp/child')`)
 	// Thread 500: root + working session; thread 600: root + done reply.
 	d.Store.db.Exec(`INSERT INTO messages(id, channel_id, thread_id, from_project, to_project, content, status, ts)
-		VALUES(500, 1, NULL, 'co/parent', 'co/child', 'do X please', 'message', datetime('now','-1 hour')),
-		       (501, 1, 500, 'co/child', 'co/parent', 'working on it', 'ack', datetime('now')),
-		       (600, 1, NULL, 'co/parent', 'co/child', 'do Y', 'message', datetime('now','-2 hours')),
-		       (601, 1, 600, 'co/child', 'co/parent', 'did Y', 'done', datetime('now','-1 minute'))`)
+		VALUES(500, 1, NULL, 'parent', 'child', 'do X please', 'message', datetime('now','-1 hour')),
+		       (501, 1, 500, 'child', 'parent', 'working on it', 'ack', datetime('now')),
+		       (600, 1, NULL, 'parent', 'child', 'do Y', 'message', datetime('now','-2 hours')),
+		       (601, 1, 600, 'child', 'parent', 'did Y', 'done', datetime('now','-1 minute'))`)
 	d.Store.db.Exec(`INSERT INTO sessions(project_id, agent_binary, model, status, pid, created_at, task_msg_id, root_thread_id)
 		VALUES(1, 'opencode', 'default', 'active', 0, datetime('now'), 500, 500)`)
 
@@ -2103,9 +2097,9 @@ func TestSessionListProgressDetail(t *testing.T) {
 	d.Store.db.Exec(`INSERT INTO projects(id, name, path) VALUES(1, 'child', '/tmp/child')`)
 	// Thread 500: root + progress note + todos; thread 600: bare root.
 	d.Store.db.Exec(`INSERT INTO messages(id, channel_id, thread_id, from_project, to_project, content, status, ts)
-		VALUES(500, 1, NULL, 'co/parent', 'co/child', 'do X', 'message', datetime('now','-1 hour')),
-		       (501, 1, 500, 'co/child', 'co/parent', '80% done (eta ~5min)', 'progress', datetime('now','-2 minutes')),
-		       (600, 1, NULL, 'co/parent', 'co/child', 'do Y', 'message', datetime('now','-2 hours'))`)
+		VALUES(500, 1, NULL, 'parent', 'child', 'do X', 'message', datetime('now','-1 hour')),
+		       (501, 1, 500, 'child', 'parent', '80% done (eta ~5min)', 'progress', datetime('now','-2 minutes')),
+		       (600, 1, NULL, 'parent', 'child', 'do Y', 'message', datetime('now','-2 hours'))`)
 	d.Store.db.Exec(`INSERT INTO sessions(project_id, agent_binary, model, status, pid, created_at, task_msg_id, root_thread_id)
 		VALUES(1, 'opencode', 'default', 'active', 0, datetime('now'), 500, 500),
 		      (1, 'opencode', 'default', 'active', 0, datetime('now'), 600, 600)`)

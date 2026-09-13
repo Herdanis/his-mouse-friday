@@ -47,7 +47,7 @@ func TestResolveThreadID_KeepsRelatedWorkOnOneParent(t *testing.T) {
 }
 
 // An unregistered caller should still be attributable: name it by the
-// directory it runs in, distinguishable from a real "workspace/project".
+// directory it runs in, distinguishable from a registered project name.
 func TestDirIdentity(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"/Users/me/Project/ledger", "dir:ledger"},

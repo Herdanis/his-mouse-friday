@@ -24,7 +24,7 @@ import (
 type PostInput struct {
 	Channel  int64  `json:"channel,omitempty" jsonschema:"channel id (defaults to the global general channel)"`
 	ThreadID int64  `json:"thread_id,omitempty" jsonschema:"thread id for replies; omit (0) for a thread root / new task"`
-	To       string `json:"to,omitempty" jsonschema:"recipient workspace/project — a thread root with a to wakes that agent"`
+	To       string `json:"to,omitempty" jsonschema:"recipient project name (bare) — a thread root with a to wakes that agent"`
 	Content  string `json:"content" jsonschema:"message content"`
 	Status   string `json:"status,omitempty" jsonschema:"delivered | in_progress | done | message (default)"`
 	ParentID int64  `json:"root_id,omitempty" jsonschema:"set by hmf-mcp from HMF_TASK_MSG_ID when caller is a spawned agent — leave empty in user-initiated sessions"`
@@ -34,9 +34,6 @@ type ReadChanInput struct {
 }
 type ReadThreadInput struct {
 	MessageID int64 `json:"message_id" jsonschema:"any message id on the thread (root or reply) — the handler resolves it to the thread root"`
-}
-type ListInput struct {
-	Workspace string `json:"workspace,omitempty" jsonschema:"workspace name filter"`
 }
 
 type TodoAddInput struct {
@@ -67,9 +64,8 @@ type MessagesOutput struct {
 }
 
 type ProjectAgentOutput struct {
-	Workspace string `json:"workspace"`
-	Name      string `json:"name"`
-	Path      string `json:"path"`
+	Name string `json:"name"`
+	Path string `json:"path"`
 }
 
 type ProjectAgentsOutput struct {
@@ -132,7 +128,7 @@ type TodoLine struct {
 // Daemon client (unix socket)
 // ============================================
 
-// resolveCaller resolves the caller's workspace/project from a repo path via
+// resolveCaller resolves the caller's project name from a repo path via
 // the daemon. Returns "" if unregistered (open mode — no enforcement).
 func resolveCaller(repoPath string) string {
 	result, err := protocol.Call("resolve_project",
@@ -141,21 +137,17 @@ func resolveCaller(repoPath string) string {
 		return ""
 	}
 	var r struct {
-		Workspace string `json:"workspace"`
-		Project   string `json:"project"`
+		Project string `json:"project"`
 	}
 	if json.Unmarshal(result, &r) != nil {
 		return ""
 	}
-	if r.Workspace == "" {
-		return ""
-	}
-	return r.Workspace + "/" + r.Project
+	return r.Project
 }
 
 // dirIdentity names an unregistered caller by the directory it runs in. The
-// "dir:" prefix and the absence of a slash keep it distinguishable from a
-// real "workspace/project", which several code paths rely on.
+// "dir:" prefix keeps it attributable without pretending to be a registered
+// project name.
 func dirIdentity(repo string) string {
 	base := filepath.Base(strings.TrimRight(repo, string(filepath.Separator)))
 	if base == "" || base == "." || base == string(filepath.Separator) {
@@ -198,7 +190,7 @@ func resolveThreadID(explicit int64, to string, byRecipient map[string]int64, cu
 // ============================================
 
 // newServer builds the MCP server + registers the 6 tools. callerID is the
-// resolved "workspace/project" of this shim's repo ("" = open mode), injected
+// resolved bare project name of this shim's repo ("" = open mode), injected
 // as `from` on posts. Thread tracking: auto-binds every post_message to one
 // thread per session — first post creates the root, subsequent posts inherit
 // it; spawned agents inherit HMF_TASK_MSG_ID as their thread.
@@ -343,8 +335,8 @@ func newServer(callerID string) *mcpserver.Server {
 	mcpserver.AddTool(srv, &mcpserver.Tool{
 		Name:        "list_project_agents",
 		Description: "List registered project agents",
-	}, func(ctx context.Context, req *mcpserver.CallToolRequest, in ListInput) (*mcpserver.CallToolResult, ProjectAgentsOutput, error) {
-		result, err := protocol.Call("list_project_agents", in)
+	}, func(ctx context.Context, req *mcpserver.CallToolRequest, in struct{}) (*mcpserver.CallToolResult, ProjectAgentsOutput, error) {
+		result, err := protocol.Call("list_project_agents", struct{}{})
 		if err != nil {
 			return nil, ProjectAgentsOutput{}, err
 		}

@@ -42,16 +42,15 @@ func TestVerticalSlice(t *testing.T) {
 		// /bin/echo spawns exit immediately; no real opencode session to bind.
 		CaptureAgentSessionID: func(daemon.SpawnConfig) (string, error) { return "", nil },
 	}
-	// Register workspace + projects via daemon methods.
-	mustSend(t, d, "workspace_add", map[string]any{"name": "companyA"})
-	mustSend(t, d, "project_add", map[string]any{"workspace": "companyA", "name": "payment-service", "path": paymentDir})
-	mustSend(t, d, "project_add", map[string]any{"workspace": "companyA", "name": "user-service", "path": userDir})
+	// Register projects via daemon methods.
+	mustSend(t, d, "project_add", map[string]any{"name": "payment-service", "path": paymentDir})
+	mustSend(t, d, "project_add", map[string]any{"name": "user-service", "path": userDir})
 
-	// payment posts a task to general mentioning @companyA/user-service —
+	// payment posts a task to general mentioning @user-service —
 	// thread root. Daemon wakes user-service (spawns /bin/echo).
 	postResp := mustSend(t, d, "post_message", map[string]any{
-		"from":    "companyA/payment-service",
-		"to":      "companyA/user-service",
+		"from":    "payment-service",
+		"to":      "user-service",
 		"content": "add payment_status field to User",
 	})
 	var pr daemon.PostResult
@@ -64,15 +63,15 @@ func TestVerticalSlice(t *testing.T) {
 	// user-service posts in_progress + a threaded done reply (thread_id=taskID).
 	mustSend(t, d, "post_message", map[string]any{
 		"thread_id": taskID,
-		"from":      "companyA/user-service",
-		"to":        "companyA/payment-service",
+		"from":      "user-service",
+		"to":        "payment-service",
 		"content":   "working on it",
 		"status":    "in_progress",
 	})
 	mustSend(t, d, "post_message", map[string]any{
 		"thread_id": taskID,
-		"from":      "companyA/user-service",
-		"to":        "companyA/payment-service",
+		"from":      "user-service",
+		"to":        "payment-service",
 		"content":   "done, added payment_status to User model",
 		"status":    "done",
 	})
@@ -92,14 +91,14 @@ func TestVerticalSlice(t *testing.T) {
 		t.Errorf("done reply should end the thread, got trailing status=%q", last.Status)
 	}
 	task := msgs[0]
-	if task.FromProject != "companyA/payment-service" || task.ToProject != "companyA/user-service" {
+	if task.FromProject != "payment-service" || task.ToProject != "user-service" {
 		t.Errorf("task sender: from=%q to=%q, want payment→user-service", task.FromProject, task.ToProject)
 	}
 	if task.Content != "add payment_status field to User" {
 		t.Errorf("task content: %q", task.Content)
 	}
 	reply := msgs[len(msgs)-1]
-	if reply.FromProject != "companyA/user-service" || reply.ToProject != "companyA/payment-service" {
+	if reply.FromProject != "user-service" || reply.ToProject != "payment-service" {
 		t.Errorf("reply sender: from=%q to=%q, want user-service→payment", reply.FromProject, reply.ToProject)
 	}
 	if reply.Status != "done" || reply.Content != "done, added payment_status to User model" {
@@ -218,14 +217,13 @@ func TestVerticalSlice_OverSocket(t *testing.T) {
 		return resp
 	}
 
-	send("workspace_add", map[string]any{"name": "companyA"})
-	send("project_add", map[string]any{"workspace": "companyA", "name": "payment-service", "path": wsDir})
-	send("project_add", map[string]any{"workspace": "companyA", "name": "user-service", "path": userDir})
+	send("project_add", map[string]any{"name": "payment-service", "path": wsDir})
+	send("project_add", map[string]any{"name": "user-service", "path": userDir})
 
 	// Post a task to general — wakes user-service (/bin/echo), thread root.
 	postResp := send("post_message", map[string]any{
-		"from":    "companyA/payment-service",
-		"to":      "companyA/user-service",
+		"from":    "payment-service",
+		"to":      "user-service",
 		"content": "add payment_status field",
 	})
 	var pr daemon.PostResult
@@ -237,8 +235,8 @@ func TestVerticalSlice_OverSocket(t *testing.T) {
 	// Reply in-thread.
 	send("post_message", map[string]any{
 		"thread_id": pr.MessageID,
-		"from":      "companyA/user-service",
-		"to":        "companyA/payment-service",
+		"from":      "user-service",
+		"to":        "payment-service",
 		"content":   "done",
 		"status":    "done",
 	})
@@ -252,13 +250,13 @@ func TestVerticalSlice_OverSocket(t *testing.T) {
 	if len(msgs) != 3 {
 		t.Fatalf("got %d messages want 3 (root + ack + done)", len(msgs))
 	}
-	if msgs[0].FromProject != "companyA/payment-service" {
+	if msgs[0].FromProject != "payment-service" {
 		t.Errorf("task from: %q want payment-service", msgs[0].FromProject)
 	}
 	if msgs[1].Status != "ack" {
 		t.Errorf("expected spawn ack, got status=%q", msgs[1].Status)
 	}
-	if msgs[2].FromProject != "companyA/user-service" || msgs[2].Status != "done" {
+	if msgs[2].FromProject != "user-service" || msgs[2].Status != "done" {
 		t.Errorf("reply: from=%q status=%q want user-service/done", msgs[2].FromProject, msgs[2].Status)
 	}
 	conn.Close()

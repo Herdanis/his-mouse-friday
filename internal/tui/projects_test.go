@@ -17,8 +17,8 @@ func TestProjectsRenderRow(t *testing.T) {
 	}))
 	pm.refreshNow()
 	v := pm.view(80, 24)
-	if !strings.Contains(v, "companyA/payment-service") || !strings.Contains(v, "/code/payment") {
-		t.Fatalf("row must show workspace/name and path:\n%s", v)
+	if !strings.Contains(v, "payment-service") || !strings.Contains(v, "/code/payment") {
+		t.Fatalf("row must show the bare project name and path:\n%s", v)
 	}
 }
 
@@ -32,7 +32,7 @@ func TestProjectsAddFlow(t *testing.T) {
 	if !pm.adding {
 		t.Fatal("a must open the add form")
 	}
-	pm, _ = pm.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("companyA/pay")})
+	pm, _ = pm.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("pay")})
 	pm, _ = pm.update(tea.KeyMsg{Type: tea.KeyTab})
 	pm, _ = pm.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/code/pay")})
 	pm, _ = pm.update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -47,7 +47,7 @@ func TestProjectsAddFlow(t *testing.T) {
 	if err := json.Unmarshal(c.Params, &p); err != nil {
 		t.Fatalf("bad project_add params: %v", err)
 	}
-	if p["workspace"] != "companyA" || p["name"] != "pay" || p["path"] != "/code/pay" {
+	if p["name"] != "pay" || p["path"] != "/code/pay" {
 		t.Fatalf("project_add params wrong: %+v", p)
 	}
 }
@@ -81,7 +81,7 @@ func TestProjectsDeleteConfirm(t *testing.T) {
 	if err := json.Unmarshal(c.Params, &p); err != nil {
 		t.Fatalf("bad project_delete params: %v", err)
 	}
-	if p["workspace"] != "co" || p["name"] != "svc" {
+	if p["name"] != "svc" {
 		t.Fatalf("project_delete params wrong: %+v", p)
 	}
 }

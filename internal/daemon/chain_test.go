@@ -82,15 +82,15 @@ func TestChain_ThreeProjectDelegation(t *testing.T) {
 		}
 	}
 
-	root := post(1, map[string]any{"from": "dir:lab", "to": "companyA/svc-a", "content": "ship the feature"})
+	root := post(1, map[string]any{"from": "dir:lab", "to": "svc-a", "content": "ship the feature"})
 	freshSpawn("svc-a")
-	awaitCapturedSessionID(t, d, "svc-a", "ses-companyA/svc-a")
-	post(2, map[string]any{"thread_id": root, "from": "companyA/svc-a", "to": "companyA/svc-b", "content": "svc-b half"})
+	awaitCapturedSessionID(t, d, "svc-a", "ses-svc-a")
+	post(2, map[string]any{"thread_id": root, "from": "svc-a", "to": "svc-b", "content": "svc-b half"})
 	freshSpawn("svc-b")
-	awaitCapturedSessionID(t, d, "svc-b", "ses-companyA/svc-b")
-	post(3, map[string]any{"thread_id": root, "from": "companyA/svc-b", "to": "companyA/svc-c", "content": "svc-c half"})
+	awaitCapturedSessionID(t, d, "svc-b", "ses-svc-b")
+	post(3, map[string]any{"thread_id": root, "from": "svc-b", "to": "svc-c", "content": "svc-c half"})
 	freshSpawn("svc-c")
-	awaitCapturedSessionID(t, d, "svc-c", "ses-companyA/svc-c")
+	awaitCapturedSessionID(t, d, "svc-c", "ses-svc-c")
 
 	chain := []string{"svc-a", "svc-b", "svc-c"}
 	if len(spawns) != 3 {
@@ -140,8 +140,8 @@ func TestChain_ThreeProjectDelegation(t *testing.T) {
 	}
 	want := map[string]string{
 		"svc-a": "dir:lab",
-		"svc-b": "companyA/svc-a",
-		"svc-c": "companyA/svc-b",
+		"svc-b": "svc-a",
+		"svc-c": "svc-b",
 	}
 	for proj, from := range want {
 		if engagedBy[proj] != from {
@@ -187,7 +187,7 @@ func TestChain_ThreeProjectDelegation(t *testing.T) {
 	if !ts.HasDone {
 		t.Error("task_status(root).has_done = false after every hop replied done")
 	}
-	if ts.Project != "companyA/svc-a" {
+	if ts.Project != "svc-a" {
 		t.Errorf("task_status project = %q, want the dispatched project", ts.Project)
 	}
 	if ts.LastUpdate != "svc-a finished" {

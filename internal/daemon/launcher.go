@@ -24,8 +24,8 @@ type SpawnConfig struct {
 	AgentName      string // opencode --agent; empty = opencode's own default agent
 	Runbook        string // MOUSE.md content
 	Task           string // the task to perform
-	FromID         string // engaging agent's "workspace/project" identity
-	ProjectID      string // this project's "workspace/project" identity
+	FromID         string // engaging agent's project identity
+	ProjectID      string // this project's identity
 	ChannelID      int64  // hmf channel for this conversation
 	SessionID      int64  // hmf session id
 	TaskMsgID      int64  // root thread id the agent must reply on

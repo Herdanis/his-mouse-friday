@@ -31,7 +31,6 @@ func NewRootCmd() *cobra.Command {
 
 	root.AddCommand(upCmd())
 	root.AddCommand(downCmd())
-	root.AddCommand(workspaceCmd())
 	root.AddCommand(projectCmd())
 	root.AddCommand(statusCmd())
 	root.AddCommand(initCmd())
@@ -82,65 +81,8 @@ func downCmd() *cobra.Command {
 	}
 }
 
-func workspaceCmd() *cobra.Command {
-	c := &cobra.Command{Use: "workspace"}
-	add := &cobra.Command{
-		Use:  "add [name]",
-		Args: cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if _, err := protocol.Call("workspace_add", map[string]any{"name": args[0]}); err != nil {
-				return err
-			}
-			fmt.Println("workspace added:", args[0])
-			return nil
-		},
-	}
-	list := &cobra.Command{
-		Use:   "list",
-		Short: "List all workspaces",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			result, err := protocol.Call("workspace_list", struct{}{})
-			if err != nil {
-				return err
-			}
-			var names []string
-			if err := json.Unmarshal(result, &names); err != nil {
-				return fmt.Errorf("parse: %w", err)
-			}
-			if len(names) == 0 {
-				fmt.Println("(no workspaces)")
-				return nil
-			}
-			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, "NAME")
-			for _, n := range names {
-				fmt.Fprintf(w, "%s\n", n)
-			}
-			w.Flush()
-			return nil
-		},
-	}
-	del := &cobra.Command{
-		Use:   "delete [name]",
-		Args:  cobra.ExactArgs(1),
-		Short: "Delete a workspace (and its projects)",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if _, err := protocol.Call("workspace_delete", map[string]any{"name": args[0]}); err != nil {
-				return err
-			}
-			fmt.Println("workspace deleted:", args[0])
-			return nil
-		},
-	}
-	c.AddCommand(add)
-	c.AddCommand(list)
-	c.AddCommand(del)
-	return c
-}
-
 func projectCmd() *cobra.Command {
 	c := &cobra.Command{Use: "project"}
-	var ws string
 	add := &cobra.Command{
 		Use:  "add [name] [path]",
 		Args: cobra.ExactArgs(2),
@@ -149,33 +91,25 @@ func projectCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("resolve path: %w", err)
 			}
-			if _, err := protocol.Call("project_add", map[string]any{"workspace": ws, "name": args[0], "path": abs}); err != nil {
+			if _, err := protocol.Call("project_add", map[string]any{"name": args[0], "path": abs}); err != nil {
 				return err
 			}
-			fmt.Printf("project added: %s/%s -> %s\n", ws, args[0], abs)
+			fmt.Printf("project added: %s -> %s\n", args[0], abs)
 			return nil
 		},
 	}
-	add.Flags().StringVar(&ws, "workspace", "", "workspace name")
-	add.MarkFlagRequired("workspace")
 
-	var listWs string
 	list := &cobra.Command{
 		Use:   "list",
-		Short: "List projects (optionally filtered by workspace)",
+		Short: "List registered projects",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			params := map[string]any{}
-			if listWs != "" {
-				params["workspace"] = listWs
-			}
-			result, err := protocol.Call("project_list", params)
+			result, err := protocol.Call("project_list", struct{}{})
 			if err != nil {
 				return err
 			}
 			var items []struct {
-				Workspace string `json:"workspace"`
-				Name      string `json:"name"`
-				Path      string `json:"path"`
+				Name string `json:"name"`
+				Path string `json:"path"`
 			}
 			if err := json.Unmarshal(result, &items); err != nil {
 				return fmt.Errorf("parse: %w", err)
@@ -185,31 +119,27 @@ func projectCmd() *cobra.Command {
 				return nil
 			}
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, "WORKSPACE\tNAME\tPATH")
+			fmt.Fprintln(w, "NAME\tPATH")
 			for _, it := range items {
-				fmt.Fprintf(w, "%s\t%s\t%s\n", it.Workspace, it.Name, it.Path)
+				fmt.Fprintf(w, "%s\t%s\n", it.Name, it.Path)
 			}
 			w.Flush()
 			return nil
 		},
 	}
-	list.Flags().StringVar(&listWs, "workspace", "", "filter by workspace")
 
-	var delWs string
 	del := &cobra.Command{
 		Use:   "delete [name]",
 		Args:  cobra.ExactArgs(1),
-		Short: "Delete a project from a workspace",
+		Short: "Delete a project registration",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if _, err := protocol.Call("project_delete", map[string]any{"workspace": delWs, "name": args[0]}); err != nil {
+			if _, err := protocol.Call("project_delete", map[string]any{"name": args[0]}); err != nil {
 				return err
 			}
-			fmt.Printf("project deleted: %s/%s\n", delWs, args[0])
+			fmt.Printf("project deleted: %s\n", args[0])
 			return nil
 		},
 	}
-	del.Flags().StringVar(&delWs, "workspace", "", "workspace name")
-	del.MarkFlagRequired("workspace")
 
 	c.AddCommand(add)
 	c.AddCommand(list)
@@ -380,7 +310,7 @@ func pruneCmd() *cobra.Command {
 			}
 			if !yes {
 				fmt.Printf("This permanently deletes %s.\n", scope)
-				fmt.Println("Workspaces and projects are kept; running tasks are skipped.")
+				fmt.Println("Project registrations are kept; running tasks are skipped.")
 				fmt.Print("Type 'yes' to continue: ")
 				var answer string
 				fmt.Scanln(&answer)

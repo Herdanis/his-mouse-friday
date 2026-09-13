@@ -15,7 +15,7 @@ import (
 	"github.com/herdanis/his-mouse-friday/internal/protocol"
 )
 
-// spinCLIDaemon: temp HMF_STATE_DIR + daemon + workspace/project + a task
+// spinCLIDaemon: temp HMF_STATE_DIR + daemon + a registered project + a task
 // thread-root. Returns thread root id, general channel id, cleanup.
 func spinCLIDaemon(t *testing.T) (threadParentID int64, generalChannelID int64, cleanup func()) {
 	t.Helper()
@@ -59,18 +59,17 @@ func spinCLIDaemon(t *testing.T) (threadParentID int64, generalChannelID int64, 
 	}
 	cancelWait()
 
-	// Register a workspace + inbound-allowed project.
+	// Register an inbound-allowed project.
 	userDir := t.TempDir()
 	os.WriteFile(filepath.Join(userDir, "mouse.yaml"),
 		[]byte("agent:\n  primary:\n    provider: /bin/echo\na2a:\n  allow_inbound: true\n"), 0644)
-	mustCLICall(t, "workspace_add", map[string]any{"name": "companyA"})
-	mustCLICall(t, "project_add", map[string]any{"workspace": "companyA", "name": "user-service", "path": userDir})
+	mustCLICall(t, "project_add", map[string]any{"name": "user-service", "path": userDir})
 
 	// Post a task thread-root (wakes /bin/echo, which exits; that's fine — we
 	// just need the thread root id + general channel id for the done reply).
 	postResult := mustCLICall(t, "post_message", map[string]any{
-		"from":    "companyA/payment",
-		"to":      "companyA/user-service",
+		"from":    "payment",
+		"to":      "user-service",
 		"content": "task",
 	})
 	var pr daemon.PostResult
@@ -112,8 +111,8 @@ func TestCLI_DonePostsThreadedReply(t *testing.T) {
 	// Simulate the spawned agent's env (set by the launcher).
 	t.Setenv("HMF_CHANNEL_ID", itoa(generalChannelID))
 	t.Setenv("HMF_TASK_MSG_ID", itoa(threadParentID))
-	t.Setenv("HMF_PROJECT", "companyA/user-service")
-	t.Setenv("HMF_FROM", "companyA/payment")
+	t.Setenv("HMF_PROJECT", "user-service")
+	t.Setenv("HMF_FROM", "payment")
 
 	// Invoke `hmf done "all done"`.
 	root := NewRootCmd()
@@ -152,7 +151,7 @@ func TestCLI_DonePostsThreadedReply(t *testing.T) {
 	if done.ThreadID != threadParentID {
 		t.Errorf("thread_id: got %d want %d", done.ThreadID, threadParentID)
 	}
-	if done.FromProject != "companyA/user-service" || done.ToProject != "companyA/payment" {
+	if done.FromProject != "user-service" || done.ToProject != "payment" {
 		t.Errorf("from/to: got %q/%q want user-service/payment", done.FromProject, done.ToProject)
 	}
 }
@@ -180,8 +179,8 @@ func TestCLI_DoneWithoutTaskMsgID(t *testing.T) {
 
 	t.Setenv("HMF_CHANNEL_ID", itoa(generalChannelID))
 	os.Unsetenv("HMF_TASK_MSG_ID") // no thread
-	t.Setenv("HMF_PROJECT", "companyA/user-service")
-	t.Setenv("HMF_FROM", "companyA/payment")
+	t.Setenv("HMF_PROJECT", "user-service")
+	t.Setenv("HMF_FROM", "payment")
 
 	root := NewRootCmd()
 	root.SetArgs([]string{"done", "standalone"})
