@@ -600,23 +600,36 @@ func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error
 			return fmt.Errorf("resume fallback: %w", err)
 		}
 	}
-	entrypoint := fmt.Sprintf(
-		"[DELEGATED TASK] Parent agent %s sent you a message (id %d) in the general channel.\n"+
-			"1. Call the read_thread MCP tool with message_id=%d to load the task and prior context.\n"+
-			"2. Do the work inside this project directory. The task states intent; you own the\n"+
-			"   details. Locate the code, decide the files, and carry it through — including\n"+
-			"   any file count the task implies. Read this project's MOUSE.md/AGENTS.md for\n"+
-			"   local conventions and its verify commands, and run them before replying.\n"+
-			"3. Track work items: todo_list with thread_id=%d (see existing), todo_add for new steps, todo_update to mark done.\n"+
-			"4. Say where you are. The parent cannot see this session — silence is\n"+
-			"   indistinguishable from being stuck. Once you know the job runs longer than a\n"+
-			"   couple of minutes, call report_progress with what you are doing and\n"+
-			"   eta_minutes; call it again whenever that estimate moves or before a long\n"+
-			"   quiet stretch. It wakes nobody and costs the parent nothing.\n"+
-			"5. Reply: post_message with thread_id=%d, status=\"done\", a one-line summary, the\n"+
-			"   files you changed, and the verify result. The parent trusts this reply instead\n"+
-			"   of re-reading your files, so it must be accurate. Blocked → start with \"BLOCKED: \".",
-		msg.FromProject, msg.ID, parentID, parentID, parentID)
+	// Done-wakes resume the parent mid-life: a continuation prompt, not a
+	// fresh delegation brief. No ack either — the thread is closing, and a
+	// synthetic "working on it" from the parent is noise.
+	var entrypoint string
+	if p.Status == "done" {
+		entrypoint = fmt.Sprintf(
+			"[TASK FINISHED] Your sub-agent %s reports thread %d complete.\n"+
+				"1. Call read_thread with message_id=%d for its summary and context.\n"+
+				"2. Verify/integrate the result, then continue your own work or conclude.\n"+
+				"3. Do not post a done reply to this thread — it is already closed out.",
+			msg.FromProject, msg.ThreadID, msg.ID)
+	} else {
+		entrypoint = fmt.Sprintf(
+			"[DELEGATED TASK] Parent agent %s sent you a message (id %d) in the general channel.\n"+
+				"1. Call the read_thread MCP tool with message_id=%d to load the task and prior context.\n"+
+				"2. Do the work inside this project directory. The task states intent; you own the\n"+
+				"   details. Locate the code, decide the files, and carry it through — including\n"+
+				"   any file count the task implies. Read this project's MOUSE.md/AGENTS.md for\n"+
+				"   local conventions and its verify commands, and run them before replying.\n"+
+				"3. Track work items: todo_list with thread_id=%d (see existing), todo_add for new steps, todo_update to mark done.\n"+
+				"4. Say where you are. The parent cannot see this session — silence is\n"+
+				"   indistinguishable from being stuck. Once you know the job runs longer than a\n"+
+				"   couple of minutes, call report_progress with what you are doing and\n"+
+				"   eta_minutes; call it again whenever that estimate moves or before a long\n"+
+				"   quiet stretch. It wakes nobody and costs the parent nothing.\n"+
+				"5. Reply: post_message with thread_id=%d, status=\"done\", a one-line summary, the\n"+
+				"   files you changed, and the verify result. The parent trusts this reply instead\n"+
+				"   of re-reading your files, so it must be accurate. Blocked → start with \"BLOCKED: \".",
+			msg.FromProject, msg.ID, parentID, parentID, parentID)
+	}
 	// Done-wake: the parent is resumed to receive the result, not do work —
 	// inject the child's summary so the prompt carries it (the standard
 	// entrypoint only points at read_thread).

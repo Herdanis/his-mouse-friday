@@ -1040,6 +1040,50 @@ func TestDoneReplyWakesOriginator(t *testing.T) {
 	}
 }
 
+// Done-wakes are continuations, not new delegations: the prompt must say the
+// sub-agent finished, and the daemon must not fake an ack on a closed thread.
+func TestDoneWakeEntrypointAndNoAck(t *testing.T) {
+	var spawned []SpawnConfig
+	d := setupDaemon(t)
+	d.Launcher = &Launcher{Binary: "/bin/echo", SpawnFn: func(cfg SpawnConfig) (int, error) {
+		spawned = append(spawned, cfg)
+		return 1, nil
+	}}
+	d.Registry.AddWorkspace("co")
+	aDir := t.TempDir()
+	os.WriteFile(filepath.Join(aDir, "mouse.yaml"),
+		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n  allow_outbound: true\n"), 0644)
+	d.Registry.AddProject("co", "parent", aDir)
+	bDir := t.TempDir()
+	os.WriteFile(filepath.Join(bDir, "mouse.yaml"),
+		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n"), 0644)
+	d.Registry.AddProject("co", "child", bDir)
+	d.Store.db.Exec(`INSERT INTO messages(id, channel_id, thread_id, from_project, to_project, content, status, ts)
+		VALUES(700, 1, NULL, 'co/parent', 'co/child', 'do X', 'message', datetime('now'))`)
+	d.Store.db.Exec(`INSERT INTO sessions(project_id, agent_binary, model, status, pid, created_at, task_msg_id, root_thread_id, opencode_session_id)
+		VALUES((SELECT id FROM projects WHERE name='parent'), 'opencode', 'default', 'exited', 0, datetime('now'), 700, 700, 'ses_parent')`)
+
+	done, _ := json.Marshal(map[string]any{
+		"from": "co/child", "thread_id": 700, "content": "done: all green", "status": "done",
+	})
+	if resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: done, ID: 1}); resp.Error != nil {
+		t.Fatalf("done reply: %s", resp.Error.Message)
+	}
+	if len(spawned) != 1 {
+		t.Fatalf("want 1 spawn, got %d", len(spawned))
+	}
+	if !strings.HasPrefix(spawned[0].Task, "[TASK FINISHED]") {
+		t.Fatalf("entrypoint = %q, want [TASK FINISHED] prefix", spawned[0].Task[:40])
+	}
+	// Thread must contain ONLY the root + the done reply — no synthetic ack.
+	msgs, _ := d.Comms.ReadThread(700)
+	for _, m := range msgs {
+		if m.Status == "ack" {
+			t.Fatalf("done-wake must not post an ack, got: %+v", m)
+		}
+	}
+}
+
 // Unregistered originator (human / scratch dir): done lands in the thread,
 // nobody is spawned.
 func TestDoneReplyNoWakeForUnregisteredOriginator(t *testing.T) {
