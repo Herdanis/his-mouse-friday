@@ -208,8 +208,6 @@ func postTask(t *testing.T, d *Daemon, sessionStatus string, exitCode int, withD
 }
 
 func TestHandle_TaskStatus_Working(t *testing.T) {
-	// Non-terminal: without shortening the fixed wait this blocks for 5min.
-	defer withTaskStatusWait(50 * time.Millisecond)()
 	d := setupDaemon(t)
 	parentID := postTask(t, d, "active", 0, false)
 	resp := d.Handle(context.Background(), protocol.Request{
@@ -282,6 +280,35 @@ func TestHandle_TaskStatus_RequiresThreadID(t *testing.T) {
 	})
 	if resp.Error == nil {
 		t.Fatal("expected error for missing thread_id")
+	}
+}
+
+// task_status must answer instantly: the push-wake contract means callers
+// never wait server-side. An unresolved task returns has_done=false fast.
+func TestTaskStatusReturnsImmediately(t *testing.T) {
+	d := setupDaemon(t)
+	d.Store.db.Exec(`INSERT INTO projects(id, workspace_id, name, path) VALUES(1, 1, 'co/child', '/tmp/child')`)
+	d.Store.db.Exec(`INSERT INTO messages(id, channel_id, thread_id, from_project, to_project, content, status, ts)
+		VALUES(900, 1, NULL, 'co/parent', 'co/child', 'do X', 'message', datetime('now'))`)
+	// Active session keeps the status non-terminal — the case that used to block.
+	d.Store.db.Exec(`INSERT INTO sessions(project_id, agent_binary, model, status, pid, created_at, task_msg_id, root_thread_id)
+		VALUES(1, 'opencode', 'default', 'active', 0, datetime('now'), 900, 900)`)
+
+	start := time.Now()
+	params, _ := json.Marshal(map[string]any{"message_id": 900})
+	resp := d.Handle(context.Background(), protocol.Request{Method: "task_status", Params: params, ID: 1})
+	if resp.Error != nil {
+		t.Fatalf("task_status: %s", resp.Error.Message)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("task_status blocked %v — must be instant", elapsed)
+	}
+	var res TaskStatusResult
+	if err := json.Unmarshal(resp.Result, &res); err != nil {
+		t.Fatal(err)
+	}
+	if res.HasDone {
+		t.Fatal("fresh task must not report has_done")
 	}
 }
 
@@ -615,11 +642,9 @@ func TestWakeAgent_TaskMsgIDMatchesRootForTaskStatus(t *testing.T) {
 	}
 }
 
-// A repeat task_status call for the same message_id must STILL block for its
-// full wait. Blocking is the pacing mechanism: a throttle that returned
-// instantly invited immediate retries and produced rapid-fire call storms.
-func TestHandle_TaskStatusRepeatCallStillBlocks(t *testing.T) {
-	defer withTaskStatusWait(3 * time.Second)()
+// Repeat task_status calls return instantly — wake-on-done pushes completion,
+// so there is no server-side pacing to lean on anymore.
+func TestHandle_TaskStatusRepeatCallInstant(t *testing.T) {
 	d := setupDaemon(t)
 	d.Registry.AddWorkspace("companyA")
 	userDir := t.TempDir()
@@ -634,82 +659,20 @@ func TestHandle_TaskStatusRepeatCallStillBlocks(t *testing.T) {
 
 	params, _ := json.Marshal(map[string]any{"message_id": 500})
 
-	start1 := time.Now()
-	resp1 := d.Handle(context.Background(), protocol.Request{Method: "task_status", Params: params, ID: 1})
-	elapsed1 := time.Since(start1)
-	if resp1.Error != nil {
-		t.Fatalf("first call: %s", resp1.Error.Message)
-	}
-	if elapsed1 < 3*time.Second {
-		t.Fatalf("first call returned in %v, expected it to block out the full wait (nothing terminal)", elapsed1)
-	}
-
-	start2 := time.Now()
-	resp2 := d.Handle(context.Background(), protocol.Request{Method: "task_status", Params: params, ID: 2})
-	elapsed2 := time.Since(start2)
-	if resp2.Error != nil {
-		t.Fatalf("second call: %s", resp2.Error.Message)
-	}
-	if elapsed2 < 3*time.Second {
-		t.Fatalf("second call returned in %v — a repeat call must still block, or an instant return invites retry storms", elapsed2)
-	}
-}
-
-// withTaskStatusWait shortens the fixed task_status block for a test and
-// returns a restore func. The production wait is 5min — far too slow here.
-func withTaskStatusWait(d time.Duration) func() {
-	prev := taskStatusWait
-	taskStatusWait = d
-	return func() { taskStatusWait = prev }
-}
-
-// task_status must return as soon as has_done flips, not sleep out the full wait.
-func TestHandle_TaskStatusBlocksUntilDone(t *testing.T) {
-	defer withTaskStatusWait(30 * time.Second)()
-	d := setupDaemon(t)
-	d.Registry.AddWorkspace("companyA")
-	userDir := t.TempDir()
-	os.WriteFile(filepath.Join(userDir, "mouse.yaml"),
-		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n"), 0644)
-	d.Registry.AddProject("companyA", "user-service", userDir)
-
-	d.Store.db.Exec(`INSERT INTO messages(id, channel_id, thread_id, from_project, to_project, content, status, ts)
-		VALUES(500, 1, NULL, 'companyA/payment', 'companyA/user-service', 'task', 'message', datetime('now'))`)
-	d.Store.db.Exec(`INSERT INTO sessions(project_id, agent_binary, model, status, pid, created_at, task_msg_id, root_thread_id)
-		VALUES((SELECT id FROM projects WHERE name='user-service'), 'opencode', 'default', 'active', 0, datetime('now'), 500, 500)`)
-
-	start := time.Now()
-	done := make(chan protocol.Response, 1)
-	go func() {
-		params, _ := json.Marshal(map[string]any{"message_id": 500})
-		done <- d.Handle(context.Background(), protocol.Request{Method: "task_status", Params: params, ID: 1})
-	}()
-
-	// Give the blocking call time to start polling, then post the done reply.
-	time.Sleep(150 * time.Millisecond)
-	replyParams, _ := json.Marshal(map[string]any{
-		"from": "companyA/user-service", "thread_id": 500, "content": "done", "status": "done",
-	})
-	if resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: replyParams, ID: 2}); resp.Error != nil {
-		t.Fatalf("done reply: %s", resp.Error.Message)
-	}
-
-	select {
-	case resp := <-done:
-		elapsed := time.Since(start)
+	for i := 1; i <= 2; i++ {
+		start := time.Now()
+		resp := d.Handle(context.Background(), protocol.Request{Method: "task_status", Params: params, ID: int64(i)})
 		if resp.Error != nil {
-			t.Fatalf("task_status: %s", resp.Error.Message)
+			t.Fatalf("call %d: %s", i, resp.Error.Message)
+		}
+		if elapsed := time.Since(start); elapsed > 2*time.Second {
+			t.Fatalf("call %d took %v — task_status must be instant now", i, elapsed)
 		}
 		var ts TaskStatusResult
 		json.Unmarshal(resp.Result, &ts)
-		if !ts.HasDone {
-			t.Fatalf("has_done=false after done reply posted")
+		if ts.HasDone {
+			t.Fatalf("call %d: fresh task must not report has_done", i)
 		}
-		if elapsed > 3*time.Second {
-			t.Fatalf("blocked %v — should return promptly after has_done flips, not sleep out the full wait", elapsed)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("task_status never returned after done reply posted")
 	}
 }
 
@@ -1627,9 +1590,8 @@ func TestWakeAgent_ResumeScopedToProject(t *testing.T) {
 	}
 }
 
-// A terminal task_status returns instantly (nothing to wait for), so the
-// result must tell the caller to stop — a passive has_done bool let parents
-// spin at full speed re-polling a finished task.
+// The next_action wording must match the push-wake contract: working says
+// "you will be woken", terminal says what to do with the result.
 func TestNextAction_TellsCallerWhetherToStop(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -1649,12 +1611,12 @@ func TestNextAction_TellsCallerWhetherToStop(t *testing.T) {
 		if got == "" {
 			t.Fatalf("%s: empty next_action", c.name)
 		}
-		isStillWorking := strings.HasPrefix(got, "STILL WORKING")
+		isStillWorking := strings.HasPrefix(got, "agent still working")
 		if c.wantStop && isStillWorking {
 			t.Errorf("%s: want a stop instruction, got %q", c.name, got)
 		}
 		if !c.wantStop && !isStillWorking {
-			t.Errorf("%s: want STILL WORKING, got %q", c.name, got)
+			t.Errorf("%s: want still-working guidance, got %q", c.name, got)
 		}
 	}
 }
@@ -1663,7 +1625,6 @@ func TestNextAction_TellsCallerWhetherToStop(t *testing.T) {
 // so task_status is the only window into it: it must carry the child's work
 // items, current step, and latest reply — not just a done flag.
 func TestTaskStatus_CarriesChildProgressDetail(t *testing.T) {
-	defer withTaskStatusWait(50 * time.Millisecond)()
 	d := setupDaemon(t)
 	d.Registry.AddWorkspace("companyA")
 	userDir := t.TempDir()

@@ -90,14 +90,11 @@ version with bash permission rules too.
 }
 ```
 
-`task_status` blocks server-side for up to 5 minutes while a delegated agent
-works — that's deliberate, it's what paces polling instead of burning tokens
-on a sleep-and-recheck loop. opencode's MCP client defaults to a **5 second**
-request timeout, so without this setting every `task_status` call dies with:
-
-    MCP error -32001: Request timed out
-
-330000 ms (5.5 min) leaves headroom over the daemon's 5 min wait.
+`task_status` returns an instant snapshot. You never wait on it: when a
+delegated agent posts `done`, the daemon wakes your session with the result
+pushed to you — no polling, no sleep-and-recheck loop. opencode's MCP client
+defaults to a **5 second** request timeout; every `task_status` call is well
+under that, so no special `"timeout"` setting is needed on the `hmf` entry.
 
 ## Setup
 
@@ -479,9 +476,10 @@ The error now names the session and pid. A dead pid is reaped automatically
 a process really is alive. Either wait for it, or `kill <pid>` and delete
 again — a hung agent that will never reply is safe to kill.
 
-**`MCP error -32001: Request timed out` on every `task_status` call.**
+**`MCP error -32001: Request timed out` on `hmf` calls.**
 The `hmf` MCP server has no `timeout` set, so opencode is using its 5-second
-default while `task_status` blocks for up to 5 minutes. Add
+default. All hmf RPCs are fast, so this usually means the daemon itself is
+stuck — check `~/.hmf/hmf.log`. If you do hit it with slow calls, add
 `"timeout": 330000` to the `hmf` entry in your `opencode.json` (see *Wire the
 MCP server into opencode*) and restart the session — MCP config is read at
 connection time.

@@ -173,24 +173,13 @@ agent session (`HMF_CHANNEL_ID` must be set).
   already holds — read the specific files whose correctness you actually need
   to confirm, or `post_message` a follow-up on the same thread, where the child
   still has the context and answers cheaply.
-- **Polling a spawned agent.** Call `task_status(message_id)` — never wrap it in
-  a sleep loop. It takes `message_id` and nothing else: the wait is fixed
-  server-side at 5 minutes (`taskStatusWait` in `internal/daemon/daemon.go`)
-  and is deliberately not caller-tunable, since a shorter wait only produces
-  more round trips for the same answer. The daemon blocks (cheap local polling,
-  zero LLM tokens) and returns the moment `has_done` flips or the agent reaches
-  a terminal state. One call replaces a whole sleep→check→sleep→check round; if
-  it returns with `has_done` still false, just call again with the same
-  `message_id` — every call blocks for its full wait, so the loop paces itself
-  and needs no `sleep` between calls.
-
-  This requires `"timeout": 330000` on the `hmf` MCP entry in `opencode.json`.
-  opencode's MCP client defaults to a 5-second request timeout, so without it
-  every call dies with `MCP error -32001: Request timed out`. MCP config is read
-  at connection time — restart the session after changing it. A *resumed*
-  opencode session carrying a `sleep`-then-check precedent in its history may
-  keep imitating that pattern anyway; that's in-context habit, and a fresh
-  conversation is the fix, not more instructions.
+- **Polling a spawned agent.** `task_status(message_id)` is an instant
+  snapshot — it does not block. You don't poll it at all: wake-on-done pushes
+  the child's completion back to your session automatically. Call
+  `task_status` once for progress detail (todos, current step, ETA) if you
+  need it mid-flight; the `next_action` field tells you what to do. If it
+  returns `has_done` still false and the agent later dies silently, a BLOCKED
+  reply is posted to the thread — that is your failure signal, not polling.
 
   Once dispatched, don't self-initiate a verification loop unless the task
   actually needs the result before you can continue — `post_message` (with

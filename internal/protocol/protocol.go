@@ -47,14 +47,14 @@ func DBPath() string { return filepath.Join(StateDir(), "hmf.db") }
 // Call dials the daemon, sends one request, returns the decoded Result.
 // Folds the resp.Error check into the returned error so callers don't repeat
 // the `if resp.Error != nil` dance. Shared by the CLI and the MCP shim.
-// 30s cap: every RPC except a blocking task_status is fast (spawn is async);
-// a hung daemon must not block the CLI forever.
+// 30s cap: every RPC is fast (spawn is async, task_status is an instant
+// snapshot); a hung daemon must not block the CLI forever.
 func Call(method string, params any) (json.RawMessage, error) {
 	return CallWithTimeout(method, params, 30*time.Second)
 }
 
 // CallWithTimeout is Call with a caller-chosen deadline — for RPCs that may
-// legitimately block server-side (task_status blocks up to 5min).
+// take longer than the 30s default.
 func CallWithTimeout(method string, params any, timeout time.Duration) (json.RawMessage, error) {
 	var raw json.RawMessage
 	if params != nil {

@@ -290,11 +290,10 @@ func newServer(callerID string) *mcpserver.Server {
 
 	mcpserver.AddTool(srv, &mcpserver.Tool{
 		Name:        "task_status",
-		Description: "Check on a delegated task and see what the child agent is actually doing: its work items (todos with state), the step it's on, how long it's been running, and its latest reply — plus whether it finished, exited, failed, or never woke. This is how you observe a child from here; it runs in its own process and cannot write into your session. Pass any message_id from the thread (root or reply). BLOCKS up to 5 minutes, returning early the moment the task finishes — do not sleep around it, and do not call it again until it returns. Follow the next_action field it gives you.",
+		Description: "Check on a delegated task and see what the child agent is actually doing: its work items (todos with state), the step it's on, how long it's been running, and its latest reply — plus whether it finished, exited, failed, or never woke. This is how you observe a child from here; it runs in its own process and cannot write into your session. Pass any message_id from the thread (root or reply). Returns an instant snapshot — you will be WOKEN when the child posts done, so do not poll this tool; follow the next_action field it gives you.",
 	}, func(ctx context.Context, req *mcpserver.CallToolRequest, in TaskStatusInput) (*mcpserver.CallToolResult, TaskStatusOutput, error) {
-		// Socket deadline must outlive the daemon's fixed 5min wait.
-		result, err := protocol.CallWithTimeout("task_status",
-			map[string]any{"message_id": in.MessageID}, 5*time.Minute+10*time.Second)
+		result, err := protocol.Call("task_status",
+			map[string]any{"message_id": in.MessageID})
 		if err != nil {
 			return nil, TaskStatusOutput{}, err
 		}

@@ -149,10 +149,9 @@ type TaskStatusResult struct {
 	SessionID   int64  `json:"session_id,omitempty"`
 	PID         int    `json:"pid,omitempty"`
 	ExitCode    int    `json:"exit_code,omitempty"`
-	// NextAction spells out what to do with this result. A terminal result
-	// returns instantly (nothing left to wait for), so a caller that doesn't
-	// recognise it as final re-calls at full speed — an in-band instruction
-	// stops that better than a passive boolean.
+	// NextAction spells out what to do with this result. Push-wake contract:
+	// the caller is woken on done, so a working result says "you will be
+	// woken" and a terminal one says what to do with the payload.
 	NextAction string `json:"next_action"`
 
 	// Progress detail. The child runs in its own process and can't write into
@@ -179,18 +178,18 @@ type TodoLine struct {
 	State   string `json:"state"`
 }
 
-// nextAction renders the caller's next step for a status snapshot.
+// nextAction renders the caller's next step for a status snapshot. Push-wake
+// contract: the caller is woken on done, so working statuses say "wait, don't poll".
 func nextAction(hasDone bool, agentStatus string, messageID int64) string {
 	switch {
 	case hasDone:
-		return fmt.Sprintf("COMPLETE — stop polling. Call read_thread(message_id=%d) to read the result.", messageID)
+		return fmt.Sprintf("COMPLETE — continue with the result. Call read_thread(message_id=%d) to read it.", messageID)
 	case agentStatus == "exited" || agentStatus == "failed":
-		return fmt.Sprintf("ENDED WITHOUT A DONE REPLY — stop polling. Call read_thread(message_id=%d); "+
-			"if there is no reply, re-dispatch with post_message.", messageID)
+		return fmt.Sprintf("ENDED WITHOUT A DONE REPLY — agent exited before replying — check hmf.log, then re-post the task (read_thread(message_id=%d) first).", messageID)
 	case agentStatus == "no_agent":
-		return "NO AGENT WAS WOKEN — stop polling. Re-post with a `to` field to spawn one."
+		return "NO AGENT WAS WOKEN — re-post with a `to` field to spawn one."
 	default:
-		return "STILL WORKING — see todos/current_step for what it's doing. Call task_status again for this message_id; it blocks up to 5min for you, so do not sleep."
+		return "agent still working — you will be woken when it posts done; do not poll task_status"
 	}
 }
 
@@ -815,18 +814,8 @@ func (d *Daemon) killIdleParent(threadID int64, proj Project) {
 	logf("wake", "thread=%d session=%d killed idle parent pid=%d before resume", threadID, sess.ID, sess.PID)
 }
 
-// taskStatusWait is how long a task_status call blocks before reporting back.
-// Fixed, not caller-tunable: a shorter wait just produces more round trips for
-// the same answer. var (not const) so tests can shorten it.
-var taskStatusWait = 5 * time.Minute
-
-// taskStatusPollInterval is how often a blocking task_status re-checks the DB.
-const taskStatusPollInterval = 2 * time.Second
-
-// handleTaskStatus reports agent state (working/exited/failed/no_agent) +
-// done reply presence. Always blocks for taskStatusWait, returning early the
-// moment the task reaches a terminal state. Blocking IS the pacing mechanism —
-// a call that returns instantly just invites an immediate retry.
+// handleTaskStatus is an instant snapshot: has_done, agent status, progress.
+// Callers no longer block — wake-on-done pushes completion to the parent.
 func (d *Daemon) handleTaskStatus(ctx context.Context, req protocol.Request) protocol.Response {
 	var p TaskStatusParams
 	if err := json.Unmarshal(req.Params, &p); err != nil {
@@ -835,23 +824,12 @@ func (d *Daemon) handleTaskStatus(ctx context.Context, req protocol.Request) pro
 	if p.MessageID == 0 {
 		return errResp(req.ID, "message_id is required")
 	}
-	deadline := time.Now().Add(taskStatusWait)
-	for {
-		result, terminal, err := d.computeTaskStatus(p.MessageID)
-		if err != nil {
-			return errResp(req.ID, err.Error())
-		}
-		if terminal || !time.Now().Before(deadline) {
-			b, _ := json.Marshal(result)
-			return protocol.Response{ID: req.ID, Result: b}
-		}
-		select {
-		case <-ctx.Done():
-			b, _ := json.Marshal(result)
-			return protocol.Response{ID: req.ID, Result: b}
-		case <-time.After(taskStatusPollInterval):
-		}
+	result, _, err := d.computeTaskStatus(p.MessageID)
+	if err != nil {
+		return errResp(req.ID, err.Error())
 	}
+	b, _ := json.Marshal(result)
+	return protocol.Response{ID: req.ID, Result: b}
 }
 
 // computeTaskStatus is the instant (non-blocking) status snapshot.
