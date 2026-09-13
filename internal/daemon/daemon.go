@@ -321,6 +321,8 @@ func (d *Daemon) dispatch(ctx context.Context, req protocol.Request) protocol.Re
 		return d.handleStatus(req)
 	case "session_list":
 		return d.handleSessionList(req)
+	case "thread_list":
+		return d.handleThreadList(req)
 	case "thread_delete":
 		return d.handleThreadDelete(req)
 	case "prune":
@@ -1172,6 +1174,64 @@ func (d *Daemon) handleSessionList(req protocol.Request) protocol.Response {
 	}
 	if out == nil {
 		out = []SessionListItem{}
+	}
+	result, _ := json.Marshal(out)
+	return protocol.Response{ID: req.ID, Result: result}
+}
+
+// ThreadListItem is a row for the thread_list RPC (TUI threads panel).
+type ThreadListItem struct {
+	ID       int64  `json:"id"`        // thread root message id
+	Title    string `json:"title"`     // root content, first line, 80 runes
+	From     string `json:"from"`      // root from_project
+	To       string `json:"to"`        // root to_project ('' if none)
+	Status   string `json:"status"`    // working | blocked | done | idle
+	LastTS   string `json:"last_ts"`   // RFC3339 of newest message on thread
+	MsgCount int    `json:"msg_count"` // root included
+}
+
+// handleThreadList lists task threads (root messages), newest activity first.
+// Status is derived in SQL (mirrors computeTaskStatus): active session beats a
+// done reply beats nothing.
+func (d *Daemon) handleThreadList(req protocol.Request) protocol.Response {
+	rows, err := d.Store.db.Query(
+		`SELECT r.id, r.content, IFNULL(r.from_project,''), IFNULL(r.to_project,''),
+		        CASE
+		          WHEN EXISTS(SELECT 1 FROM sessions s WHERE s.root_thread_id=r.id AND s.status='active') THEN 'working'
+		          WHEN EXISTS(SELECT 1 FROM messages m WHERE m.thread_id=r.id AND m.status='done' AND m.content LIKE 'BLOCKED:%') THEN 'blocked'
+		          WHEN EXISTS(SELECT 1 FROM messages m WHERE m.thread_id=r.id AND m.status='done') THEN 'done'
+		          ELSE 'idle'
+		        END,
+		        (SELECT MAX(m2.ts) FROM messages m2 WHERE m2.id=r.id OR m2.thread_id=r.id),
+		        (SELECT COUNT(*) FROM messages m3 WHERE m3.id=r.id OR m3.thread_id=r.id)
+		 FROM messages r WHERE r.thread_id IS NULL
+		 ORDER BY 6 DESC, r.id DESC`)
+	if err != nil {
+		return errResp(req.ID, err.Error())
+	}
+	defer rows.Close()
+	var out []ThreadListItem
+	for rows.Next() {
+		var it ThreadListItem
+		// MAX() strips the DATETIME affinity, so ts arrives as a string.
+		var ts string
+		if err := rows.Scan(&it.ID, &it.Title, &it.From, &it.To, &it.Status, &ts, &it.MsgCount); err != nil {
+			return errResp(req.ID, err.Error())
+		}
+		it.Title = firstLine(it.Title, 80)
+		for _, layout := range []string{"2006-01-02 15:04:05", time.RFC3339} {
+			if t, err := time.ParseInLocation(layout, ts, time.Local); err == nil {
+				it.LastTS = t.Format(time.RFC3339)
+				break
+			}
+		}
+		out = append(out, it)
+	}
+	if err := rows.Err(); err != nil {
+		return errResp(req.ID, err.Error())
+	}
+	if out == nil {
+		out = []ThreadListItem{}
 	}
 	result, _ := json.Marshal(out)
 	return protocol.Response{ID: req.ID, Result: result}

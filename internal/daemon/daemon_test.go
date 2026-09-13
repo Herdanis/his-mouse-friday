@@ -2072,3 +2072,39 @@ func TestDoneReplyWakeFailurePostsBlockedNotError(t *testing.T) {
 		t.Fatalf("thread missing BLOCKED wake-failure reply, got %d messages", len(msgs))
 	}
 }
+
+func TestThreadList(t *testing.T) {
+	d := setupDaemon(t)
+	d.Store.db.Exec(`INSERT INTO workspaces(id, name) VALUES(1, 'co')`)
+	d.Store.db.Exec(`INSERT INTO projects(id, workspace_id, name, path) VALUES(1, 1, 'child', '/tmp/child')`)
+	// Thread 500: root + working session; thread 600: root + done reply.
+	d.Store.db.Exec(`INSERT INTO messages(id, channel_id, thread_id, from_project, to_project, content, status, ts)
+		VALUES(500, 1, NULL, 'co/parent', 'co/child', 'do X please', 'message', datetime('now','-1 hour')),
+		       (501, 1, 500, 'co/child', 'co/parent', 'working on it', 'ack', datetime('now')),
+		       (600, 1, NULL, 'co/parent', 'co/child', 'do Y', 'message', datetime('now','-2 hours')),
+		       (601, 1, 600, 'co/child', 'co/parent', 'did Y', 'done', datetime('now','-1 minute'))`)
+	d.Store.db.Exec(`INSERT INTO sessions(project_id, agent_binary, model, status, pid, created_at, task_msg_id, root_thread_id)
+		VALUES(1, 'opencode', 'default', 'active', 0, datetime('now'), 500, 500)`)
+
+	resp := d.Handle(context.Background(), protocol.Request{Method: "thread_list", ID: 1})
+	if resp.Error != nil {
+		t.Fatalf("thread_list: %s", resp.Error.Message)
+	}
+	var items []ThreadListItem
+	if err := json.Unmarshal(resp.Result, &items); err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("want 2 threads, got %d: %+v", len(items), items)
+	}
+	// Newest activity first: 500 above 600.
+	if items[0].ID != 500 || items[0].Status != "working" || items[0].MsgCount != 2 {
+		t.Fatalf("thread 500 wrong: %+v", items[0])
+	}
+	if items[0].Title != "do X please" {
+		t.Fatalf("title = %q", items[0].Title)
+	}
+	if items[1].ID != 600 || items[1].Status != "done" {
+		t.Fatalf("thread 600 wrong: %+v", items[1])
+	}
+}
