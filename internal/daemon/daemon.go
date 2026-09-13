@@ -764,7 +764,7 @@ func (d *Daemon) wakeParentOnDone(ctx context.Context, p PostParams, msg Message
 	}
 	// An idle-but-alive parent must die before resume, or two
 	// `opencode run -s` share one session.
-	d.killIdleParent(proj)
+	d.killIdleParent(p.ThreadID, proj)
 	wake := PostParams{
 		From: msg.FromProject, To: parent,
 		Content: p.Content, ThreadID: p.ThreadID,
@@ -785,20 +785,21 @@ func (d *Daemon) wakeParentOnDone(ctx context.Context, p PostParams, msg Message
 
 // killIdleParent terminates the project's live agent process before it is
 // resumed. Resumed opencode sessions sit alive after their turn ends, so
-// "active" here means idle, not busy.
-func (d *Daemon) killIdleParent(proj Project) {
+// "active" here means idle, not busy. threadID keys every log line so
+// `grep thread=N` replays the whole done-wake.
+func (d *Daemon) killIdleParent(threadID int64, proj Project) {
 	sess, err := d.Sessions.LatestActiveSession(proj.ID)
 	if err != nil || sess.PID == 0 || !processAlive(int64(sess.PID)) {
 		return
 	}
 	if err := syscall.Kill(sess.PID, syscall.SIGTERM); err != nil {
-		logErrf("wake", "thread=%d kill idle parent session=%d pid=%d: %v", sess.ID, sess.ID, sess.PID, err)
+		logErrf("wake", "thread=%d kill idle parent session=%d pid=%d: %v", threadID, sess.ID, sess.PID, err)
 		return
 	}
 	if err := d.Sessions.MarkExited(sess.ID, 0); err != nil {
-		logErrf("wake", "mark killed parent session=%d: %v", sess.ID, err)
+		logErrf("wake", "thread=%d mark killed parent session=%d: %v", threadID, sess.ID, err)
 	}
-	logf("wake", "session=%d killed idle parent pid=%d before resume", sess.ID, sess.PID)
+	logf("wake", "thread=%d session=%d killed idle parent pid=%d before resume", threadID, sess.ID, sess.PID)
 }
 
 // taskStatusWait is how long a task_status call blocks before reporting back.
