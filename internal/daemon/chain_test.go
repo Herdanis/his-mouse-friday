@@ -167,7 +167,7 @@ func TestChain_ThreeProjectDelegation(t *testing.T) {
 	// Each replies done on the shared root, deepest first.
 	for i, name := range []string{"svc-c", "svc-b", "svc-a"} {
 		post(int64(10+i), map[string]any{
-			"thread_id": root, "from": "companyA/" + name,
+			"thread_id": root, "from": name,
 			"content": name + " finished", "status": "done",
 		})
 	}

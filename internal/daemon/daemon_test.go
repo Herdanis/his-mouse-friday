@@ -1783,7 +1783,7 @@ func TestHandle_Post_OutboundDenied(t *testing.T) {
 	t.Run("unregistered sender unaffected", func(t *testing.T) {
 		d := newDaemon(t, "agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n  allow_outbound: false\n")
 		params, _ := json.Marshal(map[string]any{
-			"from": "some/scratch-dir", "to": "user-service", "content": "do X"})
+			"from": "scratch-dir", "to": "user-service", "content": "do X"})
 		if resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: params, ID: 1}); resp.Error != nil {
 			t.Fatalf("unregistered sender should be unrestricted, got %q", resp.Error.Message)
 		}
