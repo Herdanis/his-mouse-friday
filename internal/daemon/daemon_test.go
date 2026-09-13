@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -942,8 +943,10 @@ func TestHandle_ReplyWithoutToAutoFillsFromRoot(t *testing.T) {
 	}
 }
 
-// The worker's own `done` reply must NOT auto-fill `to` — would wake the
-// originator too, an unrequested reply-loop.
+// The worker's own `done` reply must NOT auto-fill `to` — that would resolve
+// to the thread root's recipient (the worker itself) and re-wake it. Waking
+// the ORIGINATOR on done is the push-wake contract (see TestDoneReplyWakesOriginator);
+// here only the worker's session count must stay flat.
 func TestHandle_DoneReplyWithoutToDoesNotAutoWake(t *testing.T) {
 	d := setupDaemon(t)
 	d.Registry.AddWorkspace("companyA")
@@ -951,7 +954,7 @@ func TestHandle_DoneReplyWithoutToDoesNotAutoWake(t *testing.T) {
 	os.WriteFile(filepath.Join(userDir, "mouse.yaml"),
 		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n"), 0644)
 	d.Registry.AddProject("companyA", "user-service", userDir)
-	// payment is registered too — proves a done reply doesn't wake it back.
+	// payment is registered too — its wake on done is fine; the worker's isn't.
 	paymentDir := t.TempDir()
 	os.WriteFile(filepath.Join(paymentDir, "mouse.yaml"),
 		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n"), 0644)
@@ -972,9 +975,148 @@ func TestHandle_DoneReplyWithoutToDoesNotAutoWake(t *testing.T) {
 		t.Fatalf("post: %s", resp.Error.Message)
 	}
 	var sessCount int
-	d.Store.db.QueryRow(`SELECT count(*) FROM sessions WHERE root_thread_id=500`).Scan(&sessCount)
+	d.Store.db.QueryRow(
+		`SELECT count(*) FROM sessions WHERE root_thread_id=500
+		 AND project_id=(SELECT id FROM projects WHERE name='user-service')`).Scan(&sessCount)
 	if sessCount != 1 {
-		t.Fatalf("done reply must not auto-wake originator, got %d sessions for thread 500", sessCount)
+		t.Fatalf("done reply must not auto-fill to and re-wake the worker, got %d worker sessions for thread 500", sessCount)
+	}
+}
+
+// The core push-wake contract: a child's done reply resumes the originator
+// project's opencode session with the summary, instead of waiting for a
+// parent poll. The parent's session lives on its own upper thread (499), so
+// the wake must find it project-scoped.
+func TestDoneReplyWakesOriginator(t *testing.T) {
+	var spawned []SpawnConfig
+	d := setupDaemon(t)
+	d.Launcher = &Launcher{Binary: "/bin/echo", SpawnFn: func(cfg SpawnConfig) (int, error) {
+		spawned = append(spawned, cfg)
+		return 1, nil
+	}}
+	d.Registry.AddWorkspace("co")
+	aDir := t.TempDir()
+	os.WriteFile(filepath.Join(aDir, "mouse.yaml"),
+		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n  allow_outbound: true\n"), 0644)
+	d.Registry.AddProject("co", "parent", aDir)
+	bDir := t.TempDir()
+	os.WriteFile(filepath.Join(bDir, "mouse.yaml"),
+		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n"), 0644)
+	d.Registry.AddProject("co", "child", bDir)
+
+	// Root task 500: parent → child. The parent's OWN session is on its
+	// upper thread 499 — NOT on thread 500.
+	d.Store.db.Exec(`INSERT INTO messages(id, channel_id, thread_id, from_project, to_project, content, status, ts)
+		VALUES(500, 1, NULL, 'co/parent', 'co/child', 'do X', 'message', datetime('now'))`)
+	d.Store.db.Exec(`INSERT INTO sessions(project_id, agent_binary, model, status, pid, created_at, task_msg_id, root_thread_id, opencode_session_id)
+		VALUES((SELECT id FROM projects WHERE name='parent'), 'opencode', 'default', 'exited', 0, datetime('now'), 499, 499, 'ses_parent')`)
+
+	done, _ := json.Marshal(map[string]any{
+		"from": "co/child", "thread_id": 500,
+		"content": "did X, tests pass", "status": "done",
+	})
+	resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: done, ID: 1})
+	if resp.Error != nil {
+		t.Fatalf("done reply: %s", resp.Error.Message)
+	}
+	if len(spawned) != 1 {
+		t.Fatalf("want 1 parent wake spawn, got %d", len(spawned))
+	}
+	cfg := spawned[0]
+	if cfg.AgentSessionID != "ses_parent" {
+		t.Fatalf("wake resumed %q, want parent's ses_parent", cfg.AgentSessionID)
+	}
+	if !strings.Contains(cfg.Task, "did X, tests pass") {
+		t.Fatalf("wake prompt missing child summary, got: %q", cfg.Task)
+	}
+	// The done reply itself is in the thread.
+	msgs, err := d.Comms.ReadThread(500)
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := msgs[len(msgs)-1]
+	if last.Status != "done" || last.Content != "did X, tests pass" {
+		t.Fatalf("thread tail = %+v, want the done reply", last)
+	}
+}
+
+// Unregistered originator (human / scratch dir): done lands in the thread,
+// nobody is spawned.
+func TestDoneReplyNoWakeForUnregisteredOriginator(t *testing.T) {
+	var spawned []SpawnConfig
+	d := setupDaemon(t)
+	d.Launcher = &Launcher{Binary: "/bin/echo", SpawnFn: func(cfg SpawnConfig) (int, error) {
+		spawned = append(spawned, cfg)
+		return 1, nil
+	}}
+	d.Store.db.Exec(`INSERT INTO messages(id, channel_id, thread_id, from_project, to_project, content, status, ts)
+		VALUES(600, 1, NULL, 'human', 'co/child', 'do X', 'message', datetime('now'))`)
+
+	done, _ := json.Marshal(map[string]any{
+		"from": "co/child", "thread_id": 600,
+		"content": "did X", "status": "done",
+	})
+	resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: done, ID: 1})
+	if resp.Error != nil {
+		t.Fatalf("done reply: %s", resp.Error.Message)
+	}
+	if len(spawned) != 0 {
+		t.Fatalf("unregistered originator must not be woken, got %d spawns", len(spawned))
+	}
+}
+
+// Idle-but-alive parent: resumed opencode sessions sit alive after their
+// turn ends. Done-wake must SIGTERM that process before resuming, or two
+// `opencode run -s` share one session.
+func TestDoneWakeKillsIdleParent(t *testing.T) {
+	var spawned []SpawnConfig
+	d := setupDaemon(t)
+	d.Launcher = &Launcher{Binary: "/bin/echo", SpawnFn: func(cfg SpawnConfig) (int, error) {
+		spawned = append(spawned, cfg)
+		return 1, nil
+	}}
+	d.Registry.AddWorkspace("co")
+	aDir := t.TempDir()
+	os.WriteFile(filepath.Join(aDir, "mouse.yaml"),
+		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n  allow_outbound: true\n"), 0644)
+	d.Registry.AddProject("co", "parent", aDir)
+	bDir := t.TempDir()
+	os.WriteFile(filepath.Join(bDir, "mouse.yaml"),
+		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n"), 0644)
+	d.Registry.AddProject("co", "child", bDir)
+
+	// Real live process standing in for an idle parent agent.
+	sleep := exec.Command("sleep", "30")
+	if err := sleep.Start(); err != nil {
+		t.Skip("cannot start sleep:", err)
+	}
+	defer sleep.Process.Kill()
+
+	d.Store.db.Exec(`INSERT INTO messages(id, channel_id, thread_id, from_project, to_project, content, status, ts)
+		VALUES(650, 1, NULL, 'co/parent', 'co/child', 'do X', 'message', datetime('now'))`)
+	d.Store.db.Exec(`INSERT INTO sessions(project_id, agent_binary, model, status, pid, created_at, task_msg_id, root_thread_id, opencode_session_id)
+		VALUES((SELECT id FROM projects WHERE name='parent'), 'opencode', 'default', 'active', ?, datetime('now'), 649, 649, 'ses_parent_idle')`,
+		sleep.Process.Pid)
+
+	done, _ := json.Marshal(map[string]any{
+		"from": "co/child", "thread_id": 650, "content": "did X", "status": "done",
+	})
+	if resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: done, ID: 1}); resp.Error != nil {
+		t.Fatalf("done reply: %s", resp.Error.Message)
+	}
+	if len(spawned) != 1 {
+		t.Fatalf("want 1 parent wake spawn, got %d", len(spawned))
+	}
+	if spawned[0].AgentSessionID != "ses_parent_idle" {
+		t.Fatalf("resume target = %q, want ses_parent_idle", spawned[0].AgentSessionID)
+	}
+	// The idle process must be gone.
+	done2 := make(chan error, 1)
+	go func() { _, err := sleep.Process.Wait(); done2 <- err }()
+	select {
+	case <-done2:
+	case <-time.After(5 * time.Second):
+		t.Fatal("idle parent process was not killed")
 	}
 }
 

@@ -172,7 +172,8 @@ func TestChain_ThreeProjectDelegation(t *testing.T) {
 			"content": name + " finished", "status": "done",
 		})
 	}
-	// A done never wakes anyone — three replies must not spawn a fourth agent.
+	// The chain originator is "dir:lab" — unregistered, so push-wake skips
+	// it and the three done replies spawn no fourth agent.
 	if len(spawns) != 3 {
 		t.Errorf("spawns = %d after the done replies, want 3", len(spawns))
 	}

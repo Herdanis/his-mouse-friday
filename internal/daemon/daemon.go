@@ -466,13 +466,11 @@ func (d *Daemon) handlePost(ctx context.Context, req protocol.Request) protocol.
 	// Wake to-addressed messages unless the thread's agent is still running.
 	// A prior done reply IS re-wakeable — follow-up resumes the prior session.
 	//
-	// A "done" never wakes: it is the worker announcing it finished, and
-	// spawning the originator to receive that is a whole agent process doing
-	// nothing. The originator learns via task_status, not a wake. Guarding
-	// only the `to` auto-fill above misses this — `hmf done` sets `to`
-	// explicitly from HMF_FROM, so every completed task spawned a pointless
-	// parent-side agent.
-	if p.To == "" || p.Status == "done" {
+	// A "done" reply pushes the result back: the thread originator is resumed
+	// with the child's summary (wakeParentOnDone). The parent never polls.
+	if p.Status == "done" {
+		d.wakeParentOnDone(ctx, p, msg)
+	} else if p.To == "" {
 		logf("wake", "thread=%d msg=%d no wake (to=%q status=%q)", threadKey(p.ThreadID, msg.ID), msg.ID, p.To, p.Status)
 	} else if d.threadSessionActive(p.ThreadID, p.To) {
 		logf("wake", "thread=%d msg=%d suppressed — %s already has an active session", p.ThreadID, msg.ID, p.To)
@@ -545,8 +543,15 @@ func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error
 	// before inbound so the refusal names the side that actually said no.
 	// Unregistered senders (a human orchestrating from a scratch dir) have no
 	// mouse.yaml and are unrestricted.
-	if err := d.checkOutboundAllowed(msg.FromProject); err != nil {
-		return err
+	//
+	// Skipped for done-wakes: a child replying done completes the engagement
+	// the parent started — that is a reply, not delegating out. Requiring
+	// allow_outbound here would silently break the parent wake for every
+	// inbound-only child whose done replies worked before push-wake.
+	if p.Status != "done" {
+		if err := d.checkOutboundAllowed(msg.FromProject); err != nil {
+			return err
+		}
 	}
 	mouse, err := d.MouseLoader(filepath.Join(proj.Path, "mouse.yaml"))
 	if err != nil {
@@ -584,6 +589,17 @@ func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("resume lookup: %w", err)
 	}
+	if priorOcID.String == "" && p.Status == "done" {
+		// Done-wake resumes the PARENT, whose session lives on its own upper
+		// thread — the thread-scoped lookup above can't see it. Project-scoped
+		// fallback: one agent session per project at a time (AGENTS.md model).
+		err = d.Store.db.QueryRow(
+			`SELECT opencode_session_id FROM sessions WHERE project_id=? AND agent_binary=? AND opencode_session_id IS NOT NULL AND opencode_session_id != '' ORDER BY id DESC LIMIT 1`,
+			proj.ID, binary).Scan(&priorOcID)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("resume fallback: %w", err)
+		}
+	}
 	entrypoint := fmt.Sprintf(
 		"[DELEGATED TASK] Parent agent %s sent you a message (id %d) in the general channel.\n"+
 			"1. Call the read_thread MCP tool with message_id=%d to load the task and prior context.\n"+
@@ -601,6 +617,12 @@ func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error
 			"   files you changed, and the verify result. The parent trusts this reply instead\n"+
 			"   of re-reading your files, so it must be accurate. Blocked → start with \"BLOCKED: \".",
 		msg.FromProject, msg.ID, parentID, parentID, parentID)
+	// Done-wake: the parent is resumed to receive the result, not do work —
+	// inject the child's summary so the prompt carries it (the standard
+	// entrypoint only points at read_thread).
+	if p.Status == "done" {
+		entrypoint += "\n\nThe task you delegated is complete. The worker's summary:\n" + p.Content
+	}
 	spawnCfg := SpawnConfig{
 		Dir:       proj.Path,
 		Binary:    binary,
@@ -657,9 +679,13 @@ func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error
 	// "reply that you started" can't report the failure where it never ran, so
 	// the one signal that distinguishes "never spawned" from "working quietly"
 	// has to come from the side that knows the process exists.
-	ack := fmt.Sprintf("working on it — agent spawned as %s (pid %d)", spawnCfg.SessionName, pid)
-	if _, err := d.Comms.PostMessage(msg.ChannelID, parentID, msg.ToProject, msg.FromProject, ack, "ack"); err != nil {
-		logErrf("wake", "thread=%d ack post failed: %v", parentID, err)
+	// Skipped on done-wakes: the parent is receiving a result, not picking up
+	// work — an ack there would also bury the done reply as the thread tail.
+	if p.Status != "done" {
+		ack := fmt.Sprintf("working on it — agent spawned as %s (pid %d)", spawnCfg.SessionName, pid)
+		if _, err := d.Comms.PostMessage(msg.ChannelID, parentID, msg.ToProject, msg.FromProject, ack, "ack"); err != nil {
+			logErrf("wake", "thread=%d ack post failed: %v", parentID, err)
+		}
 	}
 	if spawnCfg.AgentSessionID != "" {
 		// Resume: ocID already known, set directly — no capture needed.
@@ -696,6 +722,83 @@ func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error
 		}
 	}()
 	return nil
+}
+
+// ============================================
+// Wake on done
+// ============================================
+
+// wakeParentOnDone pushes a child's completion back to the thread
+// originator: resume the originator's session with the summary injected as
+// the prompt. Best-effort — the child's done post must succeed even when
+// the parent wake fails (a BLOCKED reply records it instead).
+//
+// The parent has no session on the done-thread; its identity is the root
+// message's from_project, and its session lives on its own upper thread.
+func (d *Daemon) wakeParentOnDone(ctx context.Context, p PostParams, msg Message) {
+	wlog := func(format string, args ...any) {
+		logf("wake", "thread=%d msg=%d "+format, append([]any{threadKey(p.ThreadID, msg.ID), msg.ID}, args...)...)
+	}
+	root, err := d.Comms.GetMessage(p.ThreadID)
+	if err != nil {
+		wlog("done-wake skipped: root lookup: %v", err)
+		return
+	}
+	parent := root.FromProject
+	if parent == msg.FromProject {
+		wlog("done-wake skipped: originator finished its own thread")
+		return
+	}
+	parts := strings.SplitN(parent, "/", 2)
+	// No slash = human/scratch originator — reads the thread themselves, no
+	// wake. (SplitN on "human" yields one part; indexing [1] would panic.)
+	if len(parts) != 2 {
+		wlog("done-wake skipped: originator %q not a registered project", parent)
+		return
+	}
+	proj, err := d.findProject(parts[0], parts[1])
+	if err != nil {
+		// Human/scratch originator — reads the thread themselves, no wake.
+		wlog("done-wake skipped: originator %q not a registered project", parent)
+		return
+	}
+	// An idle-but-alive parent must die before resume, or two
+	// `opencode run -s` share one session.
+	d.killIdleParent(proj)
+	wake := PostParams{
+		From: msg.FromProject, To: parent,
+		Content: p.Content, ThreadID: p.ThreadID,
+		ParentID: p.ThreadID, Status: "done",
+	}
+	// The done message itself carries no `to` (auto-fill skips done), but
+	// wakeAgent addresses via msg.ToProject — aim the copy at the parent.
+	wakeMsg := msg
+	wakeMsg.ToProject = parent
+	if err := d.wakeAgent(ctx, wake, wakeMsg); err != nil {
+		logErrf("wake", "thread=%d msg=%d done-wake to=%s failed: %v", p.ThreadID, msg.ID, parent, err)
+		content := fmt.Sprintf("BLOCKED: parent wake failed after child finished: %v", err)
+		if _, perr := d.Comms.PostBlockedIfNoDone(msg.ChannelID, p.ThreadID, msg.FromProject, parent, content); perr != nil {
+			logErrf("wake", "thread=%d BLOCKED post failed: %v", p.ThreadID, perr)
+		}
+	}
+}
+
+// killIdleParent terminates the project's live agent process before it is
+// resumed. Resumed opencode sessions sit alive after their turn ends, so
+// "active" here means idle, not busy.
+func (d *Daemon) killIdleParent(proj Project) {
+	sess, err := d.Sessions.LatestActiveSession(proj.ID)
+	if err != nil || sess.PID == 0 || !processAlive(int64(sess.PID)) {
+		return
+	}
+	if err := syscall.Kill(sess.PID, syscall.SIGTERM); err != nil {
+		logErrf("wake", "thread=%d kill idle parent session=%d pid=%d: %v", sess.ID, sess.ID, sess.PID, err)
+		return
+	}
+	if err := d.Sessions.MarkExited(sess.ID, 0); err != nil {
+		logErrf("wake", "mark killed parent session=%d: %v", sess.ID, err)
+	}
+	logf("wake", "session=%d killed idle parent pid=%d before resume", sess.ID, sess.PID)
 }
 
 // taskStatusWait is how long a task_status call blocks before reporting back.
