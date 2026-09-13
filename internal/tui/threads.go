@@ -190,7 +190,7 @@ func (t threadsModel) view(w, h int) string {
 		}
 		b.WriteString(marker + rowLine(r) + "\n")
 	}
-	if t.confirm {
+	if t.confirm && len(t.rows) > 0 {
 		b.WriteString(" " + styFailed.Render(fmt.Sprintf("delete thread #%d? y/n", t.rows[t.sel].ID)))
 	}
 	return b.String()

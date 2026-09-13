@@ -187,7 +187,7 @@ func (p projectsModel) view(w, h int) string {
 		}
 		b.WriteString(marker + fmt.Sprintf("%s/%s %s", r.Workspace, r.Name, r.Path) + "\n")
 	}
-	if p.confirm {
+	if p.confirm && len(p.rows) > 0 {
 		r := p.rows[p.sel]
 		b.WriteString(" " + styFailed.Render(fmt.Sprintf("delete %s/%s? y/n", r.Workspace, r.Name)))
 	}

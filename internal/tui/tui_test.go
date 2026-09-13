@@ -100,6 +100,19 @@ func TestReaderViewEmptyRowsNoPanic(t *testing.T) {
 	}
 }
 
+func TestListViewEmptyRowsConfirmNoPanic(t *testing.T) {
+	// Confirm armed, then an async refresh emptied the rows — list views
+	// must render the confirm line only when a row exists.
+	tm := threadsModel{confirm: true}
+	if tm.view(80, 20) == "" {
+		t.Fatal("threads list view must render")
+	}
+	pm := projectsModel{confirm: true}
+	if pm.view(80, 20) == "" {
+		t.Fatal("projects list view must render")
+	}
+}
+
 // stubFetcher builds a fetchers set answering from a fixed map; later tasks'
 // panel tests share it. Methods absent from the map return nil, nil.
 func stubFetcher(m map[string]json.RawMessage) fetchers {
