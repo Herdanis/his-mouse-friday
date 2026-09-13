@@ -370,8 +370,8 @@ func watchCmd() *cobra.Command {
 			}
 			fmt.Printf("watching message %d — Ctrl-C to stop\n", msgID)
 			for {
-				result, err := protocol.CallWithTimeout("task_status",
-					map[string]any{"message_id": msgID}, 5*time.Minute+10*time.Second)
+				result, err := protocol.Call("task_status",
+					map[string]any{"message_id": msgID})
 				if err != nil {
 					return fmt.Errorf("task_status: %w", err)
 				}
@@ -394,6 +394,8 @@ func watchCmd() *cobra.Command {
 					return nil
 				default:
 					fmt.Printf("[%s] still working...\n", now)
+					// task_status answers instantly since push-wake; pace the loop here.
+					time.Sleep(2 * time.Second)
 				}
 			}
 		},
