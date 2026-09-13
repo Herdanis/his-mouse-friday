@@ -1229,7 +1229,7 @@ func (d *Daemon) handleThreadList(req protocol.Request) protocol.Response {
 		}
 		it.Title = firstLine(it.Title, 80)
 		for _, layout := range []string{"2006-01-02 15:04:05", time.RFC3339} {
-			if t, err := time.ParseInLocation(layout, ts, time.Local); err == nil {
+			if t, err := time.ParseInLocation(layout, ts, time.UTC); err == nil {
 				it.LastTS = t.Format(time.RFC3339)
 				break
 			}

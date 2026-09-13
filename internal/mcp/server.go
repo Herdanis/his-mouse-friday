@@ -1,5 +1,5 @@
 // Package mcp runs the hmf-mcp shim: a stateless stdio MCP server that exposes
-// 5 orchestration tools. Each tool call is forwarded to the hmf daemon over a
+// 6 orchestration tools. Each tool call is forwarded to the hmf daemon over a
 // unix socket and the daemon's response is relayed back to the caller.
 package mcp
 
