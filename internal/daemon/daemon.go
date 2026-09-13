@@ -256,6 +256,14 @@ type SessionListItem struct {
 	// Dir is the project path. opencode resumes per-directory, so the session
 	// id alone is not enough to reopen a session.
 	Dir string `json:"dir,omitempty"`
+	// Progress detail, derived per row from the session's root thread using
+	// the same queries as addProgressDetail. Zero values when none exists.
+	ProgressNote    string `json:"progress_note,omitempty"`
+	ProgressAgeSecs int64  `json:"progress_age_secs,omitempty"`
+	ETAMinutes      int    `json:"eta_minutes,omitempty"`
+	CurrentStep     string `json:"current_step,omitempty"`
+	TodosDone       int    `json:"todos_done"`
+	TodosTotal      int    `json:"todos_total"`
 }
 
 // ============================================
@@ -1167,6 +1175,7 @@ func (d *Daemon) handleSessionList(req protocol.Request) protocol.Response {
 		if err := rows.Scan(&it.ID, &it.Name, &it.Project, &it.Status, &it.AgentSessionID, &it.ParentID, &it.CreatedAt, &it.FinishedAt, &it.EngagedBy, &it.PID, &it.Dir, &it.EngagedBySession); err != nil {
 			return errResp(req.ID, err.Error())
 		}
+		d.addSessionProgress(&it)
 		out = append(out, it)
 	}
 	if err := rows.Err(); err != nil {
@@ -1235,6 +1244,36 @@ func (d *Daemon) handleThreadList(req protocol.Request) protocol.Response {
 	}
 	result, _ := json.Marshal(out)
 	return protocol.Response{ID: req.ID, Result: result}
+}
+
+// addSessionProgress fills in the row's progress detail from its root thread.
+// ponytail: N+1 per session row — fine at tens of sessions; batch the queries
+// if a panel ever lists thousands.
+func (d *Daemon) addSessionProgress(it *SessionListItem) {
+	if it.ParentID == 0 {
+		return
+	}
+	var note string
+	var noteTS time.Time
+	if err := d.Store.db.QueryRow(
+		`SELECT content, ts FROM messages WHERE thread_id=? AND status='progress'
+		 ORDER BY id DESC LIMIT 1`, it.ParentID).Scan(&note, &noteTS); err == nil {
+		it.ProgressNote = firstLine(note, 200)
+		it.ProgressAgeSecs = int64(time.Since(noteTS).Seconds())
+		if m := etaPattern.FindStringSubmatch(note); m != nil {
+			fmt.Sscanf(m[1], "%d", &it.ETAMinutes)
+		}
+	}
+	if todos, err := d.Todos.List(it.ParentID); err == nil {
+		it.TodosTotal = len(todos)
+		for _, t := range todos {
+			if t.State == "done" {
+				it.TodosDone++
+			} else if it.CurrentStep == "" {
+				it.CurrentStep = t.Content
+			}
+		}
+	}
 }
 
 type ReportProgressParams struct {

@@ -2108,3 +2108,45 @@ func TestThreadList(t *testing.T) {
 		t.Fatalf("thread 600 wrong: %+v", items[1])
 	}
 }
+
+func TestSessionListProgressDetail(t *testing.T) {
+	d := setupDaemon(t)
+	d.Store.db.Exec(`INSERT INTO workspaces(id, name) VALUES(1, 'co')`)
+	d.Store.db.Exec(`INSERT INTO projects(id, workspace_id, name, path) VALUES(1, 1, 'child', '/tmp/child')`)
+	// Thread 500: root + progress note + todos; thread 600: bare root.
+	d.Store.db.Exec(`INSERT INTO messages(id, channel_id, thread_id, from_project, to_project, content, status, ts)
+		VALUES(500, 1, NULL, 'co/parent', 'co/child', 'do X', 'message', datetime('now','-1 hour')),
+		       (501, 1, 500, 'co/child', 'co/parent', '80% done (eta ~5min)', 'progress', datetime('now','-2 minutes')),
+		       (600, 1, NULL, 'co/parent', 'co/child', 'do Y', 'message', datetime('now','-2 hours'))`)
+	d.Store.db.Exec(`INSERT INTO sessions(project_id, agent_binary, model, status, pid, created_at, task_msg_id, root_thread_id)
+		VALUES(1, 'opencode', 'default', 'active', 0, datetime('now'), 500, 500),
+		      (1, 'opencode', 'default', 'active', 0, datetime('now'), 600, 600)`)
+	d.Store.db.Exec(`INSERT INTO todos(thread_id, content, state, updated_at)
+		VALUES(500, 'run migration', 'pending', datetime('now')),
+		      (500, 'codegen', 'done', datetime('now'))`)
+
+	resp := d.Handle(context.Background(), protocol.Request{Method: "session_list", ID: 1})
+	if resp.Error != nil {
+		t.Fatalf("session_list: %s", resp.Error.Message)
+	}
+	var items []SessionListItem
+	if err := json.Unmarshal(resp.Result, &items); err != nil {
+		t.Fatal(err)
+	}
+	byThread := map[int64]SessionListItem{}
+	for _, it := range items {
+		byThread[it.ParentID] = it
+	}
+	p := byThread[500]
+	if p.ProgressNote != "80% done (eta ~5min)" || p.ETAMinutes != 5 || p.ProgressAgeSecs <= 0 {
+		t.Fatalf("thread 500 progress wrong: %+v", p)
+	}
+	if p.CurrentStep != "run migration" || p.TodosDone != 1 || p.TodosTotal != 2 {
+		t.Fatalf("thread 500 todos wrong: %+v", p)
+	}
+	q := byThread[600]
+	if q.ProgressNote != "" || q.ProgressAgeSecs != 0 || q.ETAMinutes != 0 ||
+		q.CurrentStep != "" || q.TodosDone != 0 || q.TodosTotal != 0 {
+		t.Fatalf("thread 600 must be zero-valued: %+v", q)
+	}
+}
