@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -39,11 +38,7 @@ func NewRootCmd() *cobra.Command {
 	root.AddCommand(configCmd())
 	root.AddCommand(doneCmd())
 	root.AddCommand(sessionCmd())
-	root.AddCommand(taskCmd())
-	root.AddCommand(watchCmd())
-	root.AddCommand(monitorCmd())
 	root.AddCommand(pruneCmd())
-	root.AddCommand(progressCmd())
 	root.AddCommand(syncCmd())
 	return root
 }
@@ -361,92 +356,9 @@ func doneCmd() *cobra.Command {
 	}
 }
 
-// watchCmd blocks in a terminal (human-run, zero LLM cost) until a task's
-// done reply lands, then fires a desktop notification. Alternative to an
-// orchestrator polling task_status itself.
-func watchCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "watch <message_id>",
-		Short: "Block until a delegated task finishes, then fire a desktop notification",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			msgID, err := strconv.ParseInt(args[0], 10, 64)
-			if err != nil {
-				return fmt.Errorf("invalid message_id %q: %w", args[0], err)
-			}
-			fmt.Printf("watching message %d — Ctrl-C to stop\n", msgID)
-			for {
-				result, err := protocol.Call("task_status",
-					map[string]any{"message_id": msgID})
-				if err != nil {
-					return fmt.Errorf("task_status: %w", err)
-				}
-				var ts struct {
-					HasDone     bool   `json:"has_done"`
-					AgentStatus string `json:"agent_status"`
-				}
-				if err := json.Unmarshal(result, &ts); err != nil {
-					return fmt.Errorf("decode task_status: %w", err)
-				}
-				now := time.Now().Format("15:04:05")
-				switch {
-				case ts.HasDone:
-					fmt.Printf("[%s] done (agent_status=%s)\n", now, ts.AgentStatus)
-					notify("hmf: task done", fmt.Sprintf("message %d finished (%s)", msgID, ts.AgentStatus))
-					return nil
-				case ts.AgentStatus == "exited" || ts.AgentStatus == "failed" || ts.AgentStatus == "no_agent":
-					fmt.Printf("[%s] ended without a done reply (agent_status=%s)\n", now, ts.AgentStatus)
-					notify("hmf: task ended without reply", fmt.Sprintf("message %d — agent_status=%s", msgID, ts.AgentStatus))
-					return nil
-				default:
-					fmt.Printf("[%s] still working...\n", now)
-					// task_status answers instantly since push-wake; pace the loop here.
-					time.Sleep(2 * time.Second)
-				}
-			}
-		},
-	}
-}
-
-// notify fires a best-effort OS desktop notification. No-op if the platform
-// isn't supported — this is a convenience, never load-bearing.
-func notify(title, message string) {
-	if runtime.GOOS != "darwin" {
-		return
-	}
-	script := fmt.Sprintf("display notification %q with title %q sound name \"Glass\"", message, title)
-	_ = exec.Command("osascript", "-e", script).Run()
-}
-
 func atoi64(s string) int64 {
 	n, _ := strconv.ParseInt(s, 10, 64)
 	return n
-}
-
-// progressCmd is the shell equivalent of the report_progress MCP tool, for
-// spawned agents that reach for bash before tools (same rationale as doneCmd).
-func progressCmd() *cobra.Command {
-	var eta int
-	c := &cobra.Command{
-		Use:   "progress <note>",
-		Short: "Report what you are working on and how much longer you need",
-		Args:  cobra.MinimumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			tid := os.Getenv("HMF_TASK_MSG_ID")
-			if tid == "" {
-				return fmt.Errorf("HMF_TASK_MSG_ID not set; 'hmf progress' is for agents spawned by an hmf wake")
-			}
-			_, err := protocol.Call("report_progress", map[string]any{
-				"thread_id":   atoi64(tid),
-				"from":        os.Getenv("HMF_PROJECT"),
-				"note":        strings.Join(args, " "),
-				"eta_minutes": eta,
-			})
-			return err
-		},
-	}
-	c.Flags().IntVar(&eta, "eta", 0, "minutes you expect still to need")
-	return c
 }
 
 func pruneCmd() *cobra.Command {
@@ -603,96 +515,4 @@ func attachable(it daemon.SessionListItem) (daemon.SessionListItem, error) {
 		return daemon.SessionListItem{}, fmt.Errorf("session %q never captured an opencode session id, cannot attach; run 'hmf session list'", it.Name)
 	}
 	return it, nil
-}
-
-// taskCmd groups task subcommands for viewing shared todos bound to threads.
-func taskCmd() *cobra.Command {
-	c := &cobra.Command{Use: "task", Short: "View shared todos bound to task threads"}
-	list := &cobra.Command{
-		Use:   "list [thread_id]",
-		Short: "List todos (all threads with todos, or one thread)",
-		Args:  cobra.MaximumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) == 0 {
-				result, err := protocol.Call("todo_threads", struct{}{})
-				if err != nil {
-					return err
-				}
-				var rows []struct {
-					ThreadID int64  `json:"thread_id"`
-					Preview  string `json:"preview"`
-					Done     int    `json:"done"`
-					Total    int    `json:"total"`
-				}
-				if err := json.Unmarshal(result, &rows); err != nil {
-					return fmt.Errorf("parse: %w", err)
-				}
-				if len(rows) == 0 {
-					fmt.Println("(no threads with todos)")
-					return nil
-				}
-				w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-				fmt.Fprintln(w, "THREAD\tDONE/TOTAL\tPREVIEW")
-				for _, r := range rows {
-					fmt.Fprintf(w, "%d\t%d/%d\t%s\n", r.ThreadID, r.Done, r.Total, r.Preview)
-				}
-				w.Flush()
-				return nil
-			}
-			return printThreadTodos(atoi64(args[0]))
-		},
-	}
-	show := &cobra.Command{
-		Use:   "show <thread_id>",
-		Short: "Show todos for a thread",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return printThreadTodos(atoi64(args[0]))
-		},
-	}
-	del := &cobra.Command{
-		Use:     "delete <todo_id>...",
-		Aliases: []string{"rm"},
-		Short:   "Delete work items by id (see `hmf task show <thread_id>`)",
-		Args:    cobra.MinimumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			for _, a := range args {
-				if _, err := protocol.Call("todo_delete", map[string]any{"id": atoi64(a)}); err != nil {
-					return fmt.Errorf("todo %s: %w", a, err)
-				}
-				fmt.Printf("deleted todo %s\n", a)
-			}
-			return nil
-		},
-	}
-	c.AddCommand(list)
-	c.AddCommand(show)
-	c.AddCommand(del)
-	return c
-}
-
-func printThreadTodos(threadID int64) error {
-	result, err := protocol.Call("todo_list", map[string]any{"thread_id": threadID})
-	if err != nil {
-		return err
-	}
-	var todos []struct {
-		ID      int64  `json:"id"`
-		Content string `json:"content"`
-		State   string `json:"state"`
-	}
-	if err := json.Unmarshal(result, &todos); err != nil {
-		return fmt.Errorf("parse: %w", err)
-	}
-	if len(todos) == 0 {
-		fmt.Printf("(no todos for thread %d)\n", threadID)
-		return nil
-	}
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "ID\tSTATE\tCONTENT")
-	for _, t := range todos {
-		fmt.Fprintf(w, "%d\t%s\t%s\n", t.ID, t.State, t.Content)
-	}
-	w.Flush()
-	return nil
 }

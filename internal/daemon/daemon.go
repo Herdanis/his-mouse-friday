@@ -274,9 +274,9 @@ type SessionListItem struct {
 // of full bodies — otherwise it drowns the wake/spawn events in the file.
 var quietMethods = map[string]bool{
 	"read_thread": true, "read_channel": true, "todo_list": true,
-	"todo_threads": true, "session_list": true, "status": true,
-	"task_status": true, "project_list": true, "workspace_list": true,
-	"list_project_agents": true,
+	"todo_threads": true, "session_list": true, "thread_list": true,
+	"status": true, "task_status": true, "project_list": true,
+	"workspace_list": true, "list_project_agents": true,
 }
 
 // Handle dispatches a single request, logging both ends of it.

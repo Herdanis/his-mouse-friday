@@ -2073,6 +2073,39 @@ func TestDoneReplyWakeFailurePostsBlockedNotError(t *testing.T) {
 	}
 }
 
+// TUI panels poll these every 2s per client; full bodies would drown
+// hmf.log. Assert quiet summary lines, no recv/send bodies.
+func TestQuietMethodsLogSummary(t *testing.T) {
+	d := setupDaemon(t)
+	d.Store.db.Exec(`INSERT INTO workspaces(id, name) VALUES(1, 'co')`)
+	d.Store.db.Exec(`INSERT INTO projects(id, workspace_id, name, path) VALUES(1, 1, 'child', '/tmp/child')`)
+	d.Store.db.Exec(`INSERT INTO messages(id, channel_id, thread_id, from_project, to_project, content, status, ts)
+		VALUES(500, 1, NULL, 'co/parent', 'co/child', 'do X please', 'message', datetime('now','-1 hour'))`)
+
+	for i, method := range []string{"thread_list", "session_list"} {
+		resp := d.Handle(context.Background(), protocol.Request{Method: method, ID: int64(i + 1)})
+		if resp.Error != nil {
+			t.Fatalf("%s: %s", method, resp.Error.Message)
+		}
+	}
+	b, err := os.ReadFile(LogPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := string(b)
+	for _, method := range []string{"thread_list", "session_list"} {
+		if strings.Contains(log, "recv id= method="+method) || strings.Contains(log, "method="+method+" params=") {
+			t.Errorf("%s logged full params", method)
+		}
+		if strings.Contains(log, "send id= method="+method) || strings.Contains(log, "method="+method+" result=") {
+			t.Errorf("%s logged full result", method)
+		}
+		if !strings.Contains(log, "method="+method+" dur=") {
+			t.Errorf("%s missing quiet summary line", method)
+		}
+	}
+}
+
 func TestThreadList(t *testing.T) {
 	d := setupDaemon(t)
 	d.Store.db.Exec(`INSERT INTO workspaces(id, name) VALUES(1, 'co')`)
