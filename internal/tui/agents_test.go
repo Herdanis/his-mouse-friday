@@ -121,6 +121,26 @@ func TestAgentsTailRefreshesOnTick(t *testing.T) {
 	}
 }
 
+func TestAgentsDownOnEmptyRows(t *testing.T) {
+	am := newAgentsModel(stubFetcher(map[string]json.RawMessage{}), filepath.Join(t.TempDir(), "hmf.log"))
+	am.refreshNow()
+	am, _ = am.update(tea.KeyMsg{Type: tea.KeyDown})
+	if am.sel != 0 {
+		t.Fatalf("down on empty rows must not move sel, got %d", am.sel)
+	}
+}
+
+func TestAgentsExpandedShowsRerr(t *testing.T) {
+	p := writeAgentLog(t, "[agent#7 ab000-child] hi")
+	am := agentsFixture(p)
+	am.refreshNow()
+	am, _ = am.update(tea.KeyMsg{Type: tea.KeyEnter})
+	am.rerr = "read failed"
+	if !strings.Contains(am.view(120, 24), "read failed") {
+		t.Fatal("expanded view must surface rerr")
+	}
+}
+
 func TestAgentsRerrClearsOnRefresh(t *testing.T) {
 	am := agentsFixture(filepath.Join(t.TempDir(), "hmf.log"))
 	am.rerr = "boom"

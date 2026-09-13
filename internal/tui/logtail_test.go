@@ -46,6 +46,46 @@ func TestTailLogMissingFile(t *testing.T) {
 	}
 }
 
+func TestTailLogUnterminatedFinalLineAcrossBoundary(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "hmf.log")
+	// Single unterminated line spanning the 64KB chunk edge, with the marker
+	// inside the newline-free stretch — a chunk with no '\n' must be carried
+	// into pending, never emitted, or the line comes out twice.
+	content := strings.Repeat("x", 70000) + "agent#7 tail"
+	if err := os.WriteFile(p, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	lines, err := tailLog(p, "agent#7 ", 10, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lines) != 1 || !strings.HasPrefix(lines[0], "xxx") || !strings.HasSuffix(lines[0], "agent#7 tail") {
+		t.Fatalf("want exactly the one full line, got %d lines: %.80q", len(lines), lines)
+	}
+}
+
+func TestTailLogLongNewlineFreeRun(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "hmf.log")
+	// >64KB of bytes with no newline between two marker lines — the middle
+	// chunk is newline-free and must be carried, not emitted.
+	content := "agent#7 before\n" +
+		strings.Repeat("z", 69000) + "agent#7 middle " + strings.Repeat("z", 69000) +
+		"\nagent#7 after\n"
+	if err := os.WriteFile(p, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	lines, err := tailLog(p, "agent#7 ", 10, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lines) != 3 ||
+		lines[0] != "agent#7 before" ||
+		!strings.Contains(lines[1], "agent#7 middle") ||
+		lines[2] != "agent#7 after" {
+		t.Fatalf("want before+middle+after exactly once each, got %d lines: %.80q", len(lines), lines)
+	}
+}
+
 func TestTailLogAcrossChunks(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "hmf.log")
 	var b strings.Builder

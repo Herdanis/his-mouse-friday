@@ -72,6 +72,8 @@ func (a *agentsModel) setRows(rows []daemon.SessionListItem) {
 	a.rerr = ""
 }
 
+// ponytail: full backwards scan per session for a deep last-line; per-session
+// tail-offset bookmarks if session count × log size ever hurts.
 func (a *agentsModel) refreshLastLog() {
 	for _, r := range a.rows {
 		lines, err := tailLog(a.logPath, fmt.Sprintf("agent#%d ", r.ID), 1, false)
@@ -139,6 +141,9 @@ func (a agentsModel) keyUpdate(msg tea.KeyMsg) (agentsModel, tea.Cmd) {
 	case "up", "k":
 		a.sel = max(0, a.sel-1)
 	case "down", "j":
+		if len(a.rows) == 0 {
+			return a, nil
+		}
 		a.sel = min(len(a.rows)-1, a.sel+1)
 	case "enter":
 		if len(a.rows) == 0 {
@@ -218,9 +223,13 @@ func (a agentsModel) expandedView(w, h int) string {
 	vp := a.vp
 	vp.Width, vp.Height = w, max(1, h-1)
 	vp.SetContent(strings.Join(a.tail, "\n"))
+	head := ""
+	if a.rerr != "" {
+		head = styFailed.Render(a.rerr) + "\n"
+	}
 	filter := ""
 	if a.errorsOnly {
 		filter = "  " + styFailed.Render("ERROR filter")
 	}
-	return vp.View() + "\n" + styDim.Render("esc back · e error filter · j/k scroll") + filter
+	return head + vp.View() + "\n" + styDim.Render("esc back · e error filter · j/k scroll") + filter
 }

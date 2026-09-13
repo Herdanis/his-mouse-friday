@@ -57,9 +57,14 @@ func tailLog(path, marker string, n int, errorsOnly bool) ([]string, error) {
 			return nil, err
 		}
 		segs := strings.Split(string(buf), "\n")
-		// segs[last] + pending is the one line straddling the pos boundary.
-		if emit(segs[len(segs)-1] + pending) {
-			break
+		// segs[last] + pending is the line straddling the pos boundary. It is
+		// complete only when this chunk holds a '\n' or reaches the file
+		// start; a newline-free chunk belongs to a line continuing below —
+		// carry it, never emit, or the same bytes come out twice.
+		if len(segs) > 1 || start == 0 {
+			if emit(segs[len(segs)-1] + pending) {
+				break
+			}
 		}
 		low := 0
 		if start > 0 {
