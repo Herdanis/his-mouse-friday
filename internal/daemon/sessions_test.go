@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"database/sql"
+	"errors"
 	"testing"
 )
 
@@ -99,5 +100,33 @@ func TestSessionStore_MarkExited_CleanVsFailed(t *testing.T) {
 	store.db.QueryRow(`SELECT exit_code FROM sessions WHERE id=?`, sFail.ID).Scan(&exitCode)
 	if exitCode != 2 {
 		t.Errorf("exit_code: got %d want 2", exitCode)
+	}
+}
+
+func TestLatestActiveSession(t *testing.T) {
+	store := newTestStore(t)
+	store.db.Exec(`INSERT INTO workspaces(id, name) VALUES(1, 'co')`)
+	store.db.Exec(`INSERT INTO projects(id, workspace_id, name, path) VALUES(7, 1, 'parent', '/tmp/parent')`)
+	ss := &SessionStore{Store: store}
+	old, err := ss.Create(7, "opencode", "default", 0, 10, 10, "ab000", "ab000-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ss.MarkExited(old.ID, 0); err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := ss.Create(7, "opencode", "default", 0, 10, 10, "ab000", "ab000-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := ss.LatestActiveSession(7)
+	if err != nil {
+		t.Fatalf("LatestActiveSession: %v", err)
+	}
+	if got.ID != fresh.ID || got.Status != "active" {
+		t.Fatalf("got session %d (%s), want newest active %d", got.ID, got.Status, fresh.ID)
+	}
+	if _, err := ss.LatestActiveSession(999); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing project: want ErrNotFound, got %v", err)
 	}
 }

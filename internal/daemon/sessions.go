@@ -58,6 +58,26 @@ func (s *SessionStore) Get(id int64) (Session, error) {
 	return sess, nil
 }
 
+// LatestActiveSession returns the project's newest active session, if any.
+// Wake-on-done uses it to find the originator's live process: the parent's
+// session lives on its own (upper) thread, so lookup is project-scoped.
+func (s *SessionStore) LatestActiveSession(projectID int64) (Session, error) {
+	var sess Session
+	var pid sql.NullInt64
+	err := s.Store.db.QueryRow(
+		`SELECT id, project_id, agent_binary, model, status, pid, created_at FROM sessions
+		 WHERE project_id=? AND status='active' ORDER BY id DESC LIMIT 1`, projectID).
+		Scan(&sess.ID, &sess.ProjectID, &sess.AgentBinary, &sess.Model, &sess.Status, &pid, &sess.CreatedAt)
+	if err == sql.ErrNoRows {
+		return Session{}, ErrNotFound
+	}
+	if err != nil {
+		return Session{}, err
+	}
+	sess.PID = int(pid.Int64)
+	return sess, nil
+}
+
 func (s *SessionStore) SetStatus(id int64, status string) error {
 	_, err := s.Store.db.Exec(`UPDATE sessions SET status=? WHERE id=?`, status, id)
 	return err
