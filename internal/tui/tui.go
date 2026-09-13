@@ -16,9 +16,6 @@ import (
 
 const tickEvery = 2 * time.Second
 
-// Deliberate duplication of internal/cli/monitor.go's palette: monitor goes
-// away once the TUI replaces it, and sharing a file across packages that
-// delete at different times buys nothing.
 var (
 	cAccent  = lipgloss.AdaptiveColor{Light: "#0969da", Dark: "#58a6ff"}
 	cSuccess = lipgloss.AdaptiveColor{Light: "#1a7f37", Dark: "#3fb950"}

@@ -15,10 +15,6 @@ editing foreign code directly.
   to a daemon socket call if missing, just slower.
 - **curl** — used by `scripts/install.sh` to fetch Go and the plugin/command
   files. Install-time only, not needed at runtime.
-- **macOS**, optional — `hmf watch` fires a desktop notification via
-  `osascript` (built into macOS, nothing extra to install) when a watched
-  task finishes. On other platforms `hmf watch` still works, it just skips
-  the notification.
 
 Verify:
 
@@ -176,7 +172,7 @@ See `examples/`.
 ## Watching delegated work
 
 Children run as separate processes, so they can't report into the session that
-dispatched them. Two views, depending on where you are:
+dispatched them. Two ways to look, depending on where you are:
 
 **From another terminal — the orchestrator TUI:**
 
@@ -190,75 +186,6 @@ Bare `hmf` (with a daemon running) opens an interactive TUI with four panels:
 | Todos      | project work items                          | `a` add · `space` toggle · `x` done · `enter` edit |
 
 `1-4` or `tab` switches panels, `esc` backs out of a drill-down, `q` quits.
-
-**From another terminal — `hmf monitor` (legacy, removed in an upcoming release):**
-
-```bash
-hmf monitor            # every task, running ones first
-hmf monitor --active   # only what's still running
-```
-
-```
- hmf monitor  ● 1 working · ✗ 1 failed · 4 tasks                                           21:40:34 
-╭────────────────────────────────────╮╭────────────────────────────────────────────────────────────╮
-│ ▎ ● #214  frontend +1        7m00s ││ #214  backend → frontend +1                      ● working │
-│ ▎ ▰▱▱▱▱ 1/4   ✗1 ship the login f… ││ ▰▰▰▱▱▱▱▱▱▱▱▱  1/4 done · 7m00s                             │
-│   ✓ #213  penny-pincher      1m00s ││ ────────────────────────────────────────────────────────── │
-│   ▰▰▰▰▰ 4/4   bump dependencies    ││ task                                                       │
-│   ✗ #212  store              1m00s ││   ship the login flow end to end                           │
-│   ▰▱▱▱▱ 1/5   migrate the session… ││                                                            │
-│   ✓ #211  his-mouse-friday   9m00s ││ sessions · 2                                               │
-│   ····· —     fix the flaky daemo… ││   backend  (dispatcher)                                    │
-│                                    ││     └ 1. ● working  frontend  6m00s  ses_fe01  pid 771     │
-│                                    ││       └ 2. ✗ failed   store  1m00s  ses_st03               │
-│                                    ││                                                            │
-│                                    ││   open one:  cd /tmp/fe && opencode -s <session id>        │
-│                                    ││                                                            │
-│                                    ││ work items · 1/4 done                                      │
-│                                    ││   ✓ define the auth contract                               │
-│                                    ││   ▸ build the form                                         │
-│                                    ││   ○ wire the gateway route                                 │
-│                                    ││   ○ migrate sessions table                                 │
-╰────────────────────────────────────╯╰────────────────────────────────────────────────────────────╯
- ↑↓ move · tab focus · d del item · a active only · r refresh · q quit
-```
-
-On a terminal at least 96 columns wide the list and the selected task sit side
-by side, so moving the cursor updates the detail immediately — no opening and
-closing to compare two tasks. Narrower terminals fall back to a plain list,
-with `enter` opening a task and `esc` going back. `z` zooms the detail to the
-full width for reading a long conversation, and the mouse wheel scrolls
-whichever pane has focus. (Mouse tracking takes click-drag selection away from
-the terminal while the monitor runs — hold shift to select text as usual.)
-
-Each list entry is two lines: status mark, thread id and the project doing the
-work on the first, work-item progress and the instruction on the second. `●`
-is running, `✓` finished, `✗` failed, and the elapsed time on the right is
-time actually spent working. A task that pulled in more than one project shows
-`frontend +1`; who *dispatched* it is in the detail header, which reads
-`backend → frontend +1`, or `you` when the task came from a human in an
-unregistered directory.
-
-A conversation that was retried, resumed, or handed between projects keeps all
-of that on one entry, and running work sorts to the top so it is never buried
-under history.
-
-The id is the thread id, so anything you spot is directly actionable:
-`hmf watch 214`, or `task_status(message_id=214)` from an agent.
-
-| key | |
-|---|---|
-| `↑` `↓` / `j` `k` | move (list scrolls) |
-| wheel / trackpad | scroll whichever pane has focus |
-| `g` / `G` | jump to first / last |
-| `tab` | switch focus between list and detail (wide terminals) |
-| `z` | zoom: give the detail the whole terminal, `z` or `esc` to go back |
-| `enter` | focus the detail pane (or open a task on narrow terminals) |
-| `esc` | back to the list |
-| `a` | toggle all / running-only |
-| `d` | in a task: pick a work item, `d` again to delete it (`y` confirms) |
-| `r` | refresh now |
-| `q` | quit |
 
 The detail pane is a read-only view of the whole exchange — who asked, what
 was asked, each attempt, the work items, and the **conversation itself**:
@@ -327,17 +254,13 @@ on a guess; it stays its own entry, listed by its hmf name.
 
 Work items can be deleted from here — press `d` to pick one, `d` again to
 delete, `y` to confirm. An agent that loses track of a work item can strand it
-as permanently pending, and this is where you notice. From the shell:
-`hmf task show <thread_id>` to see ids, `hmf task delete <id>`.
+as permanently pending, and this is where you notice.
 
 The elapsed time is how long a task *ran* — it freezes when the task ends rather
 than counting up forever, and on a task with several attempts it sums the
 attempts rather than spanning the first start to now. A task you follow up on
 hours later reports the work, not the wait. A finished task whose duration was
 never recorded shows `?`; a mix of known and unknown attempts shows `32m+?`.
-
-Piping works too — `hmf monitor | tee log.txt` prints one plain snapshot
-instead of starting the interactive view.
 
 **Knowing it picked up at all.**
 
@@ -353,7 +276,7 @@ It comes from the daemon, not the agent, and that is the point: an agent asked
 to "reply that you started" cannot report the failure where it never started.
 The ack separates *never spawned* from *working quietly* — the two cases that
 otherwise look identical from the parent. It lands in `read_thread` and in
-`task_status`'s `last_update` immediately, is tagged `hmf` in the monitor so
+`task_status`'s `last_update` immediately, is tagged `hmf` in the TUI so
 it is never mistaken for the child's own words, and is kept out of
 `read_channel` since the lobby is not its audience.
 
@@ -396,22 +319,16 @@ called rather than continuously.
 ## Waiting on a task without polling
 
 An AI orchestrator polling `task_status` in a loop costs tokens on every
-check. If a human is the one actually waiting, skip that entirely:
-
-```bash
-hmf watch <message_id>
-```
-
-Blocks in its own terminal (zero LLM cost — it's a plain CLI loop, not an
-agent), checks the daemon every ~2min, and fires a macOS desktop
-notification the moment the task's `done` reply lands (or if it ends
-without one). Get the `message_id` from whatever posted the task
-(`post_message`'s return value, or `hmf task list` / `hmf session list`).
+check. If a human is the one actually waiting, skip that entirely: open the
+orchestrator TUI (`hmf`, with a daemon running — see
+[Watching delegated work](#watching-delegated-work)) and keep an eye on the
+thread — its status flips the moment the child's done reply lands. No LLM
+tokens spent, no polling loop.
 
 ## Cleaning up history
 
-Every dispatch leaves messages, a session row, and todos behind, so `hmf
-monitor` fills up with old runs. Clear it:
+Every dispatch leaves messages, a session row, and todos behind, so old runs
+pile up in the daemon's database. Clear them:
 
 ```bash
 hmf prune                      # everything (asks for confirmation)
@@ -449,7 +366,7 @@ grep 'agent#' ~/.hmf/hmf.log   # what the spawned agents printed
 ```
 
 `thread=<id>` is on every post, wake, spawn and exit line, and it's the same id
-`task_status`/`read_thread` take — so a task id from the monitor replays the
+`task_status`/`read_thread` take — so a task id from the TUI replays the
 whole task, including a second project engaged on the same thread.
 
 Agent output is the useful part: without it a runtime error (bad model, dead
@@ -457,7 +374,7 @@ Agent output is the useful part: without it a runtime error (bad model, dead
 never replied.
 
 Read-only polls (`read_thread`, `todo_list`, `task_status`, ...) log a one-line
-summary rather than full bodies — an open monitor TUI would otherwise push the
+summary rather than full bodies — an open TUI would otherwise push the
 real events out of the file.
 
 The file is capped at 40MB. At the cap it rotates to `~/.hmf/hmf.log.1`,
