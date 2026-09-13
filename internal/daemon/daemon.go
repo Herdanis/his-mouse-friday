@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -97,7 +98,11 @@ type Daemon struct {
 	// LookPath + ModelProbe injectable for tests (resolveAgent fallback).
 	LookPath   func(string) (string, error)
 	ModelProbe func(binary, model string) (ok, checkable bool)
-	Sock       string
+	// Serializes the kill-then-resume in wakeParentOnDone: two children
+	// finishing at once would otherwise both resume the same parent session.
+	// ponytail: daemon-wide lock; per-project locks if wake throughput ever matters.
+	wakeMu sync.Mutex
+	Sock   string
 	shutdownCh chan struct{}
 }
 
@@ -782,7 +787,10 @@ func (d *Daemon) wakeParentOnDone(ctx context.Context, p PostParams, msg Message
 		return
 	}
 	// An idle-but-alive parent must die before resume, or two
-	// `opencode run -s` share one session.
+	// `opencode run -s` share one session. Hold the wake lock across
+	// kill+resume so concurrent done replies can't double-resume.
+	d.wakeMu.Lock()
+	defer d.wakeMu.Unlock()
 	d.killIdleParent(p.ThreadID, proj)
 	wake := PostParams{
 		From: msg.FromProject, To: parent,
