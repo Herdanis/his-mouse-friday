@@ -1,8 +1,10 @@
 package daemon
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -14,16 +16,10 @@ type Store struct {
 }
 
 const schema = `
-CREATE TABLE IF NOT EXISTS workspaces (
-  id   INTEGER PRIMARY KEY,
-  name TEXT NOT NULL UNIQUE
-);
 CREATE TABLE IF NOT EXISTS projects (
-  id           INTEGER PRIMARY KEY,
-  workspace_id INTEGER NOT NULL REFERENCES workspaces(id),
-  name         TEXT NOT NULL,
-  path         TEXT NOT NULL,
-  UNIQUE(workspace_id, name)
+  id   INTEGER PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE,
+  path TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS sessions (
   id           INTEGER PRIMARY KEY,
@@ -35,11 +31,9 @@ CREATE TABLE IF NOT EXISTS sessions (
   created_at   DATETIME NOT NULL
 );
 CREATE TABLE IF NOT EXISTS channels (
-  id           INTEGER PRIMARY KEY,
-  workspace_id INTEGER NOT NULL REFERENCES workspaces(id),
-  name         TEXT NOT NULL,
-  type         TEXT NOT NULL,
-  UNIQUE(workspace_id, name)
+  id   INTEGER PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE,
+  type TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS messages (
   id           INTEGER PRIMARY KEY,
@@ -71,6 +65,13 @@ func OpenStore(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Migrate the pre-bare-name schema (workspaces + workspace_id FKs) before
+	// the schema exec: migrated tables make it a no-op, fresh DBs never had
+	// the old shape so migration skips.
+	if err := migrateWorkspaces(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("workspace migration: %w", err)
+	}
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
 		return nil, err
@@ -95,12 +96,210 @@ func OpenStore(path string) (*Store, error) {
 	         WHERE finished_at IS NULL
 	           AND status IN ('exited','failed')
 	           AND root_thread_id IS NOT NULL`)
-	// Global "general" channel — lobby where all agents live. Sentinel
-	// __global__ workspace satisfies the FK without a schema migration.
-	db.Exec(`INSERT OR IGNORE INTO workspaces(name) VALUES('__global__')`)
-	db.Exec(`INSERT OR IGNORE INTO channels(workspace_id, name, type)
-	         VALUES((SELECT id FROM workspaces WHERE name='__global__'), 'general', 'group')`)
+	// Global "general" channel — lobby where all agents live.
+	db.Exec(`INSERT OR IGNORE INTO channels(name, type) VALUES('general', 'group')`)
 	return &Store{db: db}, nil
+}
+
+// migrateWorkspaces rebuilds a pre-bare-name database: projects keyed by
+// (workspace_id, name) become top-level UNIQUE(name), channels lose their
+// workspace FK, and "ws/name" message identities lose the ws/ prefix when ws
+// was a real workspace. Skips when projects has no workspace_id column, so it
+// is idempotent and cheap for new databases.
+func migrateWorkspaces(db *sql.DB) error {
+	ctx := context.Background()
+	// Every statement runs on one dedicated connection: foreign_keys and
+	// legacy_alter_table are connection-scoped PRAGMAs, and database/sql
+	// pooling would otherwise land them on a different connection than the
+	// migration statements.
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	var old int
+	if err := conn.QueryRowContext(ctx,
+		`SELECT count(*) FROM pragma_table_info('projects') WHERE name='workspace_id'`).Scan(&old); err != nil {
+		return err
+	}
+	if old == 0 {
+		return nil
+	}
+	// foreign_keys is a no-op inside a transaction (sqlite silently ignores
+	// it there), so FKs go off here, before the migration tx opens.
+	if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys=OFF`); err != nil {
+		return err
+	}
+	defer func() {
+		conn.ExecContext(ctx, `PRAGMA foreign_keys=ON`)
+		conn.ExecContext(ctx, `PRAGMA legacy_alter_table=OFF`)
+	}()
+	// legacy_alter_table: without it, renaming projects rewrites sibling FK
+	// clauses (sessions REFERENCES projects → projects_old), orphaning the
+	// rebuilt tables from their foreign keys. ON keeps the rename byte-only.
+	if _, err := conn.ExecContext(ctx, `PRAGMA legacy_alter_table=ON`); err != nil {
+		return err
+	}
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, q := range []string{
+		`ALTER TABLE projects RENAME TO projects_old`,
+		`ALTER TABLE channels RENAME TO channels_old`,
+		`CREATE TABLE projects (
+		  id   INTEGER PRIMARY KEY,
+		  name TEXT NOT NULL UNIQUE,
+		  path TEXT NOT NULL)`,
+		`CREATE TABLE channels (
+		  id   INTEGER PRIMARY KEY,
+		  name TEXT NOT NULL UNIQUE,
+		  type TEXT NOT NULL)`,
+	} {
+		if _, err := tx.ExecContext(ctx, q); err != nil {
+			return err
+		}
+	}
+	// Most recent registration (highest id) keeps the bare name; older
+	// duplicates get renamed name-2, name-3… with a warning.
+	if err := copyRenamed(ctx, tx, "projects_old", "projects", "path"); err != nil {
+		return err
+	}
+	if err := copyRenamed(ctx, tx, "channels_old", "channels", "type"); err != nil {
+		return err
+	}
+	// Strip "ws/" from message identities, but only where ws was a real
+	// workspace — "human/scratch" style values were never workspaces.
+	wsNames, err := func() ([]string, error) {
+		rows, err := tx.QueryContext(ctx, `SELECT name FROM workspaces`)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		var names []string
+		for rows.Next() {
+			var n string
+			if err := rows.Scan(&n); err != nil {
+				return nil, err
+			}
+			names = append(names, n)
+		}
+		return names, rows.Err()
+	}()
+	if err != nil {
+		return err
+	}
+	for _, ws := range wsNames {
+		// substr is 1-based: skip len(ws)+1 chars ("ws/"), +1 for the base.
+		off := len(ws) + 2
+		prefix := ws + "/%"
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE messages SET from_project=substr(from_project, ?) WHERE from_project LIKE ?`,
+			off, prefix); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE messages SET to_project=substr(to_project, ?) WHERE to_project LIKE ?`,
+			off, prefix); err != nil {
+			return err
+		}
+	}
+	for _, q := range []string{
+		`DROP TABLE projects_old`,
+		`DROP TABLE channels_old`,
+		`DROP TABLE workspaces`,
+	} {
+		if _, err := tx.ExecContext(ctx, q); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	// FKs are back on (deferred pragma); surface any violation the copy
+	// step could have introduced instead of failing silently later.
+	rows, err := conn.QueryContext(ctx, `PRAGMA foreign_key_check`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	if rows.Next() {
+		var table string
+		var rowid, parent, fkid int64
+		rows.Scan(&table, &rowid, &parent, &fkid)
+		logErrf("migrate", "workspace migration left FK violations (first: %s row %d)", table, rowid)
+	}
+	return nil
+}
+
+// copyRenamed copies (id, name, cols…) from oldTable to newTable. On a
+// duplicate name the OLDER row (lower id) is renamed name-2, name-3… so the
+// most recent registration keeps the bare name; a rename that would collide
+// with an existing name skips to the next free suffix. Every rename warns.
+func copyRenamed(ctx context.Context, tx *sql.Tx, oldTable, newTable string, cols ...string) error {
+	all := append([]string{"id", "name"}, cols...)
+	rows, err := tx.QueryContext(ctx,
+		`SELECT `+strings.Join(all, ",")+` FROM `+oldTable+` ORDER BY id DESC`)
+	if err != nil {
+		return err
+	}
+	type rec struct {
+		id   int64
+		name string
+		vals []sql.NullString
+	}
+	var recs []rec
+	for rows.Next() {
+		var r rec
+		r.vals = make([]sql.NullString, len(cols))
+		dest := []any{&r.id, &r.name}
+		for i := range r.vals {
+			dest = append(dest, &r.vals[i])
+		}
+		if err := rows.Scan(dest...); err != nil {
+			rows.Close()
+			return err
+		}
+		recs = append(recs, r)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+
+	seen := map[string]bool{}
+	nextSuffix := map[string]int{}
+	ins := `INSERT INTO ` + newTable + `(` + strings.Join(all, ",") + `)
+	        VALUES(` + strings.TrimSuffix(strings.Repeat("?,", len(all)), ",") + `)`
+	for _, r := range recs {
+		name := r.name
+		if seen[name] {
+			n := nextSuffix[name]
+			for {
+				n++
+				if !seen[name+"-"+strconv.Itoa(n)] {
+					break
+				}
+			}
+			nextSuffix[name] = n
+			renamed := name + "-" + strconv.Itoa(n)
+			logf("migrate", "duplicate name %q in %s (older row id=%d) renamed to %q", r.name, newTable, r.id, renamed)
+			name = renamed
+		} else {
+			nextSuffix[name] = 1
+		}
+		seen[name] = true
+		args := []any{r.id, name}
+		for _, v := range r.vals {
+			args = append(args, v.String)
+		}
+		if _, err := tx.ExecContext(ctx, ins, args...); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Store) Close() error { return s.db.Close() }

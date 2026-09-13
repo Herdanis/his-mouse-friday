@@ -4,124 +4,82 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 type Registry struct {
 	Store *Store
 }
 
-type Workspace struct {
+type Project struct {
 	ID   int64
 	Name string
+	Path string
 }
 
-type Project struct {
-	ID          int64
-	WorkspaceID int64
-	Name        string
-	Path        string
-}
-
-// ProjectListItem is a (workspace, name, path) row for the project_list RPC.
+// ProjectListItem is a (name, path) row for the project_list RPC.
 type ProjectListItem struct {
-	Workspace string `json:"workspace"`
-	Name      string `json:"name"`
-	Path      string `json:"path"`
+	Name string `json:"name"`
+	Path string `json:"path"`
 }
 
 var ErrNotFound = errors.New("not found")
 
-// upsertReturningID runs an INSERT … ON CONFLICT and returns the row's id.
-// modernc/sqlite returns a stale LastInsertId() on ON CONFLICT DO NOTHING/UPDATE,
-// so when RowsAffected==0 we re-SELECT the existing row by the unique key.
-func (r *Registry) upsertReturningID(res sql.Result, selectQuery string, args ...any) (int64, error) {
-	id, _ := res.LastInsertId()
-	if id != 0 {
-		return id, nil
-	}
-	row := r.Store.db.QueryRow(selectQuery, args...)
-	if err := row.Scan(&id); err != nil {
-		return 0, err
-	}
-	return id, nil
-}
-
-func (r *Registry) AddWorkspace(name string) (Workspace, error) {
-	res, err := r.Store.db.Exec(`INSERT INTO workspaces(name) VALUES(?) ON CONFLICT(name) DO NOTHING`, name)
-	if err != nil {
-		return Workspace{}, err
-	}
-	id, err := r.upsertReturningID(res, `SELECT id FROM workspaces WHERE name=?`, name)
-	if err != nil {
-		return Workspace{}, err
-	}
-	return Workspace{ID: id, Name: name}, nil
-}
-
-func (r *Registry) getWorkspaceID(name string) (int64, error) {
-	var id int64
-	err := r.Store.db.QueryRow(`SELECT id FROM workspaces WHERE name=?`, name).Scan(&id)
-	if err == sql.ErrNoRows {
-		return 0, ErrNotFound
-	}
-	return id, err
-}
-
-func (r *Registry) AddProject(wsName, projName, path string) (Project, error) {
-	wsID, err := r.getWorkspaceID(wsName)
-	if err != nil {
-		return Project{}, err
-	}
-	// Path may be claimed by only one (workspace, project). Re-adding the
-	// same (workspace, name) is allowed (upsert); a different claim blocks.
-	var conflictWS, conflictName string
-	err = r.Store.db.QueryRow(
-		`SELECT w.name, p.name FROM projects p JOIN workspaces w ON p.workspace_id=w.id
-		 WHERE p.path=? AND NOT (p.workspace_id=? AND p.name=?)`,
-		path, wsID, projName).Scan(&conflictWS, &conflictName)
+// AddProject registers a project by bare name. Identity is UNIQUE(name): a
+// duplicate name is an error naming the conflict, and a path claimed by a
+// different project is blocked too.
+func (r *Registry) AddProject(name, path string) (Project, error) {
+	var conflict string
+	err := r.Store.db.QueryRow(
+		`SELECT name FROM projects WHERE path=? AND name<>?`, path, name).Scan(&conflict)
 	if err == nil {
-		return Project{}, fmt.Errorf("path %q already registered under %s/%s; delete that registration first", path, conflictWS, conflictName)
+		return Project{}, fmt.Errorf("path %q already registered under %s; delete that registration first", path, conflict)
 	}
 	if err != sql.ErrNoRows {
 		return Project{}, err
 	}
-	res, err := r.Store.db.Exec(
-		`INSERT INTO projects(workspace_id, name, path) VALUES(?,?,?)
-		 ON CONFLICT(workspace_id, name) DO UPDATE SET path=excluded.path`,
-		wsID, projName, path)
+	res, err := r.Store.db.Exec(`INSERT INTO projects(name, path) VALUES(?,?)`, name, path)
 	if err != nil {
+		if strings.Contains(err.Error(), "UNIQUE constraint failed: projects.name") {
+			return Project{}, fmt.Errorf("project %q already registered; delete it first or pick another name", name)
+		}
 		return Project{}, err
 	}
-	id, err := r.upsertReturningID(res, `SELECT id FROM projects WHERE workspace_id=? AND name=?`, wsID, projName)
-	if err != nil {
-		return Project{}, err
-	}
-	return Project{ID: id, WorkspaceID: wsID, Name: projName, Path: path}, nil
+	id, _ := res.LastInsertId()
+	return Project{ID: id, Name: name, Path: path}, nil
 }
 
-func (r *Registry) ResolveByPath(path string) (Project, Workspace, error) {
+func (r *Registry) FindProject(name string) (Project, error) {
 	var p Project
-	var wsName string
 	err := r.Store.db.QueryRow(
-		`SELECT p.id, p.workspace_id, p.name, p.path, w.name
-		 FROM projects p JOIN workspaces w ON p.workspace_id=w.id
-		 WHERE p.path=?`, path).
-		Scan(&p.ID, &p.WorkspaceID, &p.Name, &p.Path, &wsName)
-	if err == sql.ErrNoRows {
-		return Project{}, Workspace{}, ErrNotFound
-	}
-	if err != nil {
-		return Project{}, Workspace{}, err
-	}
-	return p, Workspace{ID: p.WorkspaceID, Name: wsName}, nil
+		`SELECT id, name, path FROM projects WHERE name=?`, name).
+		Scan(&p.ID, &p.Name, &p.Path)
+	return p, err
 }
 
-func (r *Registry) ListProjects(wsName string) ([]Project, error) {
-	wsID, err := r.getWorkspaceID(wsName)
+// ResolveProject resolves a bare project name. UNIQUE(name) keeps matches to
+// one; the 2+ check is a defensive guard that names the candidates.
+func (r *Registry) ResolveProject(name string) (Project, error) {
+	projs, err := r.lookupByName(name)
 	if err != nil {
-		return nil, err
+		return Project{}, err
 	}
-	rows, err := r.Store.db.Query(`SELECT id, workspace_id, name, path FROM projects WHERE workspace_id=?`, wsID)
+	switch len(projs) {
+	case 0:
+		return Project{}, ErrNotFound
+	case 1:
+		return projs[0], nil
+	default:
+		var names []string
+		for _, p := range projs {
+			names = append(names, p.Name)
+		}
+		return Project{}, fmt.Errorf("ambiguous %q: matches %s", name, strings.Join(names, ", "))
+	}
+}
+
+func (r *Registry) lookupByName(name string) ([]Project, error) {
+	rows, err := r.Store.db.Query(`SELECT id, name, path FROM projects WHERE name=?`, name)
 	if err != nil {
 		return nil, err
 	}
@@ -129,7 +87,7 @@ func (r *Registry) ListProjects(wsName string) ([]Project, error) {
 	var out []Project
 	for rows.Next() {
 		var p Project
-		if err := rows.Scan(&p.ID, &p.WorkspaceID, &p.Name, &p.Path); err != nil {
+		if err := rows.Scan(&p.ID, &p.Name, &p.Path); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
@@ -137,78 +95,48 @@ func (r *Registry) ListProjects(wsName string) ([]Project, error) {
 	return out, rows.Err()
 }
 
-func (r *Registry) ListWorkspaces() ([]string, error) {
-	rows, err := r.Store.db.Query(`SELECT name FROM workspaces ORDER BY name`)
+func (r *Registry) ResolveByPath(path string) (Project, error) {
+	var p Project
+	err := r.Store.db.QueryRow(
+		`SELECT id, name, path FROM projects WHERE path=?`, path).
+		Scan(&p.ID, &p.Name, &p.Path)
+	if err == sql.ErrNoRows {
+		return Project{}, ErrNotFound
+	}
 	if err != nil {
-		return nil, err
+		return Project{}, err
 	}
-	defer rows.Close()
-	var names []string
-	for rows.Next() {
-		var n string
-		if err := rows.Scan(&n); err != nil {
-			return nil, err
-		}
-		names = append(names, n)
-	}
-	return names, rows.Err()
+	return p, nil
 }
 
-// ListAllProjects returns every project across all workspaces, ordered.
-func (r *Registry) ListAllProjects() ([]ProjectListItem, error) {
-	rows, err := r.Store.db.Query(
-		`SELECT w.name, p.name, p.path FROM projects p JOIN workspaces w ON p.workspace_id=w.id ORDER BY w.name, p.name`)
+func (r *Registry) ListProjects() ([]Project, error) {
+	rows, err := r.Store.db.Query(`SELECT id, name, path FROM projects ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []ProjectListItem
+	var out []Project
 	for rows.Next() {
-		var it ProjectListItem
-		if err := rows.Scan(&it.Workspace, &it.Name, &it.Path); err != nil {
+		var p Project
+		if err := rows.Scan(&p.ID, &p.Name, &p.Path); err != nil {
 			return nil, err
 		}
-		out = append(out, it)
+		out = append(out, p)
 	}
 	return out, rows.Err()
 }
 
-func (r *Registry) DeleteWorkspace(name string) error {
+func (r *Registry) DeleteProject(name string) error {
 	tx, err := r.Store.db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	var wsID int64
-	err = tx.QueryRow(`SELECT id FROM workspaces WHERE name=?`, name).Scan(&wsID)
-	if err != nil {
-		return ErrNotFound
-	}
-	// Order respects FKs: messages→channels, sessions→projects, channels→workspaces, projects→workspaces.
-	if _, err := tx.Exec(`DELETE FROM messages WHERE channel_id IN (SELECT id FROM channels WHERE workspace_id=?)`, wsID); err != nil {
+	// sessions.project_id references projects(id); clear them first.
+	if _, err := tx.Exec(`DELETE FROM sessions WHERE project_id IN (SELECT id FROM projects WHERE name=?)`, name); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`DELETE FROM sessions WHERE project_id IN (SELECT id FROM projects WHERE workspace_id=?)`, wsID); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(`DELETE FROM channels WHERE workspace_id=?`, wsID); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(`DELETE FROM projects WHERE workspace_id=?`, wsID); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(`DELETE FROM workspaces WHERE id=?`, wsID); err != nil {
-		return err
-	}
-	return tx.Commit()
-}
-
-func (r *Registry) DeleteProject(wsName, projName string) error {
-	wsID, err := r.getWorkspaceID(wsName)
-	if err != nil {
-		return err
-	}
-	res, err := r.Store.db.Exec(`DELETE FROM projects WHERE workspace_id=? AND name=?`, wsID, projName)
+	res, err := tx.Exec(`DELETE FROM projects WHERE name=?`, name)
 	if err != nil {
 		return err
 	}
@@ -216,5 +144,5 @@ func (r *Registry) DeleteProject(wsName, projName string) error {
 	if n == 0 {
 		return ErrNotFound
 	}
-	return nil
+	return tx.Commit()
 }

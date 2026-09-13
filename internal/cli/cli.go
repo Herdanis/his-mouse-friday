@@ -230,8 +230,8 @@ func statusCmd() *cobra.Command {
 			if err := json.Unmarshal(result, &s); err != nil {
 				return fmt.Errorf("parse status: %w", err)
 			}
-			fmt.Printf("running: %v\nworkspaces: %d\nprojects: %d\nsessions: %d\nsock: %s\n",
-				s.Running, s.Workspaces, s.Projects, s.Sessions, s.Sock)
+			fmt.Printf("running: %v\nprojects: %d\nsessions: %d\nsock: %s\n",
+				s.Running, s.Projects, s.Sessions, s.Sock)
 			return nil
 		},
 	}

@@ -12,7 +12,7 @@ import (
 func TestProjectsRenderRow(t *testing.T) {
 	pm := newProjectsModel(stubFetcher(map[string]json.RawMessage{
 		"project_list": mustJSON([]daemon.ProjectListItem{
-			{Workspace: "companyA", Name: "payment-service", Path: "/code/payment"},
+			{Name: "payment-service", Path: "/code/payment"},
 		}),
 	}))
 	pm.refreshNow()
@@ -56,7 +56,7 @@ func TestProjectsDeleteConfirm(t *testing.T) {
 	var calls []recordedCall
 	pm := newProjectsModel(recordingFetcher(&calls, map[string]json.RawMessage{
 		"project_list": mustJSON([]daemon.ProjectListItem{
-			{Workspace: "co", Name: "svc", Path: "/code/svc"},
+			{Name: "svc", Path: "/code/svc"},
 		}),
 	}))
 	pm.refreshNow()
@@ -109,7 +109,7 @@ func TestProjectsFetchErrSurfacesAndClears(t *testing.T) {
 		t.Fatal("fetch failure must land in rerr")
 	}
 	pm2, _ := pm.update(projectsMsg{rows: []daemon.ProjectListItem{
-		{Workspace: "co", Name: "svc", Path: "/p"},
+		{Name: "svc", Path: "/p"},
 	}})
 	if pm2.rerr != "" {
 		t.Fatalf("successful projectsMsg must clear rerr, got %q", pm2.rerr)

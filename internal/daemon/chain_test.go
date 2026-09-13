@@ -44,12 +44,11 @@ func awaitCapturedSessionID(t *testing.T, d *Daemon, project, want string) {
 // svc-c, all three reply done on the one thread.
 func TestChain_ThreeProjectDelegation(t *testing.T) {
 	d := setupDaemon(t)
-	d.Registry.AddWorkspace("companyA")
 	dirs := map[string]string{}
 	for _, name := range []string{"svc-a", "svc-b", "svc-c"} {
 		dir := t.TempDir()
 		os.WriteFile(filepath.Join(dir, "mouse.yaml"), []byte(chainMouse), 0644)
-		d.Registry.AddProject("companyA", name, dir)
+		d.Registry.AddProject(name, dir)
 		dirs[name] = dir
 	}
 	var spawns []SpawnConfig

@@ -204,13 +204,9 @@ type ReadChanParams struct {
 type ReadThreadParams struct {
 	MessageID int64 `json:"message_id"`
 }
-type WorkspaceAddParams struct {
-	Name string `json:"name"`
-}
 type ProjectAddParams struct {
-	Workspace string `json:"workspace"`
-	Name      string `json:"name"`
-	Path      string `json:"path"`
+	Name string `json:"name"`
+	Path string `json:"path"`
 }
 type ProjectAddResult struct {
 	ID int64 `json:"id"`
@@ -219,18 +215,13 @@ type ResolveParams struct {
 	Path string `json:"path"`
 }
 type ResolveResult struct {
-	Workspace string `json:"workspace"`
-	Project   string `json:"project"`
-}
-type ListParams struct {
-	Workspace string `json:"workspace"`
+	Project string `json:"project"`
 }
 type StatusResult struct {
-	Running    bool   `json:"running"`
-	Workspaces int    `json:"workspaces"`
-	Projects   int    `json:"projects"`
-	Sessions   int    `json:"sessions"`
-	Sock       string `json:"sock"`
+	Running  bool   `json:"running"`
+	Projects int    `json:"projects"`
+	Sessions int    `json:"sessions"`
+	Sock     string `json:"sock"`
 }
 
 // SessionListItem is a row for the session_list RPC.
@@ -276,7 +267,7 @@ var quietMethods = map[string]bool{
 	"read_thread": true, "read_channel": true, "todo_list": true,
 	"todo_threads": true, "session_list": true, "thread_list": true,
 	"status": true, "task_status": true, "project_list": true,
-	"workspace_list": true, "list_project_agents": true,
+	"list_project_agents": true,
 }
 
 // Handle dispatches a single request, logging both ends of it.
@@ -313,12 +304,6 @@ func (d *Daemon) dispatch(ctx context.Context, req protocol.Request) protocol.Re
 		return d.handleProjectList(req)
 	case "resolve_project":
 		return d.handleResolve(req)
-	case "workspace_add":
-		return d.handleWorkspaceAdd(req)
-	case "workspace_list":
-		return d.handleWorkspaceList(req)
-	case "workspace_delete":
-		return d.handleWorkspaceDelete(req)
 	case "project_add":
 		return d.handleProjectAdd(req)
 	case "project_list":
@@ -351,12 +336,12 @@ func (d *Daemon) dispatch(ctx context.Context, req protocol.Request) protocol.Re
 	}
 }
 
-// findProject looks up a project by workspace name + project name.
-func (d *Daemon) findProject(ws, name string) (Project, error) {
+// findProject looks up a project by bare name.
+func (d *Daemon) findProject(name string) (Project, error) {
 	var p Project
 	err := d.Store.db.QueryRow(
-		`SELECT id, workspace_id, name, path FROM projects WHERE name=? AND workspace_id=(SELECT id FROM workspaces WHERE name=?)`,
-		name, ws).Scan(&p.ID, &p.WorkspaceID, &p.Name, &p.Path)
+		`SELECT id, name, path FROM projects WHERE name=?`,
+		name).Scan(&p.ID, &p.Name, &p.Path)
 	return p, err
 }
 
@@ -509,7 +494,7 @@ func (d *Daemon) checkOutboundAllowed(fromProject string) error {
 	if len(parts) != 2 {
 		return nil
 	}
-	proj, err := d.findProject(parts[0], parts[1])
+	proj, err := d.findProject(parts[1])
 	if err != nil {
 		return nil // unregistered sender — nothing declared, nothing to enforce
 	}
@@ -544,7 +529,7 @@ func (d *Daemon) wakeAgent(ctx context.Context, p PostParams, msg Message) error
 	if len(parts) != 2 {
 		return fmt.Errorf("to must be workspace/project, got %q", msg.ToProject)
 	}
-	proj, err := d.findProject(parts[0], parts[1])
+	proj, err := d.findProject(parts[1])
 	if err != nil {
 		// Unregistered recipient — post but don't wake (mailbox semantics).
 		if errors.Is(err, sql.ErrNoRows) {
@@ -790,7 +775,7 @@ func (d *Daemon) wakeParentOnDone(ctx context.Context, p PostParams, msg Message
 		wlog("done-wake skipped: originator %q not a registered project", parent)
 		return
 	}
-	proj, err := d.findProject(parts[0], parts[1])
+	proj, err := d.findProject(parts[1])
 	if err != nil {
 		// Human/scratch originator — reads the thread themselves, no wake.
 		wlog("done-wake skipped: originator %q not a registered project", parent)
@@ -1024,27 +1009,14 @@ func (d *Daemon) handleResolve(req protocol.Request) protocol.Response {
 	if err := json.Unmarshal(req.Params, &p); err != nil {
 		return errResp(req.ID, "bad params: "+err.Error())
 	}
-	_, ws, err := d.Registry.ResolveByPath(p.Path)
+	proj, err := d.Registry.ResolveByPath(p.Path)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			return errResp(req.ID, "not registered")
 		}
 		return errResp(req.ID, "resolve: "+err.Error())
 	}
-	result, _ := json.Marshal(ResolveResult{Workspace: ws.Name, Project: filepath.Base(p.Path)})
-	return protocol.Response{ID: req.ID, Result: result}
-}
-
-func (d *Daemon) handleWorkspaceAdd(req protocol.Request) protocol.Response {
-	var p WorkspaceAddParams
-	if err := json.Unmarshal(req.Params, &p); err != nil {
-		return errResp(req.ID, "bad params: "+err.Error())
-	}
-	ws, err := d.Registry.AddWorkspace(p.Name)
-	if err != nil {
-		return errResp(req.ID, err.Error())
-	}
-	result, _ := json.Marshal(map[string]any{"id": ws.ID})
+	result, _ := json.Marshal(ResolveResult{Project: proj.Name})
 	return protocol.Response{ID: req.ID, Result: result}
 }
 
@@ -1053,7 +1025,7 @@ func (d *Daemon) handleProjectAdd(req protocol.Request) protocol.Response {
 	if err := json.Unmarshal(req.Params, &p); err != nil {
 		return errResp(req.ID, "bad params: "+err.Error())
 	}
-	proj, err := d.Registry.AddProject(p.Workspace, p.Name, p.Path)
+	proj, err := d.Registry.AddProject(p.Name, p.Path)
 	if err != nil {
 		return errResp(req.ID, err.Error())
 	}
@@ -1061,57 +1033,17 @@ func (d *Daemon) handleProjectAdd(req protocol.Request) protocol.Response {
 	return protocol.Response{ID: req.ID, Result: result}
 }
 
-func (d *Daemon) handleWorkspaceList(req protocol.Request) protocol.Response {
-	names, err := d.Registry.ListWorkspaces()
+func (d *Daemon) handleProjectList(req protocol.Request) protocol.Response {
+	projs, err := d.Registry.ListProjects()
 	if err != nil {
 		return errResp(req.ID, err.Error())
 	}
-	result, _ := json.Marshal(names)
-	return protocol.Response{ID: req.ID, Result: result}
-}
-
-func (d *Daemon) handleProjectList(req protocol.Request) protocol.Response {
-	var p ListParams
-	if len(req.Params) > 0 {
-		if err := json.Unmarshal(req.Params, &p); err != nil {
-			return errResp(req.ID, "bad params: "+err.Error())
-		}
-	}
-	var out []ProjectListItem
-	if p.Workspace != "" {
-		projs, err := d.Registry.ListProjects(p.Workspace)
-		if err != nil {
-			return errResp(req.ID, err.Error())
-		}
-		for _, pr := range projs {
-			out = append(out, ProjectListItem{Workspace: p.Workspace, Name: pr.Name, Path: pr.Path})
-		}
-	} else {
-		var err error
-		out, err = d.Registry.ListAllProjects()
-		if err != nil {
-			return errResp(req.ID, err.Error())
-		}
-	}
-	if out == nil {
-		out = []ProjectListItem{}
+	out := []ProjectListItem{}
+	for _, pr := range projs {
+		out = append(out, ProjectListItem{Name: pr.Name, Path: pr.Path})
 	}
 	result, _ := json.Marshal(out)
 	return protocol.Response{ID: req.ID, Result: result}
-}
-
-func (d *Daemon) handleWorkspaceDelete(req protocol.Request) protocol.Response {
-	var p WorkspaceAddParams
-	if err := json.Unmarshal(req.Params, &p); err != nil {
-		return errResp(req.ID, "bad params: "+err.Error())
-	}
-	if err := d.Registry.DeleteWorkspace(p.Name); err != nil {
-		if errors.Is(err, ErrNotFound) {
-			return errResp(req.ID, "workspace "+p.Name+" not found")
-		}
-		return errResp(req.ID, err.Error())
-	}
-	return protocol.Response{ID: req.ID, Result: json.RawMessage(`{}`)}
 }
 
 func (d *Daemon) handleProjectDelete(req protocol.Request) protocol.Response {
@@ -1119,9 +1051,9 @@ func (d *Daemon) handleProjectDelete(req protocol.Request) protocol.Response {
 	if err := json.Unmarshal(req.Params, &p); err != nil {
 		return errResp(req.ID, "bad params: "+err.Error())
 	}
-	if err := d.Registry.DeleteProject(p.Workspace, p.Name); err != nil {
+	if err := d.Registry.DeleteProject(p.Name); err != nil {
 		if errors.Is(err, ErrNotFound) {
-			return errResp(req.ID, "project "+p.Workspace+"/"+p.Name+" not found")
+			return errResp(req.ID, "project "+p.Name+" not found")
 		}
 		return errResp(req.ID, err.Error())
 	}
@@ -1129,17 +1061,14 @@ func (d *Daemon) handleProjectDelete(req protocol.Request) protocol.Response {
 }
 
 func (d *Daemon) handleStatus(req protocol.Request) protocol.Response {
-	var wsCount, projCount, sessCount int
-	if err := d.Store.db.QueryRow("SELECT count(*) FROM workspaces").Scan(&wsCount); err != nil {
-		return errResp(req.ID, "status: "+err.Error())
-	}
+	var projCount, sessCount int
 	if err := d.Store.db.QueryRow("SELECT count(*) FROM projects").Scan(&projCount); err != nil {
 		return errResp(req.ID, "status: "+err.Error())
 	}
 	if err := d.Store.db.QueryRow("SELECT count(*) FROM sessions WHERE status='active'").Scan(&sessCount); err != nil {
 		return errResp(req.ID, "status: "+err.Error())
 	}
-	result, _ := json.Marshal(StatusResult{Running: true, Workspaces: wsCount, Projects: projCount, Sessions: sessCount, Sock: d.Sock})
+	result, _ := json.Marshal(StatusResult{Running: true, Projects: projCount, Sessions: sessCount, Sock: d.Sock})
 	return protocol.Response{ID: req.ID, Result: result}
 }
 

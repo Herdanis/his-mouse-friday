@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -15,53 +16,19 @@ func newTestStore(t *testing.T) *Store {
 	return s
 }
 
-func TestRegistry_AddWorkspaceAndProject(t *testing.T) {
+func TestRegistry_AddAndListProjects(t *testing.T) {
 	r := &Registry{Store: newTestStore(t)}
-	ws, err := r.AddWorkspace("companyA")
+	proj, err := r.AddProject("payment-service", "/tmp/payment")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ws.Name != "companyA" {
-		t.Errorf("name: got %q", ws.Name)
-	}
-	proj, err := r.AddProject("companyA", "payment-service", "/tmp/payment")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if proj.Name != "payment-service" || proj.Path != "/tmp/payment" {
+	if proj.Name != "payment-service" || proj.Path != "/tmp/payment" || proj.ID == 0 {
 		t.Errorf("got %+v", proj)
 	}
-}
-
-func TestRegistry_ResolveByPath(t *testing.T) {
-	r := &Registry{Store: newTestStore(t)}
-	r.AddWorkspace("companyA")
-	r.AddProject("companyA", "payment-service", "/tmp/payment")
-
-	proj, ws, err := r.ResolveByPath("/tmp/payment")
-	if err != nil {
-		t.Fatalf("resolve: %v", err)
+	if _, err := r.AddProject("user-service", "/tmp/user"); err != nil {
+		t.Fatal(err)
 	}
-	if proj.Name != "payment-service" || ws.Name != "companyA" {
-		t.Errorf("got proj=%+v ws=%+v", proj, ws)
-	}
-}
-
-func TestRegistry_ResolveByPath_NotFound(t *testing.T) {
-	r := &Registry{Store: newTestStore(t)}
-	_, _, err := r.ResolveByPath("/nonexistent")
-	if err == nil {
-		t.Fatal("expected error for unregistered path")
-	}
-}
-
-func TestRegistry_ListProjects(t *testing.T) {
-	r := &Registry{Store: newTestStore(t)}
-	r.AddWorkspace("companyA")
-	r.AddProject("companyA", "payment-service", "/tmp/payment")
-	r.AddProject("companyA", "user-service", "/tmp/user")
-
-	projs, err := r.ListProjects("companyA")
+	projs, err := r.ListProjects()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,33 +37,83 @@ func TestRegistry_ListProjects(t *testing.T) {
 	}
 }
 
-func TestRegistry_NameCollisionAcrossWorkspaces(t *testing.T) {
+func TestRegistry_AddProject_DuplicateName(t *testing.T) {
 	r := &Registry{Store: newTestStore(t)}
-	r.AddWorkspace("companyA")
-	r.AddWorkspace("personal")
-	_, err := r.AddProject("companyA", "payment-service", "/tmp/payment")
-	if err != nil {
+	if _, err := r.AddProject("payment-service", "/tmp/payment"); err != nil {
 		t.Fatal(err)
 	}
-	_, err = r.AddProject("personal", "payment-service", "/tmp/payment2")
-	if err != nil {
-		t.Fatalf("same name in different workspace should succeed: %v", err)
+	_, err := r.AddProject("payment-service", "/tmp/payment2")
+	if err == nil {
+		t.Fatal("expected duplicate-name error")
+	}
+	if !strings.Contains(err.Error(), "payment-service") {
+		t.Errorf("error must name the conflict, got: %v", err)
 	}
 }
 
 func TestRegistry_AddProject_DuplicatePath(t *testing.T) {
 	r := &Registry{Store: newTestStore(t)}
-	r.AddWorkspace("companyA")
-	r.AddWorkspace("personal")
-	if _, err := r.AddProject("companyA", "payment", "/tmp/payment"); err != nil {
-		t.Fatalf("first add: %v", err)
+	if _, err := r.AddProject("payment", "/tmp/payment"); err != nil {
+		t.Fatal(err)
 	}
-	// Same path under a different (workspace, name) → blocked.
-	if _, err := r.AddProject("personal", "other", "/tmp/payment"); err == nil {
+	if _, err := r.AddProject("other", "/tmp/payment"); err == nil {
 		t.Fatal("expected error: path already registered under a different project")
 	}
-	// Re-adding the same (workspace, name) with a path change is allowed.
-	if _, err := r.AddProject("companyA", "payment", "/tmp/payment-moved"); err != nil {
-		t.Fatalf("re-add same (ws, name) with new path should succeed: %v", err)
+}
+
+func TestRegistry_FindAndResolveProject(t *testing.T) {
+	r := &Registry{Store: newTestStore(t)}
+	r.AddProject("payment-service", "/tmp/payment")
+	if _, err := r.FindProject("payment-service"); err != nil {
+		t.Fatalf("find: %v", err)
+	}
+	if _, err := r.FindProject("ghost"); err == nil {
+		t.Fatal("expected not-found for unknown name")
+	}
+	if _, err := r.ResolveProject("payment-service"); err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if _, err := r.ResolveProject("ghost"); err == nil {
+		t.Fatal("expected not-found resolve")
+	}
+}
+
+func TestRegistry_ResolveByPath(t *testing.T) {
+	r := &Registry{Store: newTestStore(t)}
+	r.AddProject("payment-service", "/tmp/payment")
+	proj, err := r.ResolveByPath("/tmp/payment")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if proj.Name != "payment-service" {
+		t.Errorf("got %+v", proj)
+	}
+	if _, err := r.ResolveByPath("/nonexistent"); err == nil {
+		t.Fatal("expected error for unregistered path")
+	}
+}
+
+// DeleteProject must remove the project's sessions before the project itself,
+// or sessions.project_id would dangle past the FK.
+func TestRegistry_DeleteProject_DeletesSessionsFirst(t *testing.T) {
+	r := &Registry{Store: newTestStore(t)}
+	proj, err := r.AddProject("payment-service", "/tmp/payment")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ss := &SessionStore{Store: r.Store}
+	if _, err := ss.Create(proj.ID, "opencode", "default", 0, 0, 0, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.DeleteProject("payment-service"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	var n int
+	r.Store.db.QueryRow(`SELECT count(*) FROM sessions`).Scan(&n)
+	if n != 0 {
+		t.Errorf("%d sessions left after project delete, want 0", n)
+	}
+	if err := r.DeleteProject("payment-service"); err != ErrNotFound {
+		t.Errorf("second delete = %v, want ErrNotFound", err)
 	}
 }

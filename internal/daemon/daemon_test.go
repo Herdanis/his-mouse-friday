@@ -44,10 +44,9 @@ func setupDaemon(t *testing.T) *Daemon {
 
 func TestHandle_PostToGeneralWakesAgent(t *testing.T) {
 	d := setupDaemon(t)
-	d.Registry.AddWorkspace("companyA")
 	userDir := t.TempDir()
 	os.WriteFile(filepath.Join(userDir, "mouse.yaml"), []byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n"), 0644)
-	d.Registry.AddProject("companyA", "user-service", userDir)
+	d.Registry.AddProject("user-service", userDir)
 
 	// Post a task to general mentioning @companyA/user-service — thread root.
 	params, _ := json.Marshal(map[string]any{
@@ -79,10 +78,9 @@ func TestHandle_PostToGeneralWakesAgent(t *testing.T) {
 func TestHandle_SyntheticBlockedReplyOnSilentExit(t *testing.T) {
 	d := setupDaemon(t)
 	d.SafetyNetEnabled = true
-	d.Registry.AddWorkspace("companyA")
 	userDir := t.TempDir()
 	os.WriteFile(filepath.Join(userDir, "mouse.yaml"), []byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n"), 0644)
-	d.Registry.AddProject("companyA", "user-service", userDir)
+	d.Registry.AddProject("user-service", userDir)
 
 	params, _ := json.Marshal(map[string]any{
 		"from":    "companyA/payment-service",
@@ -118,10 +116,9 @@ func TestHandle_SyntheticBlockedReplyOnSilentExit(t *testing.T) {
 
 func TestHandle_Post_InboundDenied(t *testing.T) {
 	d := setupDaemon(t)
-	d.Registry.AddWorkspace("companyA")
 	userDir := t.TempDir()
 	os.WriteFile(filepath.Join(userDir, "mouse.yaml"), []byte("agent:\n  primary:\n    provider: opencode\n"), 0644)
-	d.Registry.AddProject("companyA", "user-service", userDir)
+	d.Registry.AddProject("user-service", userDir)
 
 	params, _ := json.Marshal(map[string]any{"from": "companyA/payment", "to": "companyA/user-service", "content": "x"})
 	resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: params, ID: 1})
@@ -132,8 +129,7 @@ func TestHandle_Post_InboundDenied(t *testing.T) {
 
 func TestHandle_PostAndRead(t *testing.T) {
 	d := setupDaemon(t)
-	d.Store.db.Exec(`INSERT INTO workspaces(id, name) VALUES(1, 'companyA')`)
-	d.Store.db.Exec(`INSERT INTO channels(id, workspace_id, name, type) VALUES(10, 1, 'dm', 'dm')`)
+	d.Store.db.Exec(`INSERT INTO channels(id, name, type) VALUES(10, 'dm', 'dm')`)
 
 	postParams, _ := json.Marshal(map[string]any{
 		"channel": 10, "from": "companyA/payment", "to": "companyA/user", "content": "hello",
@@ -157,7 +153,6 @@ func TestHandle_PostAndRead(t *testing.T) {
 
 func TestHandle_PostToUnregisteredAgentSkipsWake(t *testing.T) {
 	d := setupDaemon(t)
-	d.Registry.AddWorkspace("companyA")
 
 	// Addressing an unregistered agent: message posts, no wake (mailbox semantics).
 	params, _ := json.Marshal(map[string]any{"from": "companyA/payment", "to": "companyA/ghost", "content": "hello"})
@@ -180,8 +175,7 @@ func TestHandle_PostToUnregisteredAgentSkipsWake(t *testing.T) {
 // task_msg_id, returning the thread root id.
 func postTask(t *testing.T, d *Daemon, sessionStatus string, exitCode int, withDone bool) int64 {
 	t.Helper()
-	d.Store.db.Exec(`INSERT INTO workspaces(id, name) VALUES(1, 'companyA')`)
-	d.Store.db.Exec(`INSERT INTO projects(id, workspace_id, name, path) VALUES(1, 1, 'user-service', '/tmp/user')`)
+	d.Store.db.Exec(`INSERT INTO projects(id, name, path) VALUES(1, 'user-service', '/tmp/user')`)
 
 	// Thread root message in the general channel.
 	res, err := d.Store.db.Exec(
@@ -287,7 +281,7 @@ func TestHandle_TaskStatus_RequiresThreadID(t *testing.T) {
 // never wait server-side. An unresolved task returns has_done=false fast.
 func TestTaskStatusReturnsImmediately(t *testing.T) {
 	d := setupDaemon(t)
-	d.Store.db.Exec(`INSERT INTO projects(id, workspace_id, name, path) VALUES(1, 1, 'co/child', '/tmp/child')`)
+	d.Store.db.Exec(`INSERT INTO projects(id, name, path) VALUES(1, 'co/child', '/tmp/child')`)
 	d.Store.db.Exec(`INSERT INTO messages(id, channel_id, thread_id, from_project, to_project, content, status, ts)
 		VALUES(900, 1, NULL, 'co/parent', 'co/child', 'do X', 'message', datetime('now'))`)
 	// Active session keeps the status non-terminal — the case that used to block.
@@ -466,8 +460,7 @@ func TestStore_SessionsSchemaMigrations(t *testing.T) {
 
 func TestSessions_CreateStoresResumeFields(t *testing.T) {
 	store := newTestStore(t)
-	store.db.Exec(`INSERT INTO workspaces(id, name) VALUES(1, 'ws')`)
-	store.db.Exec(`INSERT INTO projects(id, workspace_id, name, path) VALUES(1, 1, 'p', '/tmp/p')`)
+	store.db.Exec(`INSERT INTO projects(id, name, path) VALUES(1, 'p', '/tmp/p')`)
 	s := &SessionStore{Store: store}
 	sess, err := s.Create(
 		/* projectID */ 1,
@@ -498,8 +491,7 @@ func TestSessions_CreateStoresResumeFields(t *testing.T) {
 
 func TestSessions_SetAgentSessionID(t *testing.T) {
 	store := newTestStore(t)
-	store.db.Exec(`INSERT INTO workspaces(id, name) VALUES(1, 'ws')`)
-	store.db.Exec(`INSERT INTO projects(id, workspace_id, name, path) VALUES(1, 1, 'p', '/tmp/p')`)
+	store.db.Exec(`INSERT INTO projects(id, name, path) VALUES(1, 'p', '/tmp/p')`)
 	s := &SessionStore{Store: store}
 	sess, _ := s.Create(1, "opencode", "default", 0, 42, 42, "abc12", "abc12-dotfiles")
 	if err := s.SetAgentSessionID(sess.ID, "ses_xyz789"); err != nil {
@@ -514,11 +506,10 @@ func TestSessions_SetAgentSessionID(t *testing.T) {
 
 func TestWakeAgent_StoresParentID(t *testing.T) {
 	d := setupDaemon(t)
-	d.Registry.AddWorkspace("companyA")
 	userDir := t.TempDir()
 	os.WriteFile(filepath.Join(userDir, "mouse.yaml"),
 		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n"), 0644)
-	d.Registry.AddProject("companyA", "user-service", userDir)
+	d.Registry.AddProject("user-service", userDir)
 
 	// Thread root wake: root_thread_id = msg.ID.
 	params, _ := json.Marshal(map[string]any{
@@ -537,18 +528,17 @@ func TestWakeAgent_StoresParentID(t *testing.T) {
 
 func TestHandle_CrossProjectDelegationInheritsRoot(t *testing.T) {
 	d := setupDaemon(t)
-	d.Registry.AddWorkspace("companyA")
 	// Project A (caller) — already woken, has task_msg_id=500.
 	aDir := t.TempDir()
 	// service-a delegates outward, so it must declare outbound consent.
 	os.WriteFile(filepath.Join(aDir, "mouse.yaml"),
 		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n  allow_outbound: true\n"), 0644)
-	d.Registry.AddProject("companyA", "service-a", aDir)
+	d.Registry.AddProject("service-a", aDir)
 	// Project B (callee) — inbound allowed.
 	bDir := t.TempDir()
 	os.WriteFile(filepath.Join(bDir, "mouse.yaml"),
 		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n"), 0644)
-	d.Registry.AddProject("companyA", "service-b", bDir)
+	d.Registry.AddProject("service-b", bDir)
 	// Seed: root thread 500 already exists, with service-a's session bound.
 	d.Store.db.Exec(`INSERT INTO messages(id, channel_id, thread_id, from_project, to_project, content, status, ts)
 		VALUES(500, 1, NULL, 'companyA/orchestrator', 'companyA/service-a', 'do X', 'message', datetime('now'))`)
@@ -584,16 +574,15 @@ func TestWakeAgent_TaskMsgIDMatchesRootForTaskStatus(t *testing.T) {
 		captured = cfg
 		return 1, nil
 	}}
-	d.Registry.AddWorkspace("companyA")
 	aDir := t.TempDir()
 	// service-a delegates outward, so it must declare outbound consent.
 	os.WriteFile(filepath.Join(aDir, "mouse.yaml"),
 		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n  allow_outbound: true\n"), 0644)
-	d.Registry.AddProject("companyA", "service-a", aDir)
+	d.Registry.AddProject("service-a", aDir)
 	bDir := t.TempDir()
 	os.WriteFile(filepath.Join(bDir, "mouse.yaml"),
 		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n"), 0644)
-	d.Registry.AddProject("companyA", "service-b", bDir)
+	d.Registry.AddProject("service-b", bDir)
 	// Seed: root thread 500, service-a's session bound.
 	d.Store.db.Exec(`INSERT INTO messages(id, channel_id, thread_id, from_project, to_project, content, status, ts)
 		VALUES(500, 1, NULL, 'companyA/orchestrator', 'companyA/service-a', 'do X', 'message', datetime('now'))`)
@@ -646,11 +635,10 @@ func TestWakeAgent_TaskMsgIDMatchesRootForTaskStatus(t *testing.T) {
 // so there is no server-side pacing to lean on anymore.
 func TestHandle_TaskStatusRepeatCallInstant(t *testing.T) {
 	d := setupDaemon(t)
-	d.Registry.AddWorkspace("companyA")
 	userDir := t.TempDir()
 	os.WriteFile(filepath.Join(userDir, "mouse.yaml"),
 		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n"), 0644)
-	d.Registry.AddProject("companyA", "user-service", userDir)
+	d.Registry.AddProject("user-service", userDir)
 
 	d.Store.db.Exec(`INSERT INTO messages(id, channel_id, thread_id, from_project, to_project, content, status, ts)
 		VALUES(500, 1, NULL, 'companyA/payment', 'companyA/user-service', 'task', 'message', datetime('now'))`)
@@ -680,11 +668,10 @@ func TestHandle_TaskStatusRepeatCallInstant(t *testing.T) {
 // code — should read "exited", not "failed".
 func TestWakeAgent_KillAfterDoneMarksExitedNotFailed(t *testing.T) {
 	d := setupDaemon(t)
-	d.Registry.AddWorkspace("companyA")
 	userDir := t.TempDir()
 	os.WriteFile(filepath.Join(userDir, "mouse.yaml"),
 		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n"), 0644)
-	d.Registry.AddProject("companyA", "user-service", userDir)
+	d.Registry.AddProject("user-service", userDir)
 
 	// OnExit fires async in real Spawn, after SetStatus("active") — call it
 	// after d.Handle returns below, not inline, or it races that ordering.
@@ -740,11 +727,10 @@ func hasStatus(msgs []Message, status string) bool {
 func TestWakeAgent_ExitWithoutDoneMarksFailedAndPostsBlocked(t *testing.T) {
 	d := setupDaemon(t)
 	d.SafetyNetEnabled = true
-	d.Registry.AddWorkspace("companyA")
 	userDir := t.TempDir()
 	os.WriteFile(filepath.Join(userDir, "mouse.yaml"),
 		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n"), 0644)
-	d.Registry.AddProject("companyA", "user-service", userDir)
+	d.Registry.AddProject("user-service", userDir)
 
 	var captured SpawnConfig
 	d.Launcher = &Launcher{SpawnFn: func(cfg SpawnConfig) (int, error) {
@@ -785,11 +771,10 @@ func TestWakeAgent_ExitWithoutDoneMarksFailedAndPostsBlocked(t *testing.T) {
 func TestReconcileOrphanedSessions(t *testing.T) {
 	d := setupDaemon(t)
 	d.SafetyNetEnabled = true
-	d.Registry.AddWorkspace("companyA")
 	userDir := t.TempDir()
 	os.WriteFile(filepath.Join(userDir, "mouse.yaml"),
 		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n"), 0644)
-	d.Registry.AddProject("companyA", "user-service", userDir)
+	d.Registry.AddProject("user-service", userDir)
 
 	// PID 999999999 is never a real live process. Root msg 700, completed.
 	d.Store.db.Exec(`INSERT INTO messages(id, channel_id, thread_id, from_project, to_project, content, status, ts)
@@ -845,11 +830,10 @@ func TestReconcileOrphanedSessions(t *testing.T) {
 
 func TestHandle_ReplyWithToWakesAgent(t *testing.T) {
 	d := setupDaemon(t)
-	d.Registry.AddWorkspace("companyA")
 	userDir := t.TempDir()
 	os.WriteFile(filepath.Join(userDir, "mouse.yaml"),
 		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n"), 0644)
-	d.Registry.AddProject("companyA", "user-service", userDir)
+	d.Registry.AddProject("user-service", userDir)
 
 	// Seed: thread root 500, agent already exited (no done reply yet).
 	d.Store.db.Exec(`INSERT INTO messages(id, channel_id, thread_id, from_project, to_project, content, status, ts)
@@ -879,11 +863,10 @@ func TestHandle_ReplyWithToWakesAgent(t *testing.T) {
 // A reply that forgets `to` should still wake the thread's original recipient.
 func TestHandle_ReplyWithoutToAutoFillsFromRoot(t *testing.T) {
 	d := setupDaemon(t)
-	d.Registry.AddWorkspace("companyA")
 	userDir := t.TempDir()
 	os.WriteFile(filepath.Join(userDir, "mouse.yaml"),
 		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n"), 0644)
-	d.Registry.AddProject("companyA", "user-service", userDir)
+	d.Registry.AddProject("user-service", userDir)
 
 	// Seed: thread root 500 addressed to user-service, agent already exited.
 	d.Store.db.Exec(`INSERT INTO messages(id, channel_id, thread_id, from_project, to_project, content, status, ts)
@@ -913,16 +896,15 @@ func TestHandle_ReplyWithoutToAutoFillsFromRoot(t *testing.T) {
 // here only the worker's session count must stay flat.
 func TestHandle_DoneReplyWithoutToDoesNotAutoWake(t *testing.T) {
 	d := setupDaemon(t)
-	d.Registry.AddWorkspace("companyA")
 	userDir := t.TempDir()
 	os.WriteFile(filepath.Join(userDir, "mouse.yaml"),
 		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n"), 0644)
-	d.Registry.AddProject("companyA", "user-service", userDir)
+	d.Registry.AddProject("user-service", userDir)
 	// payment is registered too — its wake on done is fine; the worker's isn't.
 	paymentDir := t.TempDir()
 	os.WriteFile(filepath.Join(paymentDir, "mouse.yaml"),
 		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n"), 0644)
-	d.Registry.AddProject("companyA", "payment", paymentDir)
+	d.Registry.AddProject("payment", paymentDir)
 
 	d.Store.db.Exec(`INSERT INTO messages(id, channel_id, thread_id, from_project, to_project, content, status, ts)
 		VALUES(500, 1, NULL, 'companyA/payment', 'companyA/user-service', 'task', 'message', datetime('now'))`)
@@ -958,15 +940,14 @@ func TestDoneReplyWakesOriginator(t *testing.T) {
 		spawned = append(spawned, cfg)
 		return 1, nil
 	}}
-	d.Registry.AddWorkspace("co")
 	aDir := t.TempDir()
 	os.WriteFile(filepath.Join(aDir, "mouse.yaml"),
 		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n  allow_outbound: true\n"), 0644)
-	d.Registry.AddProject("co", "parent", aDir)
+	d.Registry.AddProject("parent", aDir)
 	bDir := t.TempDir()
 	os.WriteFile(filepath.Join(bDir, "mouse.yaml"),
 		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n"), 0644)
-	d.Registry.AddProject("co", "child", bDir)
+	d.Registry.AddProject("child", bDir)
 
 	// Root task 500: parent → child. The parent's OWN session is on its
 	// upper thread 499 — NOT on thread 500.
@@ -1013,15 +994,14 @@ func TestDoneWakeEntrypointAndNoAck(t *testing.T) {
 		spawned = append(spawned, cfg)
 		return 1, nil
 	}}
-	d.Registry.AddWorkspace("co")
 	aDir := t.TempDir()
 	os.WriteFile(filepath.Join(aDir, "mouse.yaml"),
 		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n  allow_outbound: true\n"), 0644)
-	d.Registry.AddProject("co", "parent", aDir)
+	d.Registry.AddProject("parent", aDir)
 	bDir := t.TempDir()
 	os.WriteFile(filepath.Join(bDir, "mouse.yaml"),
 		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n"), 0644)
-	d.Registry.AddProject("co", "child", bDir)
+	d.Registry.AddProject("child", bDir)
 	d.Store.db.Exec(`INSERT INTO messages(id, channel_id, thread_id, from_project, to_project, content, status, ts)
 		VALUES(700, 1, NULL, 'co/parent', 'co/child', 'do X', 'message', datetime('now'))`)
 	d.Store.db.Exec(`INSERT INTO sessions(project_id, agent_binary, model, status, pid, created_at, task_msg_id, root_thread_id, opencode_session_id)
@@ -1083,15 +1063,14 @@ func TestDoneWakeKillsIdleParent(t *testing.T) {
 		spawned = append(spawned, cfg)
 		return 1, nil
 	}}
-	d.Registry.AddWorkspace("co")
 	aDir := t.TempDir()
 	os.WriteFile(filepath.Join(aDir, "mouse.yaml"),
 		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n  allow_outbound: true\n"), 0644)
-	d.Registry.AddProject("co", "parent", aDir)
+	d.Registry.AddProject("parent", aDir)
 	bDir := t.TempDir()
 	os.WriteFile(filepath.Join(bDir, "mouse.yaml"),
 		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n"), 0644)
-	d.Registry.AddProject("co", "child", bDir)
+	d.Registry.AddProject("child", bDir)
 
 	// Real live process standing in for an idle parent agent.
 	sleep := exec.Command("sleep", "30")
@@ -1152,15 +1131,14 @@ func TestDoneWakeKillSuppressesExitWatcherBlocked(t *testing.T) {
 		}
 		return 0, nil
 	}}
-	d.Registry.AddWorkspace("co")
 	aDir := t.TempDir()
 	os.WriteFile(filepath.Join(aDir, "mouse.yaml"),
 		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n  allow_outbound: true\n"), 0644)
-	d.Registry.AddProject("co", "parent", aDir)
+	d.Registry.AddProject("parent", aDir)
 	bDir := t.TempDir()
 	os.WriteFile(filepath.Join(bDir, "mouse.yaml"),
 		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n"), 0644)
-	d.Registry.AddProject("co", "child", bDir)
+	d.Registry.AddProject("child", bDir)
 
 	// (1) Task root: orchestrator → parent. wakeAgent spawns the parent.
 	root, _ := json.Marshal(map[string]any{
@@ -1241,11 +1219,10 @@ func TestDoneWakeKillSuppressesExitWatcherBlocked(t *testing.T) {
 // reply, hmf resumes the agent's prior opencode session, agent keeps context.
 func TestHandle_RewakeOnDoneThread(t *testing.T) {
 	d := setupDaemon(t)
-	d.Registry.AddWorkspace("companyA")
 	userDir := t.TempDir()
 	os.WriteFile(filepath.Join(userDir, "mouse.yaml"),
 		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n"), 0644)
-	d.Registry.AddProject("companyA", "user-service", userDir)
+	d.Registry.AddProject("user-service", userDir)
 
 	// Seed: thread root 500, an exited session bound to it, and a done reply.
 	d.Store.db.Exec(`INSERT INTO messages(id, channel_id, thread_id, from_project, to_project, content, status, ts)
@@ -1275,11 +1252,10 @@ func TestHandle_RewakeOnDoneThread(t *testing.T) {
 
 func TestHandle_NoWakeOnActiveSession(t *testing.T) {
 	d := setupDaemon(t)
-	d.Registry.AddWorkspace("companyA")
 	userDir := t.TempDir()
 	os.WriteFile(filepath.Join(userDir, "mouse.yaml"),
 		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n"), 0644)
-	d.Registry.AddProject("companyA", "user-service", userDir)
+	d.Registry.AddProject("user-service", userDir)
 
 	// Seed: thread root 500 with an ACTIVE session bound. No done reply —
 	// the done-reply guard won't fire; only the active-session guard should
@@ -1315,11 +1291,10 @@ func TestWakeAgent_AlwaysFreshSpawn(t *testing.T) {
 		return 1, nil
 	}}
 
-	d.Registry.AddWorkspace("companyA")
 	userDir := t.TempDir()
 	os.WriteFile(filepath.Join(userDir, "mouse.yaml"),
 		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n"), 0644)
-	d.Registry.AddProject("companyA", "user-service", userDir)
+	d.Registry.AddProject("user-service", userDir)
 
 	// First wake: thread root, fresh spawn, captures OC ID ses_fresh1.
 	p1, _ := json.Marshal(map[string]any{"from": "companyA/payment", "to": "companyA/user-service", "content": "task 1"})
@@ -1356,11 +1331,10 @@ func TestWakeAgent_AlwaysFreshSpawn(t *testing.T) {
 
 func TestWakeAgent_PrefixGeneratedOnceAndInherited(t *testing.T) {
 	d := setupDaemon(t)
-	d.Registry.AddWorkspace("companyA")
 	userDir := t.TempDir()
 	os.WriteFile(filepath.Join(userDir, "mouse.yaml"),
 		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n"), 0644)
-	d.Registry.AddProject("companyA", "user-service", userDir)
+	d.Registry.AddProject("user-service", userDir)
 
 	// First wake: generates a prefix.
 	p1, _ := json.Marshal(map[string]any{"from": "companyA/payment", "to": "companyA/user-service", "content": "t1"})
@@ -1403,15 +1377,13 @@ func TestWakeAgent_PrefixGeneratedOnceAndInherited(t *testing.T) {
 
 func TestDaemon_ResolveToProject(t *testing.T) {
 	d := setupDaemon(t)
-	d.Registry.AddWorkspace("companyA")
-	d.Registry.AddWorkspace("companyB")
-	if _, err := d.Registry.AddProject("companyA", "payment", "/tmp/payA"); err != nil {
+	if _, err := d.Registry.AddProject("payment", "/tmp/payA"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.Registry.AddProject("companyB", "payment", "/tmp/payB"); err != nil {
+	if _, err := d.Registry.AddProject("payment", "/tmp/payB"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.Registry.AddProject("companyA", "checkout", "/tmp/checkout"); err != nil {
+	if _, err := d.Registry.AddProject("checkout", "/tmp/checkout"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1450,12 +1422,10 @@ func TestDaemon_ResolveToProject(t *testing.T) {
 
 func TestHandlePost_AmbiguousBareToErrors(t *testing.T) {
 	d := setupDaemon(t)
-	d.Registry.AddWorkspace("companyA")
-	d.Registry.AddWorkspace("companyB")
-	if _, err := d.Registry.AddProject("companyA", "payment", "/tmp/payA"); err != nil {
+	if _, err := d.Registry.AddProject("payment", "/tmp/payA"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.Registry.AddProject("companyB", "payment", "/tmp/payB"); err != nil {
+	if _, err := d.Registry.AddProject("payment", "/tmp/payB"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1475,8 +1445,7 @@ func TestHandlePost_AmbiguousBareToErrors(t *testing.T) {
 
 func TestHandle_TodoAddUpdateList(t *testing.T) {
 	d := setupDaemon(t)
-	d.Store.db.Exec(`INSERT INTO workspaces(id, name) VALUES(1, 'companyA')`)
-	d.Store.db.Exec(`INSERT INTO channels(id, workspace_id, name, type) VALUES(10, 1, 'dm', 'dm')`)
+	d.Store.db.Exec(`INSERT INTO channels(id, name, type) VALUES(10, 'dm', 'dm')`)
 	postParams, _ := json.Marshal(map[string]any{
 		"channel": 10, "from": "companyA/payment", "content": "task root",
 	})
@@ -1529,8 +1498,7 @@ func TestHandle_TodoAdd_NonexistentThreadErrors(t *testing.T) {
 
 func TestHandle_TodoUpdate_BadStateErrors(t *testing.T) {
 	d := setupDaemon(t)
-	d.Store.db.Exec(`INSERT INTO workspaces(id, name) VALUES(1, 'companyA')`)
-	d.Store.db.Exec(`INSERT INTO channels(id, workspace_id, name, type) VALUES(10, 1, 'dm', 'dm')`)
+	d.Store.db.Exec(`INSERT INTO channels(id, name, type) VALUES(10, 'dm', 'dm')`)
 	postParams, _ := json.Marshal(map[string]any{"channel": 10, "from": "a", "content": "root"})
 	resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: postParams, ID: 1})
 	var pr PostResult
@@ -1551,8 +1519,7 @@ func TestHandle_TodoUpdate_BadStateErrors(t *testing.T) {
 
 func TestHandle_TodoThreads(t *testing.T) {
 	d := setupDaemon(t)
-	d.Store.db.Exec(`INSERT INTO workspaces(id, name) VALUES(1, 'companyA')`)
-	d.Store.db.Exec(`INSERT INTO channels(id, workspace_id, name, type) VALUES(10, 1, 'dm', 'dm')`)
+	d.Store.db.Exec(`INSERT INTO channels(id, name, type) VALUES(10, 'dm', 'dm')`)
 	postParams, _ := json.Marshal(map[string]any{"channel": 10, "from": "a", "content": "add payment_status field to User"})
 	resp := d.Handle(context.Background(), protocol.Request{Method: "post_message", Params: postParams, ID: 1})
 	var pr PostResult
@@ -1581,11 +1548,10 @@ func TestHandle_TodoThreads(t *testing.T) {
 // lookup used to ignore agent_binary entirely).
 func TestWakeAgent_ResumeScopedToBinary(t *testing.T) {
 	d := setupDaemon(t)
-	d.Registry.AddWorkspace("companyA")
 	userDir := t.TempDir()
 	os.WriteFile(filepath.Join(userDir, "mouse.yaml"),
 		[]byte("agent:\n  primary:\n    provider: opencode\n  secondary:\n    provider: claude\na2a:\n  allow_inbound: true\n"), 0644)
-	d.Registry.AddProject("companyA", "user-service", userDir)
+	d.Registry.AddProject("user-service", userDir)
 
 	// First wake: primary (opencode) available, captures a fake opencode session id.
 	d.LookPath = func(string) (string, error) { return "/usr/bin/x", nil }
@@ -1644,13 +1610,12 @@ func TestWakeAgent_ResumeScopedToBinary(t *testing.T) {
 // Second project on a thread must not resume the first project's session id.
 func TestWakeAgent_ResumeScopedToProject(t *testing.T) {
 	d := setupDaemon(t)
-	d.Registry.AddWorkspace("companyA")
 	mouse := []byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n")
 	dirA, dirB := t.TempDir(), t.TempDir()
 	os.WriteFile(filepath.Join(dirA, "mouse.yaml"), mouse, 0644)
 	os.WriteFile(filepath.Join(dirB, "mouse.yaml"), mouse, 0644)
-	d.Registry.AddProject("companyA", "proj-a", dirA)
-	d.Registry.AddProject("companyA", "proj-b", dirB)
+	d.Registry.AddProject("proj-a", dirA)
+	d.Registry.AddProject("proj-b", dirB)
 
 	d.LookPath = func(string) (string, error) { return "/usr/bin/x", nil }
 	d.CaptureAgentSessionID = func(SpawnConfig) (string, error) { return "ses_projA123", nil }
@@ -1730,11 +1695,10 @@ func TestNextAction_TellsCallerWhetherToStop(t *testing.T) {
 // items, current step, and latest reply — not just a done flag.
 func TestTaskStatus_CarriesChildProgressDetail(t *testing.T) {
 	d := setupDaemon(t)
-	d.Registry.AddWorkspace("companyA")
 	userDir := t.TempDir()
 	os.WriteFile(filepath.Join(userDir, "mouse.yaml"),
 		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n"), 0644)
-	d.Registry.AddProject("companyA", "user-service", userDir)
+	d.Registry.AddProject("user-service", userDir)
 
 	d.Store.db.Exec(`INSERT INTO messages(id, channel_id, thread_id, from_project, to_project, content, status, ts)
 		VALUES(700, 1, NULL, 'companyA/payment', 'companyA/user-service', 'task', 'message', datetime('now'))`)
@@ -1782,13 +1746,12 @@ func TestHandle_Post_OutboundDenied(t *testing.T) {
 
 	newDaemon := func(t *testing.T, senderYAML string) *Daemon {
 		d := setupDaemon(t)
-		d.Registry.AddWorkspace("companyA")
 		senderDir := t.TempDir()
 		os.WriteFile(filepath.Join(senderDir, "mouse.yaml"), []byte(senderYAML), 0644)
-		d.Registry.AddProject("companyA", "payment", senderDir)
+		d.Registry.AddProject("payment", senderDir)
 		recvDir := t.TempDir()
 		os.WriteFile(filepath.Join(recvDir, "mouse.yaml"), []byte(inbound), 0644)
-		d.Registry.AddProject("companyA", "user-service", recvDir)
+		d.Registry.AddProject("user-service", recvDir)
 		return d
 	}
 	post := func(d *Daemon) protocol.Response {
@@ -1838,11 +1801,10 @@ func TestHandle_Post_OutboundDenied(t *testing.T) {
 // would fail the post, since it can't resolve to a registered project.
 func TestHandle_ReplyDoesNotAutoFillNonProjectSender(t *testing.T) {
 	d := setupDaemon(t)
-	d.Registry.AddWorkspace("companyA")
 	userDir := t.TempDir()
 	os.WriteFile(filepath.Join(userDir, "mouse.yaml"),
 		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n  allow_outbound: true\n"), 0644)
-	d.Registry.AddProject("companyA", "user-service", userDir)
+	d.Registry.AddProject("user-service", userDir)
 
 	// Root dispatched from a plain directory, not a registered project.
 	d.Store.db.Exec(`INSERT INTO messages(id, channel_id, thread_id, from_project, to_project, content, status, ts)
@@ -1869,12 +1831,11 @@ func TestHandle_ReplyDoesNotAutoFillNonProjectSender(t *testing.T) {
 // left related work looking like unrelated parents.
 func TestHandle_SecondProjectOnSameThreadStillWakes(t *testing.T) {
 	d := setupDaemon(t)
-	d.Registry.AddWorkspace("companyA")
 	const yaml = "agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n  allow_outbound: true\n"
 	for _, name := range []string{"backend", "frontend"} {
 		dir := t.TempDir()
 		os.WriteFile(filepath.Join(dir, "mouse.yaml"), []byte(yaml), 0644)
-		d.Registry.AddProject("companyA", name, dir)
+		d.Registry.AddProject(name, dir)
 	}
 
 	// Root thread 900 with backend already working on it.
@@ -1919,10 +1880,9 @@ func TestHandle_SecondProjectOnSameThreadStillWakes(t *testing.T) {
 // register as completion.
 func TestHandle_AckReplyOnSpawn(t *testing.T) {
 	d := setupDaemon(t)
-	d.Registry.AddWorkspace("companyA")
 	userDir := t.TempDir()
 	os.WriteFile(filepath.Join(userDir, "mouse.yaml"), []byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n"), 0644)
-	d.Registry.AddProject("companyA", "user-service", userDir)
+	d.Registry.AddProject("user-service", userDir)
 
 	params, _ := json.Marshal(map[string]any{
 		"from":    "companyA/payment-service",
@@ -1982,15 +1942,14 @@ func TestHandle_AckReplyOnSpawn(t *testing.T) {
 // task_status, carries its ETA, and never spawns anyone to deliver it.
 func TestHandle_ReportProgress(t *testing.T) {
 	d := setupDaemon(t)
-	d.Registry.AddWorkspace("companyA")
 	userDir := t.TempDir()
 	os.WriteFile(filepath.Join(userDir, "mouse.yaml"), []byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n"), 0644)
-	d.Registry.AddProject("companyA", "user-service", userDir)
+	d.Registry.AddProject("user-service", userDir)
 	// Parent is registered and wakeable, so "no spawn" below means the
 	// progress report chose not to wake it, not that it couldn't.
 	payDir := t.TempDir()
 	os.WriteFile(filepath.Join(payDir, "mouse.yaml"), []byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n  allow_outbound: true\n"), 0644)
-	d.Registry.AddProject("companyA", "payment-service", payDir)
+	d.Registry.AddProject("payment-service", payDir)
 
 	params, _ := json.Marshal(map[string]any{
 		"from": "companyA/payment-service", "to": "companyA/user-service",
@@ -2042,15 +2001,14 @@ func TestDoneReplyWakeFailurePostsBlockedNotError(t *testing.T) {
 	d.Launcher = &Launcher{SpawnFn: func(cfg SpawnConfig) (int, error) {
 		return 0, errors.New("opencode not installed")
 	}}
-	d.Registry.AddWorkspace("co")
 	aDir := t.TempDir()
 	os.WriteFile(filepath.Join(aDir, "mouse.yaml"),
 		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n  allow_outbound: true\n"), 0644)
-	d.Registry.AddProject("co", "parent", aDir)
+	d.Registry.AddProject("parent", aDir)
 	bDir := t.TempDir()
 	os.WriteFile(filepath.Join(bDir, "mouse.yaml"),
 		[]byte("agent:\n  primary:\n    provider: opencode\na2a:\n  allow_inbound: true\n"), 0644)
-	d.Registry.AddProject("co", "child", bDir)
+	d.Registry.AddProject("child", bDir)
 	d.Store.db.Exec(`INSERT INTO messages(id, channel_id, thread_id, from_project, to_project, content, status, ts)
 		VALUES(800, 1, NULL, 'co/parent', 'co/child', 'do X', 'message', datetime('now'))`)
 
@@ -2077,8 +2035,7 @@ func TestDoneReplyWakeFailurePostsBlockedNotError(t *testing.T) {
 // hmf.log. Assert quiet summary lines, no recv/send bodies.
 func TestQuietMethodsLogSummary(t *testing.T) {
 	d := setupDaemon(t)
-	d.Store.db.Exec(`INSERT INTO workspaces(id, name) VALUES(1, 'co')`)
-	d.Store.db.Exec(`INSERT INTO projects(id, workspace_id, name, path) VALUES(1, 1, 'child', '/tmp/child')`)
+	d.Store.db.Exec(`INSERT INTO projects(id, name, path) VALUES(1, 'child', '/tmp/child')`)
 	d.Store.db.Exec(`INSERT INTO messages(id, channel_id, thread_id, from_project, to_project, content, status, ts)
 		VALUES(500, 1, NULL, 'co/parent', 'co/child', 'do X please', 'message', datetime('now','-1 hour'))`)
 
@@ -2108,8 +2065,7 @@ func TestQuietMethodsLogSummary(t *testing.T) {
 
 func TestThreadList(t *testing.T) {
 	d := setupDaemon(t)
-	d.Store.db.Exec(`INSERT INTO workspaces(id, name) VALUES(1, 'co')`)
-	d.Store.db.Exec(`INSERT INTO projects(id, workspace_id, name, path) VALUES(1, 1, 'child', '/tmp/child')`)
+	d.Store.db.Exec(`INSERT INTO projects(id, name, path) VALUES(1, 'child', '/tmp/child')`)
 	// Thread 500: root + working session; thread 600: root + done reply.
 	d.Store.db.Exec(`INSERT INTO messages(id, channel_id, thread_id, from_project, to_project, content, status, ts)
 		VALUES(500, 1, NULL, 'co/parent', 'co/child', 'do X please', 'message', datetime('now','-1 hour')),
@@ -2144,8 +2100,7 @@ func TestThreadList(t *testing.T) {
 
 func TestSessionListProgressDetail(t *testing.T) {
 	d := setupDaemon(t)
-	d.Store.db.Exec(`INSERT INTO workspaces(id, name) VALUES(1, 'co')`)
-	d.Store.db.Exec(`INSERT INTO projects(id, workspace_id, name, path) VALUES(1, 1, 'child', '/tmp/child')`)
+	d.Store.db.Exec(`INSERT INTO projects(id, name, path) VALUES(1, 'child', '/tmp/child')`)
 	// Thread 500: root + progress note + todos; thread 600: bare root.
 	d.Store.db.Exec(`INSERT INTO messages(id, channel_id, thread_id, from_project, to_project, content, status, ts)
 		VALUES(500, 1, NULL, 'co/parent', 'co/child', 'do X', 'message', datetime('now','-1 hour')),

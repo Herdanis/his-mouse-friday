@@ -8,11 +8,14 @@ import (
 // insertTestChannel inserts a channel row and returns its id, for tests that
 // need a channel to post into but don't care about DM semantics (which
 // production no longer exercises — wakeAgent posts to the general channel).
+// wsID is kept in the signature so existing call sites stay untouched; the
+// channels table no longer has a workspace column.
 func insertTestChannel(t *testing.T, s *Store, wsID int64, name string) int64 {
 	t.Helper()
+	_ = wsID
 	res, err := s.db.Exec(
-		`INSERT INTO channels(workspace_id, name, type) VALUES(?,?,?)`,
-		wsID, name, "dm")
+		`INSERT INTO channels(name, type) VALUES(?,?)`,
+		name, "dm")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -22,7 +25,6 @@ func insertTestChannel(t *testing.T, s *Store, wsID int64, name string) int64 {
 
 func TestComms_PostAndRead(t *testing.T) {
 	store := newTestStore(t)
-	store.db.Exec(`INSERT INTO workspaces(id, name) VALUES(1, 'companyA')`)
 	c := &Comms{Store: store}
 	chID := insertTestChannel(t, store, 1, "test")
 
@@ -37,7 +39,6 @@ func TestComms_PostAndRead(t *testing.T) {
 
 func TestComms_ReadChannel(t *testing.T) {
 	store := newTestStore(t)
-	store.db.Exec(`INSERT INTO workspaces(id, name) VALUES(1, 'companyA')`)
 	c := &Comms{Store: store}
 	chID := insertTestChannel(t, store, 1, "test")
 	c.PostMessage(chID, 0, "a/b", "a/c", "first", "message")
@@ -57,7 +58,6 @@ func TestComms_ReadChannel(t *testing.T) {
 
 func TestComms_Threading(t *testing.T) {
 	store := newTestStore(t)
-	store.db.Exec(`INSERT INTO workspaces(id, name) VALUES(1, 'companyA')`)
 	c := &Comms{Store: store}
 	chID := insertTestChannel(t, store, 1, "test")
 	parent, _ := c.PostMessage(chID, 0, "a/b", "a/c", "parent", "message")
@@ -80,7 +80,6 @@ func TestComms_Threading(t *testing.T) {
 // lands first must not get a contradictory BLOCKED appended right after it.
 func TestComms_PostBlockedIfNoDone(t *testing.T) {
 	store := newTestStore(t)
-	store.db.Exec(`INSERT INTO workspaces(id, name) VALUES(1, 'companyA')`)
 	c := &Comms{Store: store}
 	chID := insertTestChannel(t, store, 1, "test")
 	root, _ := c.PostMessage(chID, 0, "a/b", "a/c", "task", "message")

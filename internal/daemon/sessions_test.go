@@ -8,8 +8,7 @@ import (
 
 func TestSessionStore_CreateAndGet(t *testing.T) {
 	r := &Registry{Store: newTestStore(t)}
-	r.AddWorkspace("companyA")
-	r.AddProject("companyA", "payment-service", "/tmp/payment")
+	r.AddProject("payment-service", "/tmp/payment")
 
 	ss := &SessionStore{Store: r.Store}
 	s, err := ss.Create(1, "opencode", "default", 12345, 100, 0, "", "")
@@ -30,8 +29,7 @@ func TestSessionStore_CreateAndGet(t *testing.T) {
 
 func TestSessionStore_SetStatus(t *testing.T) {
 	store := newTestStore(t)
-	store.db.Exec(`INSERT INTO workspaces(id, name) VALUES(1, 'ws')`)
-	store.db.Exec(`INSERT INTO projects(id, workspace_id, name, path) VALUES(1, 1, 'p', '/tmp/p')`)
+	store.db.Exec(`INSERT INTO projects(id, name, path) VALUES(1, 'p', '/tmp/p')`)
 	ss := &SessionStore{Store: store}
 	s, _ := ss.Create(1, "opencode", "default", 99, 200, 0, "", "")
 	if err := ss.SetStatus(s.ID, "failed"); err != nil {
@@ -46,8 +44,7 @@ func TestSessionStore_SetStatus(t *testing.T) {
 // Create stores task_msg_id so task_status can link a session back to its task.
 func TestSessionStore_CreateStoresTaskMsgID(t *testing.T) {
 	store := newTestStore(t)
-	store.db.Exec(`INSERT INTO workspaces(id, name) VALUES(1, 'ws')`)
-	store.db.Exec(`INSERT INTO projects(id, workspace_id, name, path) VALUES(1, 1, 'p', '/tmp/p')`)
+	store.db.Exec(`INSERT INTO projects(id, name, path) VALUES(1, 'p', '/tmp/p')`)
 	ss := &SessionStore{Store: store}
 	s, _ := ss.Create(1, "opencode", "default", 0, 4242, 0, "", "")
 	var taskMsgID int64
@@ -60,8 +57,7 @@ func TestSessionStore_CreateStoresTaskMsgID(t *testing.T) {
 // Create with task_msg_id=0 stores NULL (a reply session, not tied to a task).
 func TestSessionStore_CreateZeroTaskMsgIDStoresNull(t *testing.T) {
 	store := newTestStore(t)
-	store.db.Exec(`INSERT INTO workspaces(id, name) VALUES(1, 'ws')`)
-	store.db.Exec(`INSERT INTO projects(id, workspace_id, name, path) VALUES(1, 1, 'p', '/tmp/p')`)
+	store.db.Exec(`INSERT INTO projects(id, name, path) VALUES(1, 'p', '/tmp/p')`)
 	ss := &SessionStore{Store: store}
 	s, _ := ss.Create(1, "opencode", "default", 0, 0, 0, "", "")
 	var nullable sql.NullInt64
@@ -75,8 +71,7 @@ func TestSessionStore_CreateZeroTaskMsgIDStoresNull(t *testing.T) {
 // the orchestrator's "agent died vs clean exit" distinction.
 func TestSessionStore_MarkExited_CleanVsFailed(t *testing.T) {
 	store := newTestStore(t)
-	store.db.Exec(`INSERT INTO workspaces(id, name) VALUES(1, 'ws')`)
-	store.db.Exec(`INSERT INTO projects(id, workspace_id, name, path) VALUES(1, 1, 'p', '/tmp/p')`)
+	store.db.Exec(`INSERT INTO projects(id, name, path) VALUES(1, 'p', '/tmp/p')`)
 	ss := &SessionStore{Store: store}
 
 	// Clean exit.
@@ -105,8 +100,7 @@ func TestSessionStore_MarkExited_CleanVsFailed(t *testing.T) {
 
 func TestLatestActiveSession(t *testing.T) {
 	store := newTestStore(t)
-	store.db.Exec(`INSERT INTO workspaces(id, name) VALUES(1, 'co')`)
-	store.db.Exec(`INSERT INTO projects(id, workspace_id, name, path) VALUES(7, 1, 'parent', '/tmp/parent')`)
+	store.db.Exec(`INSERT INTO projects(id, name, path) VALUES(7, 'parent', '/tmp/parent')`)
 	ss := &SessionStore{Store: store}
 	old, err := ss.Create(7, "opencode", "default", 0, 10, 10, "ab000", "ab000-a")
 	if err != nil {

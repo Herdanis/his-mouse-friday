@@ -6,10 +6,9 @@ import (
 )
 
 type Channel struct {
-	ID          int64
-	WorkspaceID int64
-	Name        string
-	Type        string
+	ID   int64
+	Name string
+	Type string
 }
 
 type Message struct {
@@ -120,9 +119,7 @@ func scanMessages(rows *sql.Rows) ([]Message, error) {
 func (c *Comms) GetOrCreateGeneralChannel() (Channel, error) {
 	var ch Channel
 	err := c.Store.db.QueryRow(
-		`SELECT c.id, c.workspace_id, c.name, c.type
-		 FROM channels c JOIN workspaces w ON c.workspace_id=w.id
-		 WHERE c.name='general' AND w.name='__global__'`).
-		Scan(&ch.ID, &ch.WorkspaceID, &ch.Name, &ch.Type)
+		`SELECT id, name, type FROM channels WHERE name='general'`).
+		Scan(&ch.ID, &ch.Name, &ch.Type)
 	return ch, err
 }

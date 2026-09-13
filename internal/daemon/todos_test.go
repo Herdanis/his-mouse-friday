@@ -52,8 +52,7 @@ func TestTodoStore_Errors(t *testing.T) {
 func TestTodos_AddIsIdempotent(t *testing.T) {
 	s, _ := OpenStore(filepath.Join(t.TempDir(), "t.db"))
 	defer s.Close()
-	s.db.Exec(`INSERT INTO workspaces(id, name) VALUES(1, 'ws')`)
-	s.db.Exec(`INSERT INTO channels(id, workspace_id, name, type) VALUES(1, 1, 'dm', 'dm')`)
+	s.db.Exec(`INSERT INTO channels(id, name, type) VALUES(1, 'dm', 'dm')`)
 	s.db.Exec(`INSERT INTO messages(id, channel_id, from_project, content, ts) VALUES(1, 1, 'a/b', 'task', datetime('now'))`)
 	td := &TodoStore{Store: s}
 
@@ -91,8 +90,7 @@ func TestTodos_AddIsIdempotent(t *testing.T) {
 func TestTodos_Delete(t *testing.T) {
 	s, _ := OpenStore(filepath.Join(t.TempDir(), "t.db"))
 	defer s.Close()
-	s.db.Exec(`INSERT INTO workspaces(id, name) VALUES(1, 'ws')`)
-	s.db.Exec(`INSERT INTO channels(id, workspace_id, name, type) VALUES(1, 1, 'dm', 'dm')`)
+	s.db.Exec(`INSERT INTO channels(id, name, type) VALUES(1, 'dm', 'dm')`)
 	s.db.Exec(`INSERT INTO messages(id, channel_id, from_project, content, ts) VALUES(1, 1, 'a/b', 'task', datetime('now'))`)
 	td := &TodoStore{Store: s}
 

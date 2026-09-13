@@ -28,8 +28,7 @@ type projectsModel struct {
 	confirm bool
 
 	adding bool
-	// inputs[0] collects "workspace/name" (split on the slash on submit),
-	// inputs[1] the path — the brief specifies a two-field form.
+	// inputs[0] collects the bare project name, inputs[1] the path.
 	inputs [2]textinput.Model
 	focus  int
 }
@@ -101,7 +100,7 @@ func (p projectsModel) keyUpdate(msg tea.KeyMsg) (projectsModel, tea.Cmd) {
 			return p, nil
 		}
 		r := p.rows[p.sel]
-		params, _ := json.Marshal(map[string]string{"workspace": r.Workspace, "name": r.Name})
+		params, _ := json.Marshal(map[string]string{"name": r.Name})
 		if _, err := p.del(params); err != nil {
 			p.rerr = err.Error()
 			return p, nil
@@ -149,17 +148,16 @@ func (p projectsModel) keyUpdate(msg tea.KeyMsg) (projectsModel, tea.Cmd) {
 	return p, nil
 }
 
-// submit parses "workspace/name" and fires project_add synchronously — the
-// RPC has a short timeout and there is nothing else to draw meanwhile.
+// submit sends the bare project name and path — the RPC is
+// {name, path} now that workspaces are gone.
 func (p projectsModel) submit() (projectsModel, tea.Cmd) {
-	ws, name, ok := strings.Cut(strings.TrimSpace(p.inputs[0].Value()), "/")
-	ws, name = strings.TrimSpace(ws), strings.TrimSpace(name)
+	name := strings.TrimSpace(p.inputs[0].Value())
 	path := strings.TrimSpace(p.inputs[1].Value())
-	if !ok || ws == "" || name == "" || path == "" {
-		p.rerr = "form needs workspace/name and path"
+	if name == "" || path == "" {
+		p.rerr = "form needs name and path"
 		return p, nil
 	}
-	params, _ := json.Marshal(map[string]string{"workspace": ws, "name": name, "path": path})
+	params, _ := json.Marshal(map[string]string{"name": name, "path": path})
 	if _, err := p.add(params); err != nil {
 		p.rerr = err.Error()
 		return p, nil
@@ -185,11 +183,11 @@ func (p projectsModel) view(w, h int) string {
 		if i == p.sel {
 			marker = "> "
 		}
-		b.WriteString(marker + fmt.Sprintf("%s/%s %s", r.Workspace, r.Name, r.Path) + "\n")
+		b.WriteString(marker + fmt.Sprintf("%s %s", r.Name, r.Path) + "\n")
 	}
 	if p.confirm && len(p.rows) > 0 {
 		r := p.rows[p.sel]
-		b.WriteString(" " + styFailed.Render(fmt.Sprintf("delete %s/%s? y/n", r.Workspace, r.Name)))
+		b.WriteString(" " + styFailed.Render(fmt.Sprintf("delete %s? y/n", r.Name)))
 	}
 	return b.String()
 }
