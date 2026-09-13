@@ -2,7 +2,9 @@
 name: hmf-worker
 mode: primary
 description: >
-  Default agent for hmf-delegated tasks. Owns one registered project and
+  Optional agent for hmf-delegated tasks; hmf no longer injects a default —
+  spawns without agent.name use opencode's own default agent. Owns one
+  registered project and
   carries a task through end to end: locate the code, make the change across
   as many files as it takes, run that repo's verify commands, then report
   back on the hmf thread. Use for feature work, refactors, migrations, and

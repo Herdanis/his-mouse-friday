@@ -107,7 +107,10 @@ update costs the parent nothing. `task_status` returns it as `progress_note` /
 first two are the child's claims and the third is fact.
 
 `hmf done [summary]` posts a `done` reply — only valid inside a spawned
-agent session (`HMF_CHANNEL_ID` must be set).
+agent session (`HMF_CHANNEL_ID` must be set). Done-reply wakes skip the
+outbound `a2a.allow_outbound` check: a done reply is a completion notice to
+the thread originator, not a new delegation, and the parent's inbound consent
+is still enforced.
 
 ## Repo style
 
@@ -173,13 +176,16 @@ agent session (`HMF_CHANNEL_ID` must be set).
   already holds — read the specific files whose correctness you actually need
   to confirm, or `post_message` a follow-up on the same thread, where the child
   still has the context and answers cheaply.
-- **Polling a spawned agent.** `task_status(message_id)` is an instant
-  snapshot — it does not block. You don't poll it at all: wake-on-done pushes
-  the child's completion back to your session automatically. Call
-  `task_status` once for progress detail (todos, current step, ETA) if you
-  need it mid-flight; the `next_action` field tells you what to do. If it
-  returns `has_done` still false and the agent later dies silently, a BLOCKED
-  reply is posted to the thread — that is your failure signal, not polling.
+- **Done replies wake the parent — never poll.** Post the task with
+  `post_message` (with `to` set), end your turn, and stop. When the child
+  posts `hmf done`, the daemon resumes YOUR session with the child's
+  summary injected as the prompt — you continue from there. `task_status`
+  is an instant snapshot (status, progress note, ETA age) for quick
+  checks, not a wait loop: the server no longer blocks, so calling it in
+  a sleep cycle only burns tokens for an answer the wake will deliver.
+  If `task_status` shows `has_done` still false and the agent later dies
+  silently, a BLOCKED reply is posted to the thread — that is your failure
+  signal, not polling.
 
   Once dispatched, don't self-initiate a verification loop unless the task
   actually needs the result before you can continue — `post_message` (with

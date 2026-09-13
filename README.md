@@ -77,15 +77,14 @@ step prints the snippet above; add it to `~/.config/opencode/opencode.json`
 (global) or a repo's `opencode.json`. See `examples/opencode.json` for a
 version with bash permission rules too.
 
-**`timeout` is required, not optional:**
+**The `hmf` entry in `opencode.json`:**
 
 ```json
 "mcp": {
   "hmf": {
     "command": ["hmf-mcp"],
     "enabled": true,
-    "type": "local",
-    "timeout": 330000
+    "type": "local"
   }
 }
 ```
@@ -479,8 +478,8 @@ again — a hung agent that will never reply is safe to kill.
 **`MCP error -32001: Request timed out` on `hmf` calls.**
 The `hmf` MCP server has no `timeout` set, so opencode is using its 5-second
 default. All hmf RPCs are fast, so this usually means the daemon itself is
-stuck — check `~/.hmf/hmf.log`. If you do hit it with slow calls, add
-`"timeout": 330000` to the `hmf` entry in your `opencode.json` (see *Wire the
+stuck — check `~/.hmf/hmf.log`. If you do hit it with slow calls, add a larger
+`"timeout"` to the `hmf` entry in your `opencode.json` (see *Wire the
 MCP server into opencode*) and restart the session — MCP config is read at
 connection time.
 
