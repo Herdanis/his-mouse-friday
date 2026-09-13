@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: build
+        run: go build ./...
+
+      - name: vet
+        run: go vet ./...
+
+      - name: fmt
+        run: |
+          if [ -n "$(gofmt -l .)" ]; then
+            echo "not gofmt'd:"; gofmt -l .; exit 1
+          fi
+
+      - name: test
+        run: go test ./...
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: plugin-test
+        run: bun test examples/plugins/hmf/
+
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
