@@ -7,14 +7,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/herdanis/his-mouse-friday/internal/config"
+	"github.com/herdanis/his-mouse-friday/internal/daemon"
 	"github.com/herdanis/his-mouse-friday/internal/protocol"
 	mcpserver "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -403,7 +401,9 @@ func newServer(callerID string) *mcpserver.Server {
 // RunServer resolves caller identity then starts the hmf-mcp server. If
 // HMF_CHANNEL_ID is set, caller is a spawned agent (identity from HMF_PROJECT).
 func RunServer(ctx context.Context) error {
-	ensureDaemon(ctx)
+	if err := daemon.EnsureRunning(); err != nil {
+		fmt.Fprintf(os.Stderr, "hmf: %v\n", err)
+	}
 	callerID := os.Getenv("HMF_PROJECT")
 	if callerID == "" {
 		repo, _ := os.Getwd()
@@ -426,41 +426,4 @@ func RunServer(ctx context.Context) error {
 		}
 	}
 	return newServer(callerID).Run(ctx, &mcpserver.StdioTransport{})
-}
-
-// ensureDaemon starts the daemon if the socket isn't reachable, so users
-// can open opencode without running 'hmf up' first.
-func ensureDaemon(ctx context.Context) {
-	if conn, err := net.Dial("unix", protocol.SocketPath()); err == nil {
-		conn.Close()
-		return
-	}
-	bin, err := exec.LookPath("hmf")
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "hmf: 'hmf' binary not found on PATH — daemon auto-start skipped")
-		return
-	}
-	fmt.Fprintln(os.Stderr, "hmf: daemon down, starting...")
-	// Plain Command (not CommandContext): the daemon must outlive this shim —
-	// other opencode sessions may share it. Release: shim never Waits the child.
-	cmd := exec.Command(bin, "up")
-	cmd.Stdout = nil
-	cmd.Stderr = nil
-	cmd.Stdin = nil
-	if err := cmd.Start(); err != nil {
-		fmt.Fprintf(os.Stderr, "hmf: failed to start daemon: %v\n", err)
-		return
-	}
-	_ = cmd.Process.Release()
-	// Wait up to 5s for the socket to accept.
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if conn, err := net.Dial("unix", protocol.SocketPath()); err == nil {
-			conn.Close()
-			fmt.Fprintf(os.Stderr, "hmf: daemon started (pid %d)\n", cmd.Process.Pid)
-			return
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	fmt.Fprintln(os.Stderr, "hmf: daemon did not become ready within 5s")
 }
