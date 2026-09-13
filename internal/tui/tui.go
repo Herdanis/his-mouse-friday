@@ -64,6 +64,12 @@ type fetchers struct {
 	todoThreads  func() (json.RawMessage, error)
 	readThread   func(json.RawMessage) (json.RawMessage, error)
 	threadDelete func(json.RawMessage) (json.RawMessage, error)
+	projectAdd   func(json.RawMessage) (json.RawMessage, error)
+	projectDel   func(json.RawMessage) (json.RawMessage, error)
+	todoList     func(json.RawMessage) (json.RawMessage, error)
+	todoAdd      func(json.RawMessage) (json.RawMessage, error)
+	todoUpdate   func(json.RawMessage) (json.RawMessage, error)
+	todoDelete   func(json.RawMessage) (json.RawMessage, error)
 }
 
 func defaultFetchers() fetchers {
@@ -77,6 +83,9 @@ func defaultFetchers() fetchers {
 		threadList: c("thread_list"), sessionList: c("session_list"),
 		projectList: c("project_list"), todoThreads: c("todo_threads"),
 		readThread: p("read_thread"), threadDelete: p("thread_delete"),
+		projectAdd: p("project_add"), projectDel: p("project_delete"),
+		todoList: p("todo_list"), todoAdd: p("todo_add"),
+		todoUpdate: p("todo_update"), todoDelete: p("todo_delete"),
 	}
 }
 
@@ -173,6 +182,10 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		m.threads, cmd = m.threads.update(msg)
 	case agentsMsg:
 		m.agents, cmd = m.agents.update(msg)
+	case projectsMsg:
+		m.projects, cmd = m.projects.update(msg)
+	case todosMsg:
+		m.todos, cmd = m.todos.update(msg)
 	}
 	return m, cmd
 }

@@ -66,6 +66,49 @@ func stubFetcher(m map[string]json.RawMessage) fetchers {
 		todoThreads:  f("todo_threads"),
 		readThread:   p("read_thread"),
 		threadDelete: p("thread_delete"),
+		projectAdd:   p("project_add"),
+		projectDel:   p("project_delete"),
+		todoList:     p("todo_list"),
+		todoAdd:      p("todo_add"),
+		todoUpdate:   p("todo_update"),
+		todoDelete:   p("todo_delete"),
+	}
+}
+
+// recordedCall is one RPC seen by recordingFetcher.
+type recordedCall struct {
+	Method string
+	Params json.RawMessage
+}
+
+// recordingFetcher records every call's method+params and answers from a
+// fixed map; methods absent from the map return nil, nil.
+func recordingFetcher(calls *[]recordedCall, results map[string]json.RawMessage) fetchers {
+	noarg := func(method string) func() (json.RawMessage, error) {
+		return func() (json.RawMessage, error) {
+			*calls = append(*calls, recordedCall{Method: method})
+			return results[method], nil
+		}
+	}
+	p := func(method string) func(json.RawMessage) (json.RawMessage, error) {
+		return func(params json.RawMessage) (json.RawMessage, error) {
+			*calls = append(*calls, recordedCall{Method: method, Params: params})
+			return results[method], nil
+		}
+	}
+	return fetchers{
+		threadList:   noarg("thread_list"),
+		sessionList:  noarg("session_list"),
+		projectList:  noarg("project_list"),
+		todoThreads:  noarg("todo_threads"),
+		readThread:   p("read_thread"),
+		threadDelete: p("thread_delete"),
+		projectAdd:   p("project_add"),
+		projectDel:   p("project_delete"),
+		todoList:     p("todo_list"),
+		todoAdd:      p("todo_add"),
+		todoUpdate:   p("todo_update"),
+		todoDelete:   p("todo_delete"),
 	}
 }
 
@@ -75,4 +118,15 @@ func mustJSON(v any) json.RawMessage {
 		panic(err)
 	}
 	return b
+}
+
+// lastCall returns the most recent RPC of the given method — post-CRUD
+// refreshes append their own list fetch, so the write RPC is never last.
+func lastCall(calls []recordedCall, method string) (recordedCall, bool) {
+	for i := len(calls) - 1; i >= 0; i-- {
+		if calls[i].Method == method {
+			return calls[i], true
+		}
+	}
+	return recordedCall{}, false
 }
