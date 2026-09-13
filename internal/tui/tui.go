@@ -108,7 +108,7 @@ func initialModel() model {
 		panel:    panelThreads,
 		fetchers: f,
 		threads:  newThreadsModel(f),
-		agents:   newAgentsModel(f),
+		agents:   newAgentsModel(f, daemon.LogPath()),
 		projects: newProjectsModel(f),
 		todos:    newTodosModel(f),
 	}
@@ -171,6 +171,8 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 
 	case threadsMsg:
 		m.threads, cmd = m.threads.update(msg)
+	case agentsMsg:
+		m.agents, cmd = m.agents.update(msg)
 	}
 	return m, cmd
 }
