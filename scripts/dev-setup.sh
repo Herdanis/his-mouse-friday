@@ -46,6 +46,17 @@ else
   ok "project '$PROJ_NAME' registered → $REPO_DIR"
 fi
 
+# 3b. Sync the opencode plugin (permissions enforcement, own-repo rule).
+PLUGIN_SRC="$REPO_DIR/examples/plugins/hmf/plugin.ts"
+PLUGIN_DST="${OPENCODE_CONFIG:-$HOME/.config/opencode}/plugins/hmf/plugin.ts"
+if ! diff -q "$PLUGIN_SRC" "$PLUGIN_DST" >/dev/null 2>&1; then
+  mkdir -p "$(dirname "$PLUGIN_DST")"
+  cp "$PLUGIN_SRC" "$PLUGIN_DST"
+  ok "plugin synced → $PLUGIN_DST"
+else
+  ok "plugin already current"
+fi
+
 # 4. Wire the MCP shim into the global opencode config. The file is JSONC
 #    (comments + trailing commas) so jq can't be used — insert an hmf block
 #    after the "mcp": { line if one isn't present already.
