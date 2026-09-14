@@ -4,15 +4,17 @@ set -euo pipefail
 # ============================================
 # his-mouse-friday installer (macOS / Linux)
 # ============================================
-# Full setup: Go, hmf + hmf-mcp binaries, opencode
-# plugin/commands/agent, MCP wiring, daemon start.
+# LIVE-USER installer: installs the latest tagged release.
+# For development from a local checkout use scripts/dev-setup.sh instead.
+# Full setup: Go, the single hmf binary (daemon, CLI, TUI, MCP shim),
+# opencode plugin + slash commands, MCP wiring, daemon start.
 # Pass --no-daemon to skip starting the daemon.
 
 NO_DAEMON=0
 for arg in "$@"; do [ "$arg" = "--no-daemon" ] && NO_DAEMON=1; done
 
 GO_VERSION="1.26.5"
-MODULE_PATH="github.com/herdanis/his-mouse-friday/cmd/..."
+MODULE_PATH="github.com/herdanis/his-mouse-friday/cmd/hmf"
 REPO="Herdanis/his-mouse-friday"
 BRANCH="main"
 RAW_BASE="https://raw.githubusercontent.com/${REPO}/${BRANCH}"
@@ -99,10 +101,10 @@ gobin="$(go env GOBIN)"
 [ -n "$gobin" ] || gobin="$(go env GOPATH)/bin"
 
 # ============================================
-# Opencode plugin + slash commands + worker agent
+# Opencode plugin + slash commands
 # ============================================
 mkdir -p "$OPENCODE_CONFIG/plugins" "$OPENCODE_CONFIG/plugins/hmf" \
-         "$OPENCODE_CONFIG/commands" "$OPENCODE_CONFIG/agents"
+         "$OPENCODE_CONFIG/commands"
 
 fetch() { # <remote-path> <local-path>
   info "fetching $1"
@@ -112,9 +114,8 @@ fetch() { # <remote-path> <local-path>
 fetch "examples/plugins/hmf/plugin.ts"        "$OPENCODE_CONFIG/plugins/hmf/plugin.ts"
 fetch "examples/commands/hmf-setup.md"        "$OPENCODE_CONFIG/commands/hmf-setup.md"
 fetch "examples/commands/hmf-register.md"     "$OPENCODE_CONFIG/commands/hmf-register.md"
-fetch "examples/agents/hmf-worker.md"         "$OPENCODE_CONFIG/agents/hmf-worker.md"
 
-ok "plugin + commands + agent → $OPENCODE_CONFIG"
+ok "plugin + commands → $OPENCODE_CONFIG"
 
 # ============================================
 # Path
@@ -128,33 +129,42 @@ if [ "$need_go" -eq 1 ]; then
 fi
 
 # ============================================
-# Wire MCP server into opencode config
+# Wire MCP server + plugin into opencode config
 # ============================================
-MCP_ENTRY='{"type":"local","command":["hmf","mcp"],"enabled":true,"timeout":330000}'
-MERGE='.mcp.hmf = {"type":"local","command":["hmf","mcp"],"enabled":true,"timeout":330000}'
+# Handles both opencode.json and opencode.jsonc (comments/trailing commas)
+# via tolerant text insertion — jq can't parse JSONC.
 CFG="$OPENCODE_CONFIG/opencode.json"
+[ -f "$CFG" ] || CFG="$OPENCODE_CONFIG/opencode.jsonc"
 
-wire_mcp_manual() {
-  warn "jq not available — add this to $CFG manually:"
-  printf '  {"mcp": {"hmf": %s}}\n' "$MCP_ENTRY"
-}
-
-mkdir -p "$OPENCODE_CONFIG"
-if ! command -v jq >/dev/null 2>&1; then
-  wire_mcp_manual
-elif [ -f "$CFG" ] && jq -e '.mcp.hmf' "$CFG" >/dev/null 2>&1; then
-  ok "MCP server already wired in $CFG"
-elif [ -f "$CFG" ]; then
-  if jq "$MERGE" "$CFG" > "$CFG.tmp" 2>/dev/null; then
-    mv "$CFG.tmp" "$CFG"
-    ok "MCP server wired into $CFG"
-  else
-    warn "could not parse $CFG (jsonc/comments?) — wire the MCP server manually"
-    printf '  {"mcp": {"hmf": %s}}\n' "$MCP_ENTRY"
-  fi
+if [ -f "$CFG" ] && grep -q '"hmf"' "$CFG" && grep -q 'plugins/hmf/plugin.ts' "$CFG"; then
+  ok "MCP server + plugin already wired in $CFG"
 else
-  jq -n "$MERGE" > "$CFG"
-  ok "created $CFG with MCP server"
+  command -v python3 >/dev/null 2>&1 || die "python3 required — wire $CFG manually (see README)"
+  python3 - "$CFG" <<'PY'
+import sys, os
+p = sys.argv[1]
+s = open(p).read() if os.path.exists(p) else '{\n  "$schema": "https://opencode.ai/config.json",\n}\n'
+changed = []
+if '"hmf"' not in s.split('"plugin"')[0]:
+    block = '''    "hmf": {
+      "command": ["hmf", "mcp"],
+      "enabled": true,
+      "type": "local",
+    },
+'''
+    import re
+    s2 = re.sub(r'("mcp"\s*:\s*\{)', r'\1\n' + block, s, count=1)
+    if s2 == s:
+        s2 = s.replace('{\n', '{\n  "mcp": {\n' + block + '  },\n', 1)
+    s, changed = s2, changed + ["mcp.hmf"]
+if 'plugins/hmf/plugin.ts' not in s and re.search(r'"plugin"\s*:\s*\[', s):
+    import re
+    s2 = re.sub(r'("plugin"\s*:\s*\[)', r'\1\n    "./plugins/hmf/plugin.ts",', s, count=1)
+    s, changed = s2, changed + ["plugin entry"]
+open(p, "w").write(s)
+print("wired:", ", ".join(changed) if changed else "nothing")
+PY
+  ok "config wired → $CFG"
 fi
 
 # ============================================
@@ -183,9 +193,9 @@ cat <<EOF
 
 Next steps:
   1. Verify the daemon:        hmf status
-  2. Register a workspace:     hmf workspace add /path/to/workspace
-  3. Register a project:       hmf project add /path/to/repo
-  4. In any registered repo:   hmf init  (creates mouse.yaml + MOUSE.md)
+  2. Register a project:       hmf project add <name> /path/to/repo
+  3. In any registered repo:   hmf init  (creates mouse.yaml + MOUSE.md)
+  4. Open the orchestrator:    hmf  (bare — TUI: threads/agents/projects/todos)
 
 Stop the daemon later with:   hmf down
 EOF
