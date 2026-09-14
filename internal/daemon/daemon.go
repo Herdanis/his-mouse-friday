@@ -101,8 +101,8 @@ type Daemon struct {
 	// Serializes the kill-then-resume in wakeParentOnDone: two children
 	// finishing at once would otherwise both resume the same parent session.
 	// ponytail: daemon-wide lock; per-project locks if wake throughput ever matters.
-	wakeMu sync.Mutex
-	Sock   string
+	wakeMu     sync.Mutex
+	Sock       string
 	shutdownCh chan struct{}
 }
 

@@ -56,7 +56,8 @@ func mcpCmd() *cobra.Command {
 	}
 }
 
-func upCmd() *cobra.Command {	return &cobra.Command{
+func upCmd() *cobra.Command {
+	return &cobra.Command{
 		Use:   "up",
 		Short: "Start the hmf daemon",
 		RunE: func(cmd *cobra.Command, args []string) error {

@@ -236,7 +236,7 @@ func tickCmd() tea.Cmd {
 }
 
 func notImpl(name string) string {
-	return "\n  " + styDim.Render(name + ": not implemented yet")
+	return "\n  " + styDim.Render(name+": not implemented yet")
 }
 
 // ============================================
