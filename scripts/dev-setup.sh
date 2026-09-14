@@ -57,6 +57,21 @@ else
   ok "plugin already current"
 fi
 
+# 3c. Register the plugin in the config's explicit "plugin" array (opencode
+#     does not auto-load plugins/ entries when that array exists).
+if [ -f "$GLOBAL_CFG" ] && grep -q '"plugin"' "$GLOBAL_CFG" && ! grep -q 'plugins/hmf/plugin.ts' "$GLOBAL_CFG"; then
+  python3 - "$GLOBAL_CFG" <<'PY'
+import sys, re
+p = sys.argv[1]
+s = open(p).read()
+s2 = re.sub(r'("plugin"\s*:\s*\[)', r'\1\n    "./plugins/hmf/plugin.ts",', s, count=1)
+assert s2 != s, "no plugin array found"
+open(p, "w").write(s2)
+print("registered")
+PY
+  ok "plugin registered in $GLOBAL_CFG"
+fi
+
 # 4. Wire the MCP shim into the global opencode config. The file is JSONC
 #    (comments + trailing commas) so jq can't be used — insert an hmf block
 #    after the "mcp": { line if one isn't present already.
