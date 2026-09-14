@@ -25,9 +25,9 @@ Verify:
 
 ## Install
 
-One-liner (macOS / Linux) — fetches Go if missing, `go install`s `hmf` +
-`hmf-mcp`, drops the opencode plugin + `/hmf-setup` + `/hmf-register` slash
-commands into `~/.config/opencode/`:
+One-liner (macOS / Linux) — fetches Go if missing, `go install`s the single
+`hmf` binary (daemon, CLI, TUI, MCP shim), drops the opencode plugin +
+`/hmf-setup` + `/hmf-register` slash commands into `~/.config/opencode/`:
 
     curl -fsSL https://raw.githubusercontent.com/Herdanis/his-mouse-friday/main/install.sh | bash
 
@@ -39,7 +39,7 @@ Restart your shell after (Go bin dir on `PATH`), then wire the MCP server into
       "mcp": {
         "hmf": {
           "type": "local",
-          "command": ["hmf-mcp"],
+          "command": ["hmf", "mcp"],
           "enabled": true
         }
       }
@@ -62,13 +62,13 @@ Start the daemon:
 
     curl -fsSL https://raw.githubusercontent.com/Herdanis/his-mouse-friday/main/uninstall.sh | bash
 
-Removes the plugin, slash commands, and the `hmf` / `hmf-mcp` binaries. Prints
+Removes the plugin, slash commands, and the `hmf` binary. Prints
 a reminder to drop the `hmf` block from `opencode.json` (the installer won't
 edit your config file).
 
 ## Wire the MCP server into opencode
 
-`hmf-mcp` exposes the 9 orchestration tools to opencode agents. The install
+`hmf mcp` exposes the 9 orchestration tools to opencode agents. The install
 step prints the snippet above; add it to `~/.config/opencode/opencode.json`
 (global) or a repo's `opencode.json`. See `examples/opencode.json` for a
 version with bash permission rules too.
@@ -78,7 +78,7 @@ version with bash permission rules too.
 ```json
 "mcp": {
   "hmf": {
-    "command": ["hmf-mcp"],
+    "command": ["hmf", "mcp"],
     "enabled": true,
     "type": "local"
   }

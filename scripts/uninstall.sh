@@ -4,8 +4,8 @@ set -euo pipefail
 # ============================================
 # his-mouse-friday uninstaller
 # ============================================
-# Removes the opencode plugin, slash commands, and the
-# hmf / hmf-mcp binaries. Leaves opencode.json untouched.
+# Removes the opencode plugin, slash commands, and the hmf binary.
+# Leaves opencode.json untouched.
 
 OPENCODE_CONFIG="${OPENCODE_CONFIG:-$HOME/.config/opencode}"
 
@@ -31,6 +31,7 @@ done
 gobin="$(go env GOBIN 2>/dev/null || true)"
 [ -n "$gobin" ] || gobin="$(go env GOPATH 2>/dev/null)/bin"
 for bin in hmf hmf-mcp; do
+  # hmf-mcp kept for old installs that predate the single-binary merge.
   p="$gobin/$bin"
   if [ -f "$p" ]; then
     rm -f "$p"

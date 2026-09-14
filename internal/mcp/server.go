@@ -1,4 +1,4 @@
-// Package mcp runs the hmf-mcp shim: a stateless stdio MCP server that exposes
+// Package mcp runs the hmf MCP shim (`hmf mcp`): a stateless stdio MCP server that exposes
 // 6 orchestration tools. Each tool call is forwarded to the hmf daemon over a
 // unix socket and the daemon's response is relayed back to the caller.
 package mcp
@@ -195,7 +195,7 @@ func resolveThreadID(explicit int64, to string, byRecipient map[string]int64, cu
 // thread per session — first post creates the root, subsequent posts inherit
 // it; spawned agents inherit HMF_TASK_MSG_ID as their thread.
 func newServer(callerID string) *mcpserver.Server {
-	srv := mcpserver.NewServer(&mcpserver.Implementation{Name: "hmf-mcp", Version: "v0.1.0"}, nil)
+	srv := mcpserver.NewServer(&mcpserver.Implementation{Name: "hmf", Version: "v0.1.0"}, nil)
 
 	// Thread binding: spawned agents inherit from env; orchestrator starts fresh.
 	var currentThread int64
@@ -390,7 +390,8 @@ func newServer(callerID string) *mcpserver.Server {
 	return srv
 }
 
-// RunServer resolves caller identity then starts the hmf-mcp server. If
+// RunServer resolves caller identity then starts the hmf MCP server (launched
+// as `hmf mcp`). If
 // HMF_CHANNEL_ID is set, caller is a spawned agent (identity from HMF_PROJECT).
 func RunServer(ctx context.Context) error {
 	if err := daemon.EnsureRunning(); err != nil {

@@ -3,7 +3,8 @@
   "mcp": {
     "hmf": {
       "command": [
-        "hmf-mcp"
+        "hmf",
+        "mcp"
       ],
       "enabled": true,
       "timeout": 330000,

@@ -72,7 +72,7 @@ if [ "$need_go" -eq 1 ]; then
 fi
 
 # ============================================
-# Install / update hmf + hmf-mcp
+# Install / update hmf (single binary: daemon, CLI, TUI, MCP shim)
 # ============================================
 latest="$(git ls-remote --tags --refs "https://github.com/${REPO}.git" 2>/dev/null |
   awk -F'refs/tags/' '{print $2}' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)"
@@ -130,8 +130,8 @@ fi
 # ============================================
 # Wire MCP server into opencode config
 # ============================================
-MCP_ENTRY='{"type":"local","command":["hmf-mcp"],"enabled":true,"timeout":330000}'
-MERGE='.mcp.hmf = {"type":"local","command":["hmf-mcp"],"enabled":true,"timeout":330000}'
+MCP_ENTRY='{"type":"local","command":["hmf","mcp"],"enabled":true,"timeout":330000}'
+MERGE='.mcp.hmf = {"type":"local","command":["hmf","mcp"],"enabled":true,"timeout":330000}'
 CFG="$OPENCODE_CONFIG/opencode.json"
 
 wire_mcp_manual() {

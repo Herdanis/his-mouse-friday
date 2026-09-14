@@ -6,7 +6,7 @@ Guidance for AI agents working in this repository.
 
 `his-mouse-friday` (hmf) is a per-directory AI agent orchestration harness. A
 long-running Go daemon brokers agent-to-agent (A2A) communication over a
-unix socket. A stateless MCP shim (`hmf-mcp`, stdio) exposes 6 tools to
+unix socket. A stateless MCP shim (`hmf mcp`, stdio) exposes 6 tools to
 opencode sessions; CLI (`hmf`) manages projects and the daemon
 lifecycle. Registered projects are addressed by bare project name (no
 workspace prefix). Each registered repo declares its own `mouse.yaml` (permissions,
@@ -36,8 +36,7 @@ agent runtime) and `MOUSE.md` (runbook); `AGENTS.md` points opencode at
 
 ## Build / test / lint
 
-    go install ./cmd/hmf          # CLI binary → $(go env GOPATH)/bin/hmf
-    go install ./cmd/hmf-mcp      # MCP shim  → .../hmf-mcp
+    go install ./cmd/hmf          # CLI + TUI + daemon + MCP shim → $(go env GOPATH)/bin/hmf
     go build ./...                # compile-check without installing
     go test ./...                 # all packages (no test files under cmd/)
     go test ./internal/daemon -run TestHandle_PostToGeneralWakesAgent -v   # single test
@@ -51,13 +50,12 @@ agent runtime) and `MOUSE.md` (runbook); `AGENTS.md` points opencode at
 
 ## Architecture
 
-Two binaries over one daemon:
+One binary over one daemon:
 
-- `cmd/hmf` → `internal/cli` (cobra). Subcommands: `up`, `down`, `status`,
-  `project add|list|delete`, `init`, `config show`, `done`. `hmf up` blocks (foreground daemon); run in a separate terminal.
-- `cmd/hmf-mcp` → `internal/mcp.RunServer` (stdio MCP server via
-  `modelcontextprotocol/go-sdk`). Stateless: every tool call is forwarded to
-  the daemon over the unix socket.
+- `cmd/hmf` → `internal/cli` (cobra; bare `hmf` = TUI, `hmf mcp` = MCP shim
+  stdio server via `modelcontextprotocol/go-sdk`). Stateless: every tool call
+  is forwarded to the daemon over the unix socket. `hmf up` blocks
+  (foreground daemon); run in a separate terminal.
 - `internal/daemon` — `Daemon` (request router), `Store` (sqlite via
   modernc.org/sqlite), `Registry` (projects), `Sessions` (spawned
   agent lifecycle), `Comms` (channels/threads/messages), `Launcher` (spawns

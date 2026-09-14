@@ -16,6 +16,7 @@ import (
 
 	"github.com/herdanis/his-mouse-friday/internal/config"
 	"github.com/herdanis/his-mouse-friday/internal/daemon"
+	"github.com/herdanis/his-mouse-friday/internal/mcp"
 	"github.com/herdanis/his-mouse-friday/internal/protocol"
 	"github.com/herdanis/his-mouse-friday/internal/tui"
 	"github.com/spf13/cobra"
@@ -31,6 +32,7 @@ func NewRootCmd() *cobra.Command {
 
 	root.AddCommand(upCmd())
 	root.AddCommand(downCmd())
+	root.AddCommand(mcpCmd())
 	root.AddCommand(projectCmd())
 	root.AddCommand(statusCmd())
 	root.AddCommand(initCmd())
@@ -42,8 +44,19 @@ func NewRootCmd() *cobra.Command {
 	return root
 }
 
-func upCmd() *cobra.Command {
+// mcpCmd runs the stdio MCP shim — opencode launches `hmf mcp`, never a
+// separate binary, so shim and daemon always share one wire format.
+func mcpCmd() *cobra.Command {
 	return &cobra.Command{
+		Use:   "mcp",
+		Short: "Run the MCP shim (stdio) — this is what opencode's mcp config launches",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return mcp.RunServer(context.Background())
+		},
+	}
+}
+
+func upCmd() *cobra.Command {	return &cobra.Command{
 		Use:   "up",
 		Short: "Start the hmf daemon",
 		RunE: func(cmd *cobra.Command, args []string) error {
